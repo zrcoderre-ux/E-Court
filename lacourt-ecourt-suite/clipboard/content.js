@@ -1849,7 +1849,7 @@ function renderFillFormButton() {
   const btn = document.createElement('button');
   btn.id = '__lacourt_fill_btn__';
   btn.type = 'button';
-  btn.textContent = '⚖ Fill Microsoft Form';
+  btn.textContent = '⚖ Export';
   Object.assign(btn.style, {
     position: 'fixed',
     top: '0px',
@@ -1881,7 +1881,7 @@ function renderFillFormButton() {
         btn.textContent = '⚖ No data found';
         setTimeout(() => {
           btn.disabled = false;
-          btn.textContent = '⚖ Fill Microsoft Form';
+          btn.textContent = '⚖ Export';
           btn.style.opacity = '1';
         }, 2000);
         return;
@@ -1905,7 +1905,7 @@ function renderFillFormButton() {
               btn.textContent = '⚖ Error opening';
               setTimeout(() => {
                 btn.disabled = false;
-                btn.textContent = '⚖ Fill Microsoft Form';
+                btn.textContent = '⚖ Export';
                 btn.style.opacity = '1';
               }, 2000);
               return;
@@ -1916,7 +1916,7 @@ function renderFillFormButton() {
             btn.style.opacity = '1';
             setTimeout(() => {
               btn.disabled = false;
-              btn.textContent = '⚖ Fill Microsoft Form';
+              btn.textContent = '⚖ Export';
             }, 2000);
           }
         );
@@ -1934,7 +1934,7 @@ function renderFillFormButton() {
       btn.textContent = '⚖ Error';
       setTimeout(() => {
         btn.disabled = false;
-        btn.textContent = '⚖ Fill Microsoft Form';
+        btn.textContent = '⚖ Export';
         btn.style.opacity = '1';
       }, 2000);
     }
