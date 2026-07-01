@@ -1648,6 +1648,22 @@ function parseCaseNumber() {
 }
 
 /**
+ * Strips a trailing system event id from a Next-event description.
+ *
+ * e-court recently began appending an event id like "ID-148870297793" to the
+ * end of the Next-event text, e.g.
+ *   "Hearing on Motion to Compel Discovery ID-148870297793"
+ * The user doesn't want it in the motion type or hearing type, so we drop a
+ * trailing "ID-<digits>" (and any spacing before it). The \b guard means we
+ * only match "ID" at a word boundary, so a real word ending in "id" (e.g.
+ * "grid-123") is left alone.
+ */
+function stripEventId(desc) {
+  if (!desc) return desc;
+  return desc.replace(/\s*\bID-\d+\s*$/i, '').trim();
+}
+
+/**
  * Finds the motion type from the "Next Event" indicator. Returns the text
  * following "Hearing on" up to (but not including) " in Department ...".
  * Returns '' if no Hearing-on event is shown.
@@ -1664,12 +1680,12 @@ function parseMotionType() {
     const title = (span.getAttribute('title') || '').trim();
     if (title) {
       const m = title.match(re);
-      if (m) return m[1].trim();
+      if (m) return stripEventId(m[1]);
     }
     const text = (span.textContent || '').trim().replace(/\s+/g, ' ');
     if (text) {
       const m = text.match(re);
-      if (m) return m[1].trim();
+      if (m) return stripEventId(m[1]);
     }
   }
   return '';
@@ -1704,12 +1720,12 @@ function parseHearingType() {
     const title = (span.getAttribute('title') || '').trim();
     if (title) {
       const m = title.match(re);
-      if (m) return m[1].trim();
+      if (m) return stripEventId(m[1]);
     }
     const text = (span.textContent || '').trim().replace(/\s+/g, ' ');
     if (text) {
       const m = text.match(re);
-      if (m) return m[1].trim();
+      if (m) return stripEventId(m[1]);
     }
   }
   return '';
