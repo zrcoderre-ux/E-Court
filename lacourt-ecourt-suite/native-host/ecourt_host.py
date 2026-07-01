@@ -38,8 +38,8 @@ import struct
 # ---------------------------------------------------------------------------
 TEMPLATE_PATH = (
     r"C:\Users\ZCoderre\OneDrive - Los Angeles Superior Court"
-    r"\Documents\Custom Office Templates"
-    r"\Mail_Merge_Order_Template_Automatic.dotm"
+    r"\Desktop"
+    r"\Mail Merge Order Template (Automatic).dotm"
 )
 
 
