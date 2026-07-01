@@ -21,7 +21,10 @@ host does **not** reimplement your macro — your proven VBA stays in charge.
 
 ## Requirements
 
-- Windows with Python on `PATH` (you already run `pdf_linker.py`).
+- Windows with Python installed. `ecourt_host.bat` calls the interpreter by an
+  **absolute path** (Microsoft Store Python's bare `python` alias can fail when
+  Chrome spawns the host). If your Python moves, update that path — find it with
+  `python -c "import sys; print(sys.executable)"`.
 - Recommended: `pywin32` (`pip install pywin32`) — lets the host start the
   template via Word COM, the most reliable way to fire `Document_New`. Without
   it the host falls back to `os.startfile`, which also works in most setups.
@@ -76,8 +79,9 @@ exported.
 - **Nothing lands in Downloads.** If you changed Chrome's download folder away
   from `%USERPROFILE%\Downloads`, the macro (which looks in `%USERPROFILE%\Downloads`)
   won't see the file. Keep them the same, or update the macro's `sDownloadsPath`.
-- **A console window flashes on each Export.** Change `python` to `pythonw` in
-  `ecourt_host.bat` (revert if the merge ever stops triggering).
+- **A console window flashes on each Export.** Swap `python.exe` for
+  `pythonw.exe` (same folder) in `ecourt_host.bat` (revert if the merge ever
+  stops triggering).
 
 ## Uninstall
 
