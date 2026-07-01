@@ -695,6 +695,31 @@ function storeRotation(data, extra) {
 }
 
 /**
+ * Stores the parsed field values for the Order Template popup to read.
+ *
+ * The popup (order-template/order-template.html) opens in its own window and
+ * reads this key on load to pre-fill its editable boxes. We store the labeled
+ * object verbatim; the popup maps each key to its form question / export
+ * column. `movant` is intentionally NOT included — the user fills it in the
+ * popup by hand.
+ *
+ * Returns a Promise so callers can wait for the write to land before opening
+ * the popup window (avoids a load-vs-write race).
+ */
+function storeOrderTemplateData(labeled) {
+  return new Promise(resolve => {
+    try {
+      chrome.storage.local.set(
+        { orderTemplateData: { fields: labeled || {}, createdAt: Date.now() } },
+        () => { void chrome.runtime.lastError; resolve(); }
+      );
+    } catch (_) {
+      resolve();
+    }
+  });
+}
+
+/**
  * Builds the context object both Fill-Microsoft-Form entry points need.
  *
  * Detects whether the case is an OSC Re: Failure to Prosecute Default
@@ -704,8 +729,14 @@ function storeRotation(data, extra) {
  *     (the OSC form has only those two fields).
  *   - Builds a mailto: URL pre-addressed to Judge Mackenzie.
  *
+ * For non-OSC (regular) cases the Order Template Input Microsoft Form has been
+ * retired in favor of an in-extension popup: `openUrl` points at the packaged
+ * order-template page and `isOrderTemplate` is true. OSC / Default Judgment
+ * Checklist cases are unchanged — they still open the real Microsoft Form.
+ *
  * Returns null if there's no rotation data at all.
- * Returns { data, formUrl, mailtoUrl, isOsc, hearingType } otherwise.
+ * Returns { data, formUrl, openUrl, isOrderTemplate, mailtoUrl, isOsc,
+ *           hearingType } otherwise.
  *
  * mailtoUrl is null for non-OSC cases.
  */
@@ -720,6 +751,8 @@ function getFillFormContext() {
     return {
       data,
       formUrl: REGULAR_FORM_URL,
+      openUrl: chrome.runtime.getURL('order-template/order-template.html'),
+      isOrderTemplate: true,
       mailtoUrl: null,
       isOsc: false,
       hearingType,
@@ -754,6 +787,8 @@ function getFillFormContext() {
   return {
     data: { sequence: trimmedSequence, labeled: trimmedLabeled },
     formUrl: OSC_FORM_URL,
+    openUrl: OSC_FORM_URL,
+    isOrderTemplate: false,
     mailtoUrl,
     isOsc: true,
     hearingType,
@@ -806,13 +841,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       return false;
     }
     storeRotation(ctx.data, { autoFillOnLoad: true });
-    sendResponse({
+
+    const reply = {
       ok: true,
       count: ctx.data.sequence.length,
       formUrl: ctx.formUrl,
+      openUrl: ctx.openUrl,
+      isOrderTemplate: ctx.isOrderTemplate,
       mailtoUrl: ctx.mailtoUrl,
       isOsc: ctx.isOsc,
-    });
+    };
+
+    if (ctx.isOrderTemplate) {
+      // Stash the parsed fields for the popup, then reply only once the write
+      // has landed so the popup window can't load before the data is present.
+      storeOrderTemplateData(ctx.data.labeled).then(() => sendResponse(reply));
+      return true; // async response
+    }
+
+    sendResponse(reply);
     return false;
   }
 
@@ -1849,28 +1896,39 @@ function renderFillFormButton() {
         triggerMailto(ctx.mailtoUrl);
       }
 
-      chrome.runtime.sendMessage(
-        { type: 'openFormOnOppositeDisplay', url: ctx.formUrl },
-        response => {
-          if (chrome.runtime.lastError || !response || !response.ok) {
-            btn.textContent = '⚖ Error opening';
+      const openedLabel = ctx.isOrderTemplate ? '⚖ Order Template Opened!' : '⚖ Form Opened!';
+      const openWindow = () => {
+        chrome.runtime.sendMessage(
+          { type: 'openFormOnOppositeDisplay', url: ctx.openUrl },
+          response => {
+            if (chrome.runtime.lastError || !response || !response.ok) {
+              btn.textContent = '⚖ Error opening';
+              setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = '⚖ Fill Microsoft Form';
+                btn.style.opacity = '1';
+              }, 2000);
+              return;
+            }
+
+            // Success — show confirmation and reset.
+            btn.textContent = openedLabel;
+            btn.style.opacity = '1';
             setTimeout(() => {
               btn.disabled = false;
               btn.textContent = '⚖ Fill Microsoft Form';
-              btn.style.opacity = '1';
             }, 2000);
-            return;
           }
+        );
+      };
 
-          // Success — show confirmation and reset.
-          btn.textContent = '⚖ Form Opened!';
-          btn.style.opacity = '1';
-          setTimeout(() => {
-            btn.disabled = false;
-            btn.textContent = '⚖ Fill Microsoft Form';
-          }, 2000);
-        }
-      );
+      // For the Order Template popup, wait until the parsed fields are stored
+      // so the popup window reads them on load. OSC cases open the real form.
+      if (ctx.isOrderTemplate) {
+        storeOrderTemplateData(ctx.data.labeled).then(openWindow);
+      } else {
+        openWindow();
+      }
     } catch (err) {
       console.error('[LACourt] fill button error:', err);
       btn.textContent = '⚖ Error';

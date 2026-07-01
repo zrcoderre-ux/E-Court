@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "LA Court E-Court Suite",
-  "version": "3.0.0",
-  "description": "Combined e-court toolkit for civil.lacourt.org: case-page clipboard cleaning and Microsoft Form fill, agenda-page copy cleaning, rotating paste, and background-tab PDF opening with viewed-document checkmarks.",
+  "version": "3.1.0",
+  "description": "Combined e-court toolkit for civil.lacourt.org: case-page clipboard cleaning, Microsoft Form fill and in-extension Order Template Input popup with spreadsheet export, agenda-page copy cleaning, rotating paste, and background-tab PDF opening with viewed-document checkmarks.",
   "permissions": [
     "clipboardRead",
     "clipboardWrite",

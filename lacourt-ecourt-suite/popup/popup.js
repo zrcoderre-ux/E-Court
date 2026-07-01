@@ -54,14 +54,18 @@ btn.addEventListener('click', async () => {
       return;
     }
 
-    const formUrl = captured.formUrl;
-    if (!formUrl) {
+    // Non-OSC cases now open the in-extension Order Template popup instead of
+    // a Microsoft Form; openUrl carries whichever is appropriate. Fall back to
+    // formUrl for safety if an older content script is still loaded.
+    const openUrl = captured.openUrl || captured.formUrl;
+    if (!openUrl) {
       setStatus('No form URL returned.', 'error');
       btn.disabled = false;
       return;
     }
 
-    setStatus('Captured ' + captured.count + ' values. Opening form...', 'success');
+    const openingLabel = captured.isOrderTemplate ? 'Order Template' : 'form';
+    setStatus('Captured ' + captured.count + ' values. Opening ' + openingLabel + '...', 'success');
 
     // Fire mailto (OSC default-judgment cases only). Fire-and-forget - the
     // case page launches the OS mail handler from its own context so popup
@@ -75,7 +79,7 @@ btn.addEventListener('click', async () => {
     await new Promise((resolve, reject) => {
       chrome.runtime.sendMessage({
         type: 'openFormOnOppositeDisplay',
-        url: formUrl,
+        url: openUrl,
         sourceWindowId: tab.windowId,
       }, response => {
         if (chrome.runtime.lastError) { reject(chrome.runtime.lastError); return; }
