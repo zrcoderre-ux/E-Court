@@ -389,12 +389,99 @@ function triggerNativeMailMerge() {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // -------------------------------------------------------------------------
+// "Did you pull the case PDFs?" guard
+//
+// Before exporting we check that at least one PDF has been downloaded from the
+// court website since the previous export. If none has, the mail merge would
+// have no documents to file into the case folder, so we warn (overridable).
+// The window mirrors the Word macro's PDF band: "since my last export", with a
+// since-midnight fallback the very first time.
+// -------------------------------------------------------------------------
+
+const COURT_DOMAIN_RE = /lacourt\.org/i;
+
+function startOfTodayISO() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+function getLastExportAt() {
+  return new Promise(resolve => {
+    try {
+      chrome.storage.local.get(['lastOrderExportAt'], r =>
+        resolve(r && r.lastOrderExportAt ? r.lastOrderExportAt : null));
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
+function setLastExportAt(ts) {
+  try {
+    chrome.storage.local.set({ lastOrderExportAt: ts });
+  } catch (_) { /* non-critical */ }
+}
+
+function isPdfDownload(item) {
+  if (item.mime && item.mime.toLowerCase() === 'application/pdf') return true;
+  if (item.filename && /\.pdf$/i.test(item.filename)) return true;
+  const u = item.finalUrl || item.url || '';
+  return /\.pdf(?:[?#]|$)/i.test(u);
+}
+
+function isFromCourt(item) {
+  // blob: downloads keep the origin in the URL, so this catches those too.
+  return COURT_DOMAIN_RE.test(item.url || '')
+      || COURT_DOMAIN_RE.test(item.finalUrl || '')
+      || COURT_DOMAIN_RE.test(item.referrer || '');
+}
+
+// Resolves true if a court PDF was downloaded within the window, OR if we
+// simply can't tell (no downloads API) — we never block on uncertainty.
+async function hasRecentCourtPdf() {
+  if (!chrome.downloads || !chrome.downloads.search) return true;
+
+  const last = await getLastExportAt();
+  const sinceISO = last ? new Date(last).toISOString() : startOfTodayISO();
+
+  const items = await new Promise(resolve => {
+    try {
+      chrome.downloads.search(
+        { state: 'complete', startedAfter: sinceISO, orderBy: ['-startTime'], limit: 0 },
+        res => {
+          if (chrome.runtime.lastError) { resolve([]); return; }
+          resolve(res || []);
+        }
+      );
+    } catch (_) {
+      resolve([]);
+    }
+  });
+
+  return items.some(it => isPdfDownload(it) && isFromCourt(it));
+}
+
+// -------------------------------------------------------------------------
 // Wire up
 // -------------------------------------------------------------------------
 
 const downloadBtn = document.getElementById('downloadBtn');
+const pdfWarning = document.getElementById('pdfWarning');
 
-downloadBtn.addEventListener('click', async () => {
+function showPdfWarning() {
+  if (pdfWarning) pdfWarning.hidden = false;
+  setStatus('No court PDF found since your last export.', 'error');
+}
+
+function hidePdfWarning() {
+  if (pdfWarning) pdfWarning.hidden = true;
+}
+
+// Does the actual export: build → save → record time → trigger mail merge.
+async function performExport() {
+  hidePdfWarning();
+
   const values = collectValues();
   const filename = filenameFor(values);
 
@@ -433,6 +520,10 @@ downloadBtn.addEventListener('click', async () => {
     }
   }
 
+  // Anchor this export so the next run's "since last export" PDF check starts
+  // from here. Recorded whether or not the mail merge runs.
+  setLastExportAt(Date.now());
+
   if (!wantAutoRun) {
     setStatus('Downloaded ' + filename, 'success');
     downloadBtn.disabled = false;
@@ -453,6 +544,37 @@ downloadBtn.addEventListener('click', async () => {
       + (res && res.error ? res.error : 'host not set up') + ').');
   }
   downloadBtn.disabled = false;
+}
+
+// Download button first runs the "did you pull the PDFs?" guard.
+downloadBtn.addEventListener('click', async () => {
+  hidePdfWarning();
+  downloadBtn.disabled = true;
+  setStatus('Checking recent downloads…');
+
+  let ok = true;
+  try {
+    ok = await hasRecentCourtPdf();
+  } catch (err) {
+    console.warn('[OrderTemplate] PDF check failed, allowing export:', err);
+    ok = true; // never block on a check failure
+  }
+
+  downloadBtn.disabled = false;
+  if (!ok) {
+    showPdfWarning();
+    return;
+  }
+  await performExport();
+});
+
+// Warning banner buttons.
+document.getElementById('pdfDownloadAnyway').addEventListener('click', () => {
+  performExport();
+});
+document.getElementById('pdfDismiss').addEventListener('click', () => {
+  hidePdfWarning();
+  setStatus('');
 });
 
 document.getElementById('closeBtn').addEventListener('click', () => {
