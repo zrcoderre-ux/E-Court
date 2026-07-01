@@ -82,6 +82,24 @@
       cursor: pointer;
     }
     .autorun input { width: auto; }
+    .warning {
+      margin-top: 14px;
+      padding: 11px 13px;
+      background: #fbeaea;
+      border: 1px solid #d99;
+      border-radius: 4px;
+      color: #7a1f1f;
+      font-size: 12px;
+    }
+    .warning p { margin: 0 0 9px 0; line-height: 1.4; }
+    .warning .warn-actions { display: flex; gap: 8px; }
+    .warning button { width: auto; padding: 6px 12px; font-size: 12px; margin: 0; }
+    .warning button.danger { background: #c0392b; color: #fff; }
+    .warning button.danger:hover { background: #a83227; }
+    .warning button.ghost {
+      background: transparent; color: #7a1f1f; border: 1px solid #d99;
+    }
+    .warning button.ghost:hover { background: #f3d9d9; }
     .actions {
       display: flex;
       gap: 10px;
@@ -128,6 +146,16 @@
         <input type="checkbox" id="autoRun" checked>
         Run the Word mail merge automatically after download
       </label>
+    </div>
+
+    <div class="warning" id="pdfWarning" hidden>
+      <p>No PDF has been downloaded from the court website since your last
+        export. The mail merge may have no documents to file into the case
+        folder. Did you forget to save the case PDFs?</p>
+      <div class="warn-actions">
+        <button id="pdfDownloadAnyway" class="danger">Download anyway</button>
+        <button id="pdfDismiss" class="ghost">Cancel</button>
+      </div>
     </div>
 
     <div class="actions">
