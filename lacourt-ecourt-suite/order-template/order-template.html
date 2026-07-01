@@ -70,11 +70,23 @@
       box-shadow: 0 0 0 2px rgba(26, 54, 93, 0.15);
     }
     .field.movant input { background: #fff8e8; border-color: #d9c48f; }
+    .autorun {
+      margin-top: 18px;
+      font-size: 12px;
+      color: #4a3f2c;
+    }
+    .autorun label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+    }
+    .autorun input { width: auto; }
     .actions {
       display: flex;
       gap: 10px;
       align-items: center;
-      margin-top: 20px;
+      margin-top: 14px;
       padding-top: 16px;
       border-top: 1px solid var(--line);
     }
@@ -110,6 +122,13 @@
     <p class="sub">Review and edit the fields below, then download the spreadsheet for your Word mail merge.</p>
 
     <div id="fields"></div>
+
+    <div class="autorun">
+      <label>
+        <input type="checkbox" id="autoRun" checked>
+        Run the Word mail merge automatically after download
+      </label>
+    </div>
 
     <div class="actions">
       <button id="downloadBtn" class="primary">Download Spreadsheet</button>

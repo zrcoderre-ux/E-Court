@@ -1,0 +1,9 @@
+{
+  "name": "com.lacourt.ecourt_host",
+  "description": "LA Court E-Court Suite native host - launches the Word mail-merge template",
+  "path": "ecourt_host.bat",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}

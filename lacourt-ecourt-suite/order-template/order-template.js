@@ -43,6 +43,10 @@ const FIELDS = [
 // Leading metadata columns from the Microsoft Forms export. Written blank.
 const META_HEADERS = ['ID', 'Start time', 'Completion time', 'Email', 'Name'];
 
+// Native messaging host that launches the Word mail-merge template. Must match
+// the "name" in the installed host manifest (see native-host/).
+const NATIVE_HOST = 'com.lacourt.ecourt_host';
+
 const statusEl = document.getElementById('status');
 const fieldsEl = document.getElementById('fields');
 
@@ -294,18 +298,59 @@ function sanitizeForFilename(s) {
   return String(s || '').trim().replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
-function download(values) {
-  const bytes = buildWorkbook(values);
-  const blob = new Blob([bytes], {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  });
-  const url = URL.createObjectURL(blob);
-
+function filenameFor(values) {
+  // The Word macro finds the sheet with Dir("Order*.xlsx") in Downloads, so
+  // the name MUST start with "Order" and land in the Downloads root.
   const caseTag = sanitizeForFilename(values.caseNumber);
-  const filename = caseTag
+  return caseTag
     ? `Order_Template_Input_${caseTag}.xlsx`
     : 'Order_Template_Input.xlsx';
+}
 
+function workbookBlob(values) {
+  const bytes = buildWorkbook(values);
+  return new Blob([bytes], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+}
+
+// Preferred save path: chrome.downloads into the Downloads root, resolving only
+// once the file is fully written — so the native mail-merge trigger can't fire
+// before the spreadsheet exists on disk. Rejects if the API errors.
+function downloadViaApi(blob, filename) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    chrome.downloads.download(
+      { url, filename, saveAs: false, conflictAction: 'uniquify' },
+      downloadId => {
+        if (chrome.runtime.lastError || downloadId == null) {
+          URL.revokeObjectURL(url);
+          reject(new Error(chrome.runtime.lastError
+            ? chrome.runtime.lastError.message : 'download failed'));
+          return;
+        }
+        const onChanged = delta => {
+          if (delta.id !== downloadId || !delta.state) return;
+          if (delta.state.current === 'complete') {
+            chrome.downloads.onChanged.removeListener(onChanged);
+            URL.revokeObjectURL(url);
+            resolve(downloadId);
+          } else if (delta.state.current === 'interrupted') {
+            chrome.downloads.onChanged.removeListener(onChanged);
+            URL.revokeObjectURL(url);
+            reject(new Error('download interrupted'));
+          }
+        };
+        chrome.downloads.onChanged.addListener(onChanged);
+      }
+    );
+  });
+}
+
+// Fallback save path (anchor click) if chrome.downloads is unavailable. No
+// completion signal, so callers wait a beat before triggering the merge.
+function downloadViaAnchor(blob, filename) {
+  const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
@@ -313,22 +358,101 @@ function download(values) {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-
-  return filename;
 }
+
+// Ask the native host to launch the Word template, which fires the macro's
+// Document_New handler. Never throws — resolves to {ok:false,error} when the
+// host isn't installed, so the download itself always succeeds regardless.
+function triggerNativeMailMerge() {
+  return new Promise(resolve => {
+    if (!chrome.runtime || !chrome.runtime.sendNativeMessage) {
+      resolve({ ok: false, error: 'native messaging unavailable' });
+      return;
+    }
+    try {
+      chrome.runtime.sendNativeMessage(
+        NATIVE_HOST, { action: 'launchTemplate' },
+        response => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+          resolve(response || { ok: false, error: 'no response from host' });
+        }
+      );
+    } catch (e) {
+      resolve({ ok: false, error: String(e && e.message || e) });
+    }
+  });
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // -------------------------------------------------------------------------
 // Wire up
 // -------------------------------------------------------------------------
 
-document.getElementById('downloadBtn').addEventListener('click', () => {
+const downloadBtn = document.getElementById('downloadBtn');
+
+downloadBtn.addEventListener('click', async () => {
+  const values = collectValues();
+  const filename = filenameFor(values);
+
+  let blob;
   try {
-    const name = download(collectValues());
-    setStatus('Downloaded ' + name, 'success');
+    blob = workbookBlob(values);
   } catch (err) {
-    console.error('[OrderTemplate] download failed:', err);
-    setStatus('Download failed: ' + (err && err.message || err), 'error');
+    console.error('[OrderTemplate] build failed:', err);
+    setStatus('Build failed: ' + (err && err.message || err), 'error');
+    return;
   }
+
+  const autoRunEl = document.getElementById('autoRun');
+  const wantAutoRun = autoRunEl ? autoRunEl.checked : true;
+
+  downloadBtn.disabled = true;
+  setStatus('Saving ' + filename + '…');
+
+  let usedApi = false;
+  try {
+    if (chrome.downloads && chrome.downloads.download) {
+      await downloadViaApi(blob, filename);
+      usedApi = true;
+    } else {
+      downloadViaAnchor(blob, filename);
+    }
+  } catch (err) {
+    // Last-ditch: fall back to the anchor download so a save never regresses.
+    console.warn('[OrderTemplate] downloads API failed, using anchor:', err);
+    try {
+      downloadViaAnchor(blob, filename);
+    } catch (e2) {
+      setStatus('Download failed: ' + (err && err.message || err), 'error');
+      downloadBtn.disabled = false;
+      return;
+    }
+  }
+
+  if (!wantAutoRun) {
+    setStatus('Downloaded ' + filename, 'success');
+    downloadBtn.disabled = false;
+    return;
+  }
+
+  // If we used the anchor fallback there's no completion signal; give the
+  // browser a moment to finish writing before the macro reads the file.
+  if (!usedApi) await sleep(1500);
+
+  setStatus('Downloaded. Starting mail merge…');
+  const res = await triggerNativeMailMerge();
+  if (res && res.ok) {
+    setStatus('Downloaded ' + filename + ' — mail merge started.', 'success');
+  } else {
+    // Download succeeded; only the auto-run bridge is missing. Non-alarming.
+    setStatus('Downloaded ' + filename + '. Auto mail-merge did not run ('
+      + (res && res.error ? res.error : 'host not set up') + ').');
+  }
+  downloadBtn.disabled = false;
 });
 
 document.getElementById('closeBtn').addEventListener('click', () => {
