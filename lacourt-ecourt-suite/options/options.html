@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>LA Court Cleaner – Exclusion List</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      font-family: 'Georgia', serif;
+      background: #f5f0e8;
+      color: #1a1a2e;
+      margin: 0;
+      padding: 32px;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 22px;
+      color: #1a365d;
+      margin: 0 0 4px 0;
+    }
+
+    .subtitle {
+      font-size: 13px;
+      color: #666;
+      margin: 0 0 28px 0;
+    }
+
+    .card {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    .card h2 {
+      font-size: 14px;
+      color: #1a365d;
+      margin: 0 0 4px 0;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .card .hint {
+      font-size: 12px;
+      color: #888;
+      margin: 0 0 16px 0;
+    }
+
+    /* Term list */
+    #termList {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    #termList li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: 4px;
+      border: 1px solid #e0d8cc;
+      margin-bottom: 6px;
+      background: #faf8f4;
+      transition: background 0.15s;
+    }
+
+    #termList li:hover {
+      background: #f0ebe0;
+    }
+
+    #termList li .term-text {
+      flex: 1;
+      font-size: 13px;
+      font-family: 'Courier New', monospace;
+      color: #1a1a2e;
+      cursor: pointer;
+      outline: none;
+      border: none;
+      background: transparent;
+      width: 100%;
+    }
+
+    #termList li .term-text:focus {
+      background: #fff;
+      border-radius: 3px;
+      padding: 2px 4px;
+      box-shadow: 0 0 0 2px #1a365d44;
+    }
+
+    .btn-delete {
+      background: none;
+      border: none;
+      color: #c0392b;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      padding: 2px 6px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    .btn-delete:hover {
+      background: #fde8e6;
+    }
+
+    /* Add new term */
+    .add-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .add-row input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid #c8b89a;
+      border-radius: 4px;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      background: white;
+      color: #1a1a2e;
+    }
+
+    .add-row input:focus {
+      outline: none;
+      border-color: #1a365d;
+      box-shadow: 0 0 0 2px #1a365d22;
+    }
+
+    .btn-add {
+      padding: 8px 16px;
+      background: #1a365d;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-family: 'Georgia', serif;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btn-add:hover { background: #2a4a7f; }
+
+    /* Save / reset */
+    .actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .btn-save {
+      padding: 10px 24px;
+      background: #1a6b3a;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-family: 'Georgia', serif;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .btn-save:hover { background: #22854a; }
+
+    .btn-reset {
+      padding: 10px 16px;
+      background: none;
+      color: #c0392b;
+      border: 1px solid #c0392b;
+      border-radius: 4px;
+      font-family: 'Georgia', serif;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .btn-reset:hover { background: #fde8e6; }
+
+    .save-status {
+      font-size: 13px;
+      color: #1a6b3a;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .save-status.visible { opacity: 1; }
+
+    .empty-note {
+      font-size: 13px;
+      color: #999;
+      font-style: italic;
+      padding: 8px 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>⚖️ LA Court Clipboard Cleaner</h1>
+    <p class="subtitle">Manage exclusion lists used by the LA Court extensions. Edits are saved to your synced Chrome account.</p>
+
+    <div class="card">
+      <h2>Agenda Page Exclusion Terms</h2>
+      <p class="hint">Used by the Agenda Cleaner extension. Hearing types containing any of these terms (case-insensitive substring match) are filtered out when copying from the agenda page. Click any term to edit it inline. Press Enter or click away to confirm. Use the × button to remove a term.</p>
+      <ul id="termList"></ul>
+      <p class="empty-note" id="emptyNote" style="display:none;">No exclusion terms defined.</p>
+
+      <div class="add-row">
+        <input type="text" id="newTermInput" placeholder="Add a new term (e.g. motion to strike)">
+        <button class="btn-add" id="addBtn">+ Add</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="actions">
+        <button class="btn-save" id="saveBtn">Save Changes</button>
+        <button class="btn-reset" id="resetBtn">Reset to Defaults</button>
+        <span class="save-status" id="saveStatus">✓ Saved</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Dismissed-Party Motion Exclusions</h2>
+      <p class="hint">Used by the Clipboard Cleaner on case pages. When the parsed motion type contains any of these terms (case-insensitive substring match), dismissed parties are dropped from the Ctrl+A rotation and the Fill Microsoft Form output. Parties marked "No Longer Named" are always dropped regardless. Manual selection paste is unaffected.</p>
+      <ul id="dismissedList"></ul>
+      <p class="empty-note" id="dismissedEmptyNote" style="display:none;">No motion exclusion terms defined.</p>
+
+      <div class="add-row">
+        <input type="text" id="dismissedNewInput" placeholder="Add a new term (e.g. summary judgment)">
+        <button class="btn-add" id="dismissedAddBtn">+ Add</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="actions">
+        <button class="btn-save" id="dismissedSaveBtn">Save Changes</button>
+        <button class="btn-reset" id="dismissedResetBtn">Reset to Defaults</button>
+        <span class="save-status" id="dismissedSaveStatus">✓ Saved</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

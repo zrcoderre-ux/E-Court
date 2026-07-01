@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      font-family: 'Georgia', serif;
+      width: 240px;
+      padding: 16px;
+      margin: 0;
+      background: #f5f0e8;
+      color: #1a1a2e;
+    }
+    h2 {
+      font-size: 13px;
+      margin: 0 0 12px 0;
+      color: #1a365d;
+      border-bottom: 1px solid #c8b89a;
+      padding-bottom: 8px;
+    }
+    button {
+      width: 100%;
+      padding: 10px 12px;
+      background: #1a365d;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      font-family: 'Georgia', serif;
+      font-size: 13px;
+      cursor: pointer;
+      margin-bottom: 8px;
+    }
+    button:hover { background: #2a4a7f; }
+    button:disabled { background: #888; cursor: not-allowed; }
+    button.secondary {
+      background: transparent;
+      color: #1a365d;
+      border: 1px solid #c8b89a;
+      padding: 8px 12px;
+      font-size: 12px;
+    }
+    button.secondary:hover { background: #ece3d3; }
+    .status {
+      font-size: 11px;
+      color: #555;
+      text-align: center;
+      min-height: 14px;
+      margin-top: 4px;
+    }
+    .status.error { color: #c0392b; }
+    .status.success { color: #1a6b3a; }
+  </style>
+</head>
+<body>
+  <h2>&#9878;&#65039; LA Court E-Court Suite</h2>
+  <button id="fillFormBtn">Fill Microsoft Form</button>
+  <button id="openOptions" class="secondary">Manage Exclusion Lists</button>
+  <div class="status" id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+{
+  "manifest_version": 3,
+  "name": "LA Court E-Court Suite",
+  "version": "3.0.0",
+  "description": "Combined e-court toolkit for civil.lacourt.org: case-page clipboard cleaning and Microsoft Form fill, agenda-page copy cleaning, rotating paste, and background-tab PDF opening with viewed-document checkmarks.",
+  "permissions": [
+    "clipboardRead",
+    "clipboardWrite",
+    "storage",
+    "tabs",
+    "system.display"
+  ],
+  "host_permissions": [
+    "https://civil.lacourt.org/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "LA Court E-Court Suite",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://civil.lacourt.org/ecourt/ecms/case*"],
+      "js": ["clipboard/content.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["<all_urls>"],
+      "exclude_matches": ["https://civil.lacourt.org/ecourt/ecms/case*"],
+      "js": ["clipboard/paste-rotator.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["https://civil.lacourt.org/ecourt/ecms/agenda*"],
+      "js": ["agenda/content.js"]
+    },
+    {
+      "matches": ["https://civil.lacourt.org/*"],
+      "js": ["pdf-focus/content.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://civil.lacourt.org/*"],
+      "js": ["pdf-focus/bridge.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
