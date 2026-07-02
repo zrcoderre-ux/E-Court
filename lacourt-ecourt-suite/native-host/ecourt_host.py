@@ -36,11 +36,7 @@ import struct
 # ---------------------------------------------------------------------------
 # EDIT THIS: full path to your mail-merge template (.dotm).
 # ---------------------------------------------------------------------------
-TEMPLATE_PATH = (
-    r"C:\Users\ZCoderre\OneDrive - Los Angeles Superior Court"
-    r"\Desktop"
-    r"\Mail Merge Order Template (Automatic).dotm"
-)
+TEMPLATE_PATH = r"C:\Users\ZCoderre\Mail Merge Order Template (Automatic).dotm"
 
 
 def read_message():
