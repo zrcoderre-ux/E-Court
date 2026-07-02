@@ -1,17 +1,15 @@
 /**
  * LA Court Clipboard Cleaner - Case Page Content Script (v2.0)
  *
- * Two modes triggered by a copy event:
+ * Copy/paste on case pages is left completely NATIVE — the extension no longer
+ * intercepts the copy event to reformat selections or arm a paste rotation.
  *
- * 1) Manual selection copy (selection does NOT cover the parties table):
- *    - Strips hyperlinks, removes everything from first '(' onward per line.
- *    - Adds ', ' prefix and 'and ' for the last item per legal-doc convention.
- *    - (Preserves existing v1.0 behavior.)
+ * 1) (removed) Manual selection cleaning / party-rotation copy. Copy is native.
  *
- * 2) Ctrl+A / full-table copy (selection overlaps parties table):
+ * 2) Export flow (button / popup):
  *    - Parses the case number, hearing date, motion type, and parties from
  *      the live DOM.
- *    - Builds a rotation sequence:
+ *    - Builds the field set:
  *        1.  Case number
  *        2.  Hearing date                       — only if a Next Event is shown
  *        3.  Motion type                        — only if a "Hearing on ..." event
@@ -28,17 +26,11 @@
  *      user's form layout) rather than separate Title/Other fields. If the
  *      case has multiple cross-complaints, only parties belonging to the
  *      first one are captured.
- *    - Also auto-fills a Microsoft Form by label match if 2+ recognized
- *      fields are present (paste-rotator handles that).
- *    - Stores the sequence + index=0 in chrome.storage.local.
- *    - Puts the SENTINEL on the clipboard. The paste-rotator.js content script
- *      on whichever page the user pastes into will recognize the sentinel and
- *      substitute the correct rotation entry.
+ *    - Formats the party names (title-case, entity suffixes, short-name
+ *      parentheticals, collective labels) and hands them to the Export popup.
  */
 (function () {
   'use strict';
-
-  const SENTINEL = '\u26A1LACOURT_PARTY_ROTATION\u26A1';
 
   /* ------------------------------------------------------------------ */
   /* OSC Re: Failure to Prosecute Default Judgment — alternate flow     */
@@ -215,313 +207,12 @@
     return dismissedMotionExclusions.some(term => term && m.includes(term));
   }
 
-document.addEventListener('copy', function (e) {
-  const selection = window.getSelection();
-  if (!selection || selection.isCollapsed) return;
-
-  // Decide mode based on how much of the parties table the selection covers.
-  //
-  //   none of the UPDATE PARTY anchors touched  → off-table selection
-  //                                                (manual clean: page text)
-  //   some (but not all) anchors touched        → subset of party rows
-  //                                                (selection-paste mode)
-  //   all anchors touched                       → Ctrl+A / full-table drag
-  //                                                (rotation mode)
-  //
-  // The "all anchors" branch is what Ctrl+A triggers (it selects the entire
-  // page so every anchor is covered). A mouse drag over a few party rows
-  // covers a strict subset and triggers selection-paste instead — that paste
-  // becomes plain cleaned text targeted at whatever Microsoft Form field is
-  // focused.
-  const coverage = measureAnchorCoverage(selection);
-
-  if (coverage === 'none') {
-    handleManualCleanCopy(e, selection);
-  } else if (coverage === 'all') {
-    handlePartyRotationCopy(e);
-  } else {
-    handlePartySelectionCopy(e, selection);
-  }
-
-  // Belt-and-suspenders: prevent any page-level copy handlers (including the
-  // page's React/jQuery listeners) from overwriting what we put on the
-  // clipboard. The handlers above already call preventDefault, but we also
-  // need to stop further listeners on this same event.
-  e.stopImmediatePropagation();
-}, true); // capture phase: run BEFORE the page's own copy listeners
-
-/* ------------------------------------------------------------------ */
-/* Mode 1: existing manual-selection cleaning behavior                 */
-/* ------------------------------------------------------------------ */
-
-function handleManualCleanCopy(e, selection) {
-  const rawText = selection.toString();
-  const cleaned = cleanText(rawText);
-  e.clipboardData.setData('text/plain', cleaned);
-  e.clipboardData.setData('text/html', '');
-  e.preventDefault();
-}
-
-function cleanText(text) {
-  const lines = text.split('\n');
-  const total = lines.length;
-
-  return lines
-    .map((line, i) => {
-      const isFirst = i === 0;
-      const isLast = i === total - 1;
-      const idx = line.indexOf('(');
-
-      let result;
-
-      if (idx === -1) {
-        const normalized = line.trim().replace(/\s+/g, ' ');
-        result = isLast ? normalized : normalized + ',';
-      } else {
-        const before = line.substring(0, idx).trim().replace(/\s+/g, ' ');
-        if (isLast) {
-          result = total >= 2 ? 'and ' + before : before;
-        } else {
-          result = before + ',';
-        }
-      }
-
-      if (isFirst && total >= 2) result = ', ' + result;
-      return result;
-    })
-    .join('\n');
-}
-
-/* ------------------------------------------------------------------ */
-/* Mode 2/3 dispatcher: how much of the parties table is selected?     */
-/* ------------------------------------------------------------------ */
-
-/**
- * Classifies the selection's coverage of the parties table.
- *
- * Returns one of:
- *   'none'   — selection doesn't touch any UPDATE PARTY anchor (off-table
- *              page-text selection; routes to manual clean mode)
- *   'all'    — every UPDATE PARTY anchor is touched (Ctrl+A or a full-table
- *              drag; routes to rotation mode)
- *   'subset' — at least one anchor is touched but not all of them (manual
- *              drag over some party rows; routes to selection-paste mode)
- *
- * "Touched" means the selection range intersects the anchor's enclosing
- * <tr>. We use the row rather than the anchor itself because the anchor is
- * a tiny element off to the side of the name — a user dragging across the
- * name cell might miss the anchor while clearly intending to include the
- * party. The row-level test makes the heuristic line up with intent.
- */
-function measureAnchorCoverage(selection) {
-  const updateAnchors = document.querySelectorAll('a[title="UPDATE PARTY"]');
-  if (updateAnchors.length === 0) return 'none';
-
-  let touched = 0;
-  for (const a of updateAnchors) {
-    const row = a.closest('tr');
-    const target = row || a;
-    let hit = false;
-    for (let i = 0; i < selection.rangeCount; i++) {
-      if (selection.getRangeAt(i).intersectsNode(target)) { hit = true; break; }
-    }
-    if (hit) touched++;
-  }
-
-  if (touched === 0) return 'none';
-  if (touched === updateAnchors.length) return 'all';
-  return 'subset';
-}
-
-/* ------------------------------------------------------------------ */
-/* Mode 2 (subset): selection paste — formatted text for the focused   */
-/* Microsoft Form field. No rotation, no sentinel.                     */
-/* ------------------------------------------------------------------ */
-
-/**
- * Plural form of a role label, used in the "(collectively ...)" suffix.
- * Returns null for unrecognized role labels.
- */
-function pluralizeRole(role) {
-  if (!role) return null;
-  const r = role.trim().toLowerCase();
-  if (/^plaintiff/.test(r))            return 'Plaintiffs';
-  if (/^defendant/.test(r))            return 'Defendants';
-  if (/^petitioner/.test(r))           return 'Petitioners';
-  if (/^respondent/.test(r))           return 'Respondents';
-  if (/^cross[-\s]?complainant/.test(r)) return 'Cross-Complainants';
-  if (/^cross[-\s]?defendant/.test(r))   return 'Cross-Defendants';
-  return null;
-}
-
-/**
- * Parses the user's selected text into a list of { name, role } records.
- *
- * Per the user's spec, this is text-based — we read selection.toString()
- * line by line. Each non-empty line is one party row.
- *
- * Row-text shape (what the browser returns for a selected <tr>):
- *   The cells are joined by tabs/spaces, with a newline between rows. So a
- *   single line typically reads:
- *     "Juan Arevalo (Plaintiff)  Plaintiff  Yes  Paid    Natalie Kordnaij"
- *                  ^^^^^^^^^^^^^                          ^^^^^^^^^^^^^^^
- *                  role parenthetical                     attorney etc.
- *                                                         (noise to discard)
- *
- *   We find the FIRST recognized "(Role)" parenthetical on the line, take
- *   everything before it as the name, and discard everything after.
- *
- *   If no recognized role parenthetical exists on the line (e.g. the user
- *   only selected the bare name cell without its role tag), the role is
- *   left null and the WHOLE line is taken as the name. In that case any
- *   trailing parenthetical chunk that follows the last internal comma is
- *   conservatively stripped, since it's likely table noise rather than a
- *   meaningful suffix.
- *
- * Multiple parties packed into one cell — e.g. "T.M. Cobb Co., Haley Bros.
- * Inc. (Cross-Defendant)" — are kept as a SINGLE party per the user's rule
- * (cell = party). We do NOT split on internal commas.
- */
-function parseSelectedPartyLines(rawText) {
-  // Anywhere on the line — not anchored to the end — because table-row
-  // selections include trailing noise (role column, status, attorneys).
-  const ROLE_RE = /\((plaintiff|defendant|petitioner|respondent|cross[-\s]?complainant|cross[-\s]?defendant)\)/i;
-
-  const records = [];
-  const lines = rawText.split('\n');
-  for (const rawLine of lines) {
-    const line = rawLine.trim().replace(/\s+/g, ' ');
-    if (!line) continue;
-
-    let name = line;
-    let role = null;
-
-    const roleMatch = line.match(ROLE_RE);
-    if (roleMatch) {
-      role = roleMatch[1];
-      // Everything before the role parenthetical is the name; everything
-      // after (other cells in the same row) is noise to be discarded.
-      name = line.substring(0, roleMatch.index).trim();
-    } else {
-      // No role tag in the selected text. Be conservative: if there's a
-      // trailing parenthetical chunk that starts AFTER the last internal
-      // comma, strip it — it's almost certainly table noise rather than
-      // part of the party name. Names containing parens INSIDE the comma-
-      // bearing region (e.g. "Acme, Inc. (Acme)") are left untouched.
-      const lastParenIdx = name.lastIndexOf('(');
-      if (lastParenIdx !== -1) {
-        const lastCommaIdx = name.lastIndexOf(',');
-        if (lastParenIdx > lastCommaIdx) {
-          name = name.substring(0, lastParenIdx).trim();
-        }
-      }
-    }
-
-    // Strip trailing punctuation left over from cell joins.
-    name = name.replace(/[,;:]+$/, '').trim();
-
-    if (name) records.push({ name, role });
-  }
-  return records;
-}
-
-/**
- * Builds the formatted clipboard text for selection-paste mode.
- *
- * Spec recap:
- *   1 record         → just the formatted party name. NO short-name
- *                      parenthetical, NO collective suffix.
- *   2+ records       → ", Name1, Name2, and Name3" — leading comma, Oxford
- *                      comma, "and" before the last. NO per-entity short-
- *                      name parenthetical.
- *                      If all records share the same role, append
- *                      ` (collectively "RolePlural")`. If roles are mixed
- *                      or absent, omit the collective.
- */
-function formatSelectionParties(records) {
-  if (records.length === 0) return '';
-
-  // Format each name. We pass each name through formatPartyName for case
-  // and entity-suffix normalization, but we use only `formatted` — the
-  // short-name parenthetical is intentionally omitted per the user's rule.
-  const formatted = records
-    .map(r => formatPartyName(r.name).formatted)
-    .filter(Boolean);
-
-  if (formatted.length === 0) return '';
-
-  if (formatted.length === 1) return formatted[0];
-
-  // Build the list portion.
-  let body;
-  if (formatted.length === 2) {
-    body = formatted[0] + ' and ' + formatted[1];
-  } else {
-    const allButLast = formatted.slice(0, -1).join(', ');
-    body = allButLast + ', and ' + formatted[formatted.length - 1];
-  }
-
-  // Determine the collective label if all roles agree.
-  let collective = '';
-  const roles = records.map(r => pluralizeRole(r.role)).filter(Boolean);
-  if (roles.length === records.length) {
-    const first = roles[0];
-    if (roles.every(r => r === first)) {
-      collective = ' (collectively "' + first + '")';
-    }
-  }
-
-  return ', ' + body + collective;
-}
-
-function handlePartySelectionCopy(e, selection) {
-  const records = parseSelectedPartyLines(selection.toString());
-  console.log('[LACourt] selection-paste records:', records);
-
-  const text = formatSelectionParties(records);
-
-  if (!text) {
-    // Nothing recognizable — fall back to the existing manual cleaner so
-    // the user still gets cleaned text rather than the raw page selection.
-    handleManualCleanCopy(e, selection);
-    return;
-  }
-
-  console.log('[LACourt] selection-paste output:', text);
-
-  e.clipboardData.setData('text/plain', text);
-  e.clipboardData.setData('text/html', '');
-  e.preventDefault();
-
-  showToast('Selection cleaned: ' + records.length +
-    (records.length === 1 ? ' party' : ' parties'));
-}
-
-/* ------------------------------------------------------------------ */
-/* Mode 3 (all): party-table rotation                                  */
-/* ------------------------------------------------------------------ */
-
-function handlePartyRotationCopy(e) {
-  const data = buildRotationData();
-  if (!data) return; // Nothing to put — fall through to default copy.
-
-  storeRotation(data);
-
-  // Put the sentinel on the clipboard so paste-rotator.js can detect it.
-  e.clipboardData.setData('text/plain', SENTINEL);
-  e.clipboardData.setData('text/html', '');
-  e.preventDefault();
-
-  // Show a subtle on-page confirmation so the user knows the rotation is armed.
-  showToast(`Rotation ready: ${data.sequence.length} pastes queued`);
-}
-
 /**
  * Parses the case page DOM and builds the rotation sequence + labeled object.
  * Returns { sequence, labeled } or null if there's nothing to capture.
  *
- * Does NOT touch the clipboard or storage — pure data extraction. Both the
- * copy event handler and the popup-driven workflow call this.
+ * Does NOT touch the clipboard or storage — pure data extraction, used by the
+ * Export flow.
  */
 function buildRotationData() {
   const parties = parsePartiesTable();
