@@ -1650,17 +1650,19 @@ function parseCaseNumber() {
 /**
  * Strips a trailing system event id from a Next-event description.
  *
- * e-court recently began appending an event id like "ID-148870297793" to the
- * end of the Next-event text, e.g.
+ * e-court appends an event id to the end of the Next-event text. The format
+ * has drifted over time — seen both without and with a space after the hyphen:
  *   "Hearing on Motion to Compel Discovery ID-148870297793"
- * The user doesn't want it in the motion type or hearing type, so we drop a
- * trailing "ID-<digits>" (and any spacing before it). The \b guard means we
- * only match "ID" at a word boundary, so a real word ending in "id" (e.g.
- * "grid-123") is left alone.
+ *   "Hearing on Motion for Summary Judgment ID- 396523215423"
+ * The user wants "ID" and everything after it dropped from the motion type /
+ * hearing type. We match a standalone "ID" token followed by any mix of
+ * separators (hyphen / colon / hash / spaces) and then digits, through end of
+ * string. Requiring the trailing digits (and the \b before "ID") keeps real
+ * words like "grid-5" or "...Valid" from being clipped.
  */
 function stripEventId(desc) {
   if (!desc) return desc;
-  return desc.replace(/\s*\bID-\d+\s*$/i, '').trim();
+  return desc.replace(/\s*\bID\b[\s:#-]*\d[\d\s]*$/i, '').trim();
 }
 
 /**
