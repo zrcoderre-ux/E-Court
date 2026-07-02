@@ -136,36 +136,17 @@ function colLetter(n) {
   return s;
 }
 
-function buildSheetXml(headers, dataRow) {
-  const cell = (colIdx, rowNum, val) =>
-    `<c r="${colLetter(colIdx)}${rowNum}" t="inlineStr">` +
-    `<is><t xml:space="preserve">${xmlEscape(val)}</t></is></c>`;
+// Word's mail merge reads the .xlsx through the Microsoft ACE/Jet OLE DB
+// provider, whose OOXML parser is far stricter than Excel's. A minimal
+// inline-string workbook (no styles, no sharedStrings, no <dimension>, no
+// defined table) makes it fail with "External table is not in the expected
+// format" and pop the Data Link Properties dialog. To stay compatible we
+// emit a full, Excel-shaped package: shared strings, a styles part, a
+// worksheet <dimension>, and a Table1 definition over the data range —
+// mirroring the workbook the old Microsoft Form produced.
 
-  let headerCells = '';
-  headers.forEach((h, i) => { headerCells += cell(i + 1, 1, h); });
-
-  let dataCells = '';
-  dataRow.forEach((v, i) => {
-    if (v !== '' && v != null) dataCells += cell(i + 1, 2, String(v));
-  });
-
-  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-    '<sheetData>' +
-    `<row r="1">${headerCells}</row>` +
-    `<row r="2">${dataCells}</row>` +
-    '</sheetData></worksheet>';
-}
-
-const XLSX_PARTS = {
-  '[Content_Types].xml':
-    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
-    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
-    '<Default Extension="xml" ContentType="application/xml"/>' +
-    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
-    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
-    '</Types>',
+// Static parts that never depend on the data.
+const XLSX_STATIC_PARTS = {
   '_rels/.rels':
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
@@ -180,8 +161,102 @@ const XLSX_PARTS = {
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
     '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
+    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
+    '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>' +
     '</Relationships>',
+  'xl/worksheets/_rels/sheet1.xml.rels':
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/>' +
+    '</Relationships>',
+  'xl/styles.xml':
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<fonts count="1"><font><sz val="11"/><color theme="1"/><name val="Calibri"/><family val="2"/></font></fonts>' +
+    '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
+    '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+    '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+    '<cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>' +
+    '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+    '</styleSheet>',
+  '[Content_Types].xml':
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+    '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+    '<Default Extension="xml" ContentType="application/xml"/>' +
+    '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
+    '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+    '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
+    '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>' +
+    '<Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>' +
+    '</Types>',
 };
+
+// Builds the data-dependent parts (worksheet, shared strings, table) so the
+// package matches what Excel itself writes closely enough for the ACE reader.
+function buildDataParts(headers, dataRow) {
+  const ncols = headers.length;
+  const dimRef = 'A1:' + colLetter(ncols) + '2';
+
+  // Shared string table, deduplicated. Cells reference strings by index.
+  const sst = [];
+  const sstIndex = new Map();
+  let refCount = 0;
+  const intern = (val) => {
+    const s = String(val == null ? '' : val);
+    let idx = sstIndex.get(s);
+    if (idx === undefined) { idx = sst.length; sstIndex.set(s, idx); sst.push(s); }
+    return idx;
+  };
+  const sCell = (colIdx, rowNum, val) => {
+    refCount++;
+    return `<c r="${colLetter(colIdx)}${rowNum}" t="s"><v>${intern(val)}</v></c>`;
+  };
+
+  let headerCells = '';
+  headers.forEach((h, i) => { headerCells += sCell(i + 1, 1, h); });
+
+  let dataCells = '';
+  dataRow.forEach((v, i) => {
+    if (v !== '' && v != null) dataCells += sCell(i + 1, 2, String(v));
+  });
+
+  const sheetXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    `<dimension ref="${dimRef}"/>` +
+    '<sheetData>' +
+    `<row r="1">${headerCells}</row>` +
+    `<row r="2">${dataCells}</row>` +
+    '</sheetData>' +
+    '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' +
+    '</worksheet>';
+
+  const sstXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    `<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${refCount}" uniqueCount="${sst.length}">` +
+    sst.map(s => `<si><t xml:space="preserve">${xmlEscape(s)}</t></si>`).join('') +
+    '</sst>';
+
+  const tableColumns = headers
+    .map((h, i) => `<tableColumn id="${i + 1}" name="${xmlEscape(h)}"/>`)
+    .join('');
+  const tableXml =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ' +
+    `id="1" name="Table1" displayName="Table1" ref="${dimRef}" totalsRowShown="0">` +
+    `<autoFilter ref="${dimRef}"/>` +
+    `<tableColumns count="${ncols}">${tableColumns}</tableColumns>` +
+    '<tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/>' +
+    '</table>';
+
+  return {
+    'xl/worksheets/sheet1.xml': sheetXml,
+    'xl/sharedStrings.xml': sstXml,
+    'xl/tables/table1.xml': tableXml,
+  };
+}
 
 // --- tiny ZIP writer (STORE / no compression) --------------------------------
 
@@ -285,11 +360,11 @@ function buildWorkbook(values) {
   const dataRow = META_HEADERS.map(() => '')
     .concat(FIELDS.map(f => values[f.key] || ''));
 
+  const parts = Object.assign({}, XLSX_STATIC_PARTS, buildDataParts(headers, dataRow));
   const files = [];
-  for (const name in XLSX_PARTS) {
-    files.push({ name, data: XLSX_PARTS[name] });
+  for (const name in parts) {
+    files.push({ name, data: parts[name] });
   }
-  files.push({ name: 'xl/worksheets/sheet1.xml', data: buildSheetXml(headers, dataRow) });
 
   return zipStore(files);
 }
