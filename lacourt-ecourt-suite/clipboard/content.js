@@ -1913,19 +1913,87 @@ function movantNameMatch(a, b) {
   return a === b || a.includes(b) || b.includes(a);
 }
 
+function canonicalMovantRole(raw) {
+  const r = (raw || '').toLowerCase();
+  if (/cross[-\s]?complainant/.test(r)) return 'Cross-Complainant';
+  if (/cross[-\s]?defendant/.test(r)) return 'Cross-Defendant';
+  if (r.startsWith('plaintiff')) return 'Plaintiff';
+  if (r.startsWith('defendant')) return 'Defendant';
+  if (r.startsWith('petitioner')) return 'Petitioner';
+  if (r.startsWith('respondent')) return 'Respondent';
+  return raw;
+}
+
+// Reads the parties table into a movant roster: every party row's name and an
+// "effective role" for labeling. Unlike parsePartiesTable (which only tracks
+// the standard caption roles for the rotation/fill flow), this also captures
+// party types like "Non-Party (Receiver)" -> "Receiver" so a receiver movant
+// renders the way it appears on eCourt. Works on the live page (default) or a
+// fetched Parties document (root override).
+//
 // roster: { byName: Map(normName -> role), byRole: Map(role -> Set(normName)) }
-function buildMovantRoster() {
+function buildMovantRoster(root) {
+  root = root || document;
   const byName = new Map(), byRole = new Map();
-  let parties = [];
-  try { parties = parsePartiesTable() || []; } catch (_) { parties = []; }
-  for (const p of parties) {
-    if (!p || !p.name || !p.role) continue;
-    const nn = movantNormName(p.name);
-    const role = String(p.role).trim();
+
+  let anchors = [];
+  try { anchors = Array.from(root.querySelectorAll('a[title="UPDATE PARTY"]')); } catch (_) {}
+
+  const STD_ROLE_RE = /^(cross[-\s]?complainant|cross[-\s]?defendant|plaintiff|defendant|petitioner|respondent)\b/i;
+  const TYPE_QUALIFIER_RE = /^(?:non-?party|other|interested\s+party)\s*\(([^)]+)\)/i;
+  const BARE_TYPE_RE = /^(non-?party|receiver|trustee|guardian|intervenor|claimant|creditor|appellant|garnishee)\b/i;
+
+  const seenRows = new Set();
+  for (const a of anchors) {
+    const row = a.closest('tr');
+    if (!row || seenRows.has(row)) continue;
+    seenRows.add(row);
+
+    const cells = Array.from(row.querySelectorAll('td'))
+      .map(td => (td.textContent || '').trim().replace(/\s+/g, ' ')).filter(Boolean);
+    if (!cells.length) continue;
+
+    // Effective role: prefer a specific party-type qualifier like
+    // "Non-Party (Receiver)"; then a standard caption role; then a bare
+    // non-standard party type.
+    let role = '';
+    for (const c of cells) {
+      const m = c.match(TYPE_QUALIFIER_RE);
+      if (m) { role = m[1].trim(); break; }
+    }
+    if (!role) {
+      for (const c of cells) {
+        const m = c.match(STD_ROLE_RE);
+        if (m) { role = canonicalMovantRole(m[1]); break; }
+      }
+    }
+    if (!role) {
+      for (const c of cells) {
+        if (BARE_TYPE_RE.test(c) && c.length < 40) {
+          role = c.replace(/\s*\([^)]*\)\s*$/, '').trim();
+          break;
+        }
+      }
+    }
+
+    // Name: first cell that isn't a role/type/action/index cell; strip any
+    // trailing parenthetical (e.g. "Kevin Singer (Non-Party)" -> "Kevin Singer").
+    let name = '';
+    for (const c of cells) {
+      if (/^(update\s*party|edit|delete|view|action)$/i.test(c)) continue;
+      if (/^\d+\.?$/.test(c)) continue;
+      if (STD_ROLE_RE.test(c) || TYPE_QUALIFIER_RE.test(c) || BARE_TYPE_RE.test(c)) continue;
+      name = c; break;
+    }
+    if (name) { const p = name.indexOf('('); if (p !== -1) name = name.substring(0, p).trim(); }
+    if (!name || !role) continue;
+
+    const nn = movantNormName(name);
     byName.set(nn, role);
     if (!byRole.has(role)) byRole.set(role, new Set());
     byRole.get(role).add(nn);
   }
+
   return { byName, byRole };
 }
 
