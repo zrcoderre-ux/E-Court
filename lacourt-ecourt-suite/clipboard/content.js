@@ -214,11 +214,12 @@
  * Does NOT touch the clipboard or storage — pure data extraction, used by the
  * Export flow.
  */
-function buildRotationData() {
-  const parties = parsePartiesTable();
-  const caseNumber = parseCaseNumber();
-  const hearingDate = parseHearingDate();
-  const motionType = parseMotionType();
+function buildRotationData(root) {
+  root = root || document;
+  const parties = parsePartiesTable(root);
+  const caseNumber = parseCaseNumber(root);
+  const hearingDate = parseHearingDate(root);
+  const motionType = parseMotionType(root);
 
   // If the motion type indicates a proceeding that a dismissed party would
   // not be involved in (e.g. summary judgment, demurrer), drop dismissed
@@ -431,11 +432,12 @@ function storeOrderTemplateData(labeled) {
  *
  * mailtoUrl is null for non-OSC cases.
  */
-function getFillFormContext() {
-  const data = buildRotationData();
+function getFillFormContext(root) {
+  root = root || document;
+  const data = buildRotationData(root);
   if (!data) return null;
 
-  const hearingType = parseHearingType();
+  const hearingType = parseHearingType(root);
   const isOsc = isOscDefaultJudgment(hearingType);
 
   if (!isOsc) {
@@ -464,7 +466,7 @@ function getFillFormContext() {
   // Build mailto using values from the labeled object (already cleaned)
   // plus a fresh case-name parse. parseCaseName accepts an optional case
   // number hint so it can pin the location precisely.
-  const caseName = parseCaseName(trimmedLabeled.caseNumber);
+  const caseName = parseCaseName(trimmedLabeled.caseNumber, root);
   const mailtoUrl = buildOscMailto(
     trimmedLabeled.caseNumber,
     trimmedLabeled.hearingDate,
@@ -526,36 +528,40 @@ function triggerMailto(mailtoUrl) {
  */
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === 'captureForFormFill') {
-    const ctx = getFillFormContext();
-    if (!ctx) {
-      sendResponse({ ok: false, reason: 'no-data' });
-      return false;
-    }
-    storeRotation(ctx.data, { autoFillOnLoad: true });
+    // getExportContext is async (it may background-fetch the Parties page when
+    // Export is pressed from a non-Parties case page), so we always keep the
+    // message channel open and reply from the promise.
+    getExportContext().then(result => {
+      if (!result) {
+        sendResponse({ ok: false, reason: 'no-data' });
+        return;
+      }
+      const ctx = result.ctx;
+      storeRotation(ctx.data, { autoFillOnLoad: true });
 
-    const reply = {
-      ok: true,
-      count: ctx.data.sequence.length,
-      formUrl: ctx.formUrl,
-      openUrl: ctx.openUrl,
-      isOrderTemplate: ctx.isOrderTemplate,
-      mailtoUrl: ctx.mailtoUrl,
-      isOsc: ctx.isOsc,
-    };
+      const reply = {
+        ok: true,
+        count: ctx.data.sequence.length,
+        formUrl: ctx.formUrl,
+        openUrl: ctx.openUrl,
+        isOrderTemplate: ctx.isOrderTemplate,
+        mailtoUrl: ctx.mailtoUrl,
+        isOsc: ctx.isOsc,
+      };
 
-    if (ctx.isOrderTemplate) {
-      // Auto-detect the Movant (background-fetches the Documents page), then
-      // stash the fields and reply only once the write has landed so the popup
-      // window can't load before the data is present.
-      computeMovant(ctx.data.labeled.motionType).then(movant => {
-        if (movant) ctx.data.labeled.movant = movant;
-        storeOrderTemplateData(ctx.data.labeled).then(() => sendResponse(reply));
-      });
-      return true; // async response
-    }
-
-    sendResponse(reply);
-    return false;
+      if (ctx.isOrderTemplate) {
+        // Auto-detect the Movant (background-fetches the Documents page; roster
+        // read from the same parties root), then stash the fields and reply
+        // only once the write has landed so the popup can't load first.
+        computeMovant(ctx.data.labeled.motionType, result.partiesRoot).then(movant => {
+          if (movant) ctx.data.labeled.movant = movant;
+          storeOrderTemplateData(ctx.data.labeled).then(() => sendResponse(reply));
+        });
+      } else {
+        sendResponse(reply);
+      }
+    });
+    return true; // async response
   }
 
   if (msg && msg.type === 'fireMailto' && typeof msg.url === 'string') {
@@ -1163,8 +1169,9 @@ function formatCombinedList(names, roleType, shortNameMap) {
  * The party name and role are in nearby cells. Structure may vary, so we walk
  * up to the row, then read its text cells.
  */
-function parsePartiesTable() {
-  const anchors = document.querySelectorAll('a[title="UPDATE PARTY"]');
+function parsePartiesTable(root) {
+  root = root || document;
+  const anchors = root.querySelectorAll('a[title="UPDATE PARTY"]');
   if (anchors.length === 0) return [];
 
   // Pattern that marks a party as removed and no-longer-named on the case.
@@ -1334,29 +1341,34 @@ const CASE_NUMBER_RE = /\b(?:\d{2}[A-Z]{4,6}\d{4,6}|[A-Z][CDFPQST]\d{6})\b/;
  * then prominent header elements, then a whole-page scan — matching both the
  * current and legacy formats.
  */
-function parseCaseNumber() {
-  // 1) The URL query param is authoritative and format-agnostic.
+function parseCaseNumber(root) {
+  root = root || document;
+
+  // 1) The URL query param is authoritative and format-agnostic. It reflects
+  //    the current case on every eCourt case page, whatever `root` we parse.
   try {
     const q = (new URLSearchParams(location.search).get('caseNumber') || '').trim();
     if (q && /^[0-9A-Z]{5,20}$/i.test(q)) return q;
   } catch (_) {}
 
   // 2) The page title leads with the case number, e.g. "BC717394: DOCUMENTS ...".
-  const titleM = (document.title || '').match(CASE_NUMBER_RE);
+  const titleM = (root.title || '').match(CASE_NUMBER_RE);
   if (titleM) return titleM[0];
 
   // 3) Prominent header elements.
   const candidates = ['#caseNumber', '.case-number', '[data-case-number]', 'h1', 'h2', 'h3'];
   for (const sel of candidates) {
-    const el = document.querySelector(sel);
+    const el = root.querySelector(sel);
     if (el) {
       const m = (el.textContent || '').match(CASE_NUMBER_RE);
       if (m) return m[0];
     }
   }
 
-  // 4) Fallback: scan the whole page for a case-number-shaped token.
-  const m = (document.body ? document.body.innerText : '').match(CASE_NUMBER_RE);
+  // 4) Fallback: scan the whole document for a case-number-shaped token.
+  //    Use textContent (a fetched/parsed doc has no layout, so innerText is '').
+  const body = root.body;
+  const m = (body ? (body.innerText || body.textContent || '') : '').match(CASE_NUMBER_RE);
   return m ? m[0] : '';
 }
 
@@ -1386,11 +1398,12 @@ function stripEventId(desc) {
  * Looks at both the title attribute (preferred — usually has "in Department"
  * suffix that bounds the match) and the visible text content as fallback.
  */
-function parseMotionType() {
+function parseMotionType(root) {
+  root = root || document;
   const re = /Hearing on\s+(.+?)(?:\s+in\s+Department\b.*)?$/i;
 
   // Look at every span with a title (cheap; the page has few of them).
-  const spans = document.querySelectorAll('span[title]');
+  const spans = root.querySelectorAll('span[title]');
   for (const span of spans) {
     const title = (span.getAttribute('title') || '').trim();
     if (title) {
@@ -1425,12 +1438,13 @@ function parseMotionType() {
  * Judgment in Department 73" (the caller can do further parsing if
  * needed).
  */
-function parseHearingType() {
+function parseHearingType(root) {
+  root = root || document;
   // Match "Next:" prefix + date + time, then capture everything that
   // follows. Tolerant of optional "in Department NN" suffix.
   const re = /Next:?\s*\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)\s+(.+?)\s*$/i;
 
-  const spans = document.querySelectorAll('span[title]');
+  const spans = root.querySelectorAll('span[title]');
   for (const span of spans) {
     const title = (span.getAttribute('title') || '').trim();
     if (title) {
@@ -1460,7 +1474,8 @@ function parseHearingType() {
  * stays lowercase, "vs" stays lowercase, etc.) Returns '' if nothing
  * recognizable is found.
  */
-function parseCaseName(caseNumberHint) {
+function parseCaseName(caseNumberHint, root) {
+  root = root || document;
   const caseNumberRe = caseNumberHint
     ? new RegExp('\\b' + caseNumberHint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b')
     : CASE_NUMBER_RE;
@@ -1470,7 +1485,7 @@ function parseCaseName(caseNumberHint) {
   // semicolon followed by space (statement separator).
   const noiseRe = /\s+(?:ReactDOM\.|React\.createElement|function\s*\(|var\s+\w+\s*=|window\.)/;
 
-  const candidates = document.querySelectorAll('[class*="case"]');
+  const candidates = root.querySelectorAll('[class*="case"]');
   for (const el of candidates) {
     let text = (el.textContent || '').replace(/\s+/g, ' ').trim();
     if (!text) continue;
@@ -1504,11 +1519,12 @@ function parseCaseName(caseNumberHint) {
  * not gated on "Hearing on" the way motionType is — so a Status Conference
  * date still flows into the form's Hearing Date field.
  */
-function parseHearingDate() {
+function parseHearingDate(root) {
+  root = root || document;
   const dateRe = /\b(\d{1,2}\/\d{1,2}\/\d{4})\b/;
   const eventRe = /next\b/i;
 
-  const spans = document.querySelectorAll('span[title]');
+  const spans = root.querySelectorAll('span[title]');
   for (const span of spans) {
     const title = (span.getAttribute('title') || '').trim();
     const text = (span.textContent || '').trim().replace(/\s+/g, ' ');
@@ -1730,15 +1746,22 @@ function formatMovant(parties, truncated, roster) {
   return out.filter(Boolean).join('; ');
 }
 
-// Finds the Documents-page URL from the current case page: prefer the
-// "Documents" tab link's href; fall back to swapping formId=279 into the URL.
-function getDocumentsUrl() {
+// Finds a case tab's URL by its visible link text (e.g. "Documents",
+// "Parties"). The case sub-nav is present on every case page.
+function getCaseTabUrl(label) {
   try {
     const links = document.querySelectorAll('a[href*="/ecourt/ecms/case"]');
     for (const a of links) {
-      if ((a.textContent || '').trim().toLowerCase() === 'documents' && a.href) return a.href;
+      if ((a.textContent || '').trim().toLowerCase() === label && a.href) return a.href;
     }
   } catch (_) {}
+  return null;
+}
+
+// Documents-page URL: the "Documents" tab link, else swap formId=279 in.
+function getDocumentsUrl() {
+  const link = getCaseTabUrl('documents');
+  if (link) return link;
   try {
     const u = new URL(location.href);
     u.searchParams.set('formId', '279');
@@ -1746,6 +1769,11 @@ function getDocumentsUrl() {
   } catch (_) {
     return null;
   }
+}
+
+// Parties-page URL: the "Parties" tab link (no reliable formId fallback).
+function getPartiesUrl() {
+  return getCaseTabUrl('parties');
 }
 
 // Given a parsed HTML Document, pull moving-paper filings: [{name, filedBy}].
@@ -1786,23 +1814,36 @@ function fetchWithTimeout(url, ms) {
   ]);
 }
 
+// Fetch a case page (same authenticated origin) and parse it into a Document.
+// Returns null on any failure.
+async function fetchCaseDoc(url) {
+  try {
+    const res = await fetchWithTimeout(url, 6000);
+    if (!res || !res.ok) return null;
+    const html = await res.text();
+    return new DOMParser().parseFromString(html, 'text/html');
+  } catch (_) {
+    return null;
+  }
+}
+
 // Async: resolves to the Movant string, or '' on any failure / no match.
-async function computeMovant(motionType) {
+// `partiesRoot` is the document the party roster is read from (the live page
+// when on Parties, or a fetched Parties document otherwise).
+async function computeMovant(motionType, partiesRoot) {
   try {
     if (!motionType) return '';
     const url = getDocumentsUrl();
     if (!url) return '';
-    const res = await fetchWithTimeout(url, 6000);
-    if (!res || !res.ok) return '';
-    const html = await res.text();
-    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const doc = await fetchCaseDoc(url);
+    if (!doc) return '';
     const filings = parseDocumentsFilingsFrom(doc);
     if (!filings.length) return '';
     const best = bestFilingMatch(motionType, filings);
     if (!best) return '';
     const { parties, truncated } = parseFiledByParties(best.filedBy);
     if (!parties.length) return '';
-    const roster = buildMovantRoster();
+    const roster = buildMovantRoster(partiesRoot || document);
     const movant = formatMovant(parties, truncated, roster);
     console.log('[LACourt] movant detected:', { motionType, doc: best.name, filedBy: best.filedBy, movant });
     return movant || '';
@@ -1810,6 +1851,31 @@ async function computeMovant(motionType) {
     console.warn('[LACourt] movant detection failed:', err);
     return '';
   }
+}
+
+// Builds the Export context, pulling party data from the current page when it
+// has the parties table, or by background-fetching the Parties page otherwise
+// (so Export works from Documents/Summary/any case page). Resolves to
+// { ctx, partiesRoot } or null.
+async function getExportContext() {
+  const hasPartiesLocally = !!document.querySelector('a[title="UPDATE PARTY"]');
+  if (hasPartiesLocally) {
+    const ctx = getFillFormContext();
+    if (ctx) return { ctx, partiesRoot: document };
+  }
+
+  const url = getPartiesUrl();
+  if (url) {
+    const doc = await fetchCaseDoc(url);
+    if (doc) {
+      const ctx = getFillFormContext(doc);
+      if (ctx) return { ctx, partiesRoot: doc };
+    }
+  }
+
+  // Last resort: whatever the live page yields (may be null).
+  const ctx = getFillFormContext();
+  return ctx ? { ctx, partiesRoot: document } : null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1858,10 +1924,12 @@ function showToast(message) {
 function renderFillFormButton() {
   if (document.getElementById('__lacourt_fill_btn__')) return;
 
-  // Only show on pages that actually have a parties table — otherwise this
-  // case page isn't fully loaded or isn't a parties view.
-  const hasParties = document.querySelector('a[title="UPDATE PARTY"]');
-  if (!hasParties) return;
+  // Show on any case page once the case sub-nav has rendered. Export works
+  // from anywhere now: if the current page lacks the parties table, the click
+  // handler background-fetches the Parties page. Waiting on the sub-nav avoids
+  // rendering before the page is usable.
+  const caseReady = document.querySelector('a[href*="/ecourt/ecms/case"]');
+  if (!caseReady) return;
 
   const btn = document.createElement('button');
   btn.id = '__lacourt_fill_btn__';
@@ -1893,8 +1961,8 @@ function renderFillFormButton() {
     btn.style.opacity = '0.7';
 
     try {
-      const ctx = getFillFormContext();
-      if (!ctx) {
+      const result = await getExportContext();
+      if (!result) {
         btn.textContent = '⚖ No data found';
         setTimeout(() => {
           btn.disabled = false;
@@ -1903,6 +1971,7 @@ function renderFillFormButton() {
         }, 2000);
         return;
       }
+      const ctx = result.ctx;
 
       storeRotation(ctx.data, { autoFillOnLoad: true });
 
@@ -1943,7 +2012,7 @@ function renderFillFormButton() {
       // parsed fields are stored before opening the popup window. OSC cases open
       // the real form.
       if (ctx.isOrderTemplate) {
-        computeMovant(ctx.data.labeled.motionType).then(movant => {
+        computeMovant(ctx.data.labeled.motionType, result.partiesRoot).then(movant => {
           if (movant) ctx.data.labeled.movant = movant;
           storeOrderTemplateData(ctx.data.labeled).then(openWindow);
         });
