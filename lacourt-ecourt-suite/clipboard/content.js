@@ -853,9 +853,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     };
 
     if (ctx.isOrderTemplate) {
-      // Stash the parsed fields for the popup, then reply only once the write
-      // has landed so the popup window can't load before the data is present.
-      storeOrderTemplateData(ctx.data.labeled).then(() => sendResponse(reply));
+      // Auto-detect the Movant (background-fetches the Documents page), then
+      // stash the fields and reply only once the write has landed so the popup
+      // window can't load before the data is present.
+      computeMovant(ctx.data.labeled.motionType).then(movant => {
+        if (movant) ctx.data.labeled.movant = movant;
+        storeOrderTemplateData(ctx.data.labeled).then(() => sendResponse(reply));
+      });
       return true; // async response
     }
 
@@ -1814,6 +1818,224 @@ function parseHearingDate() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Automatic Movant detection                                          */
+/* ------------------------------------------------------------------ */
+//
+// At Export time we background-fetch the case's Documents page (same
+// authenticated origin), find the moving paper that matches the upcoming
+// hearing's motion type, and read its "Filed By" party(ies). We then resolve
+// each filer's role against the live Parties roster (so a receiver shows as
+// "Receiver", not the grid's generic "Non-Party") and apply the user's rule:
+//   - all parties of a role moving  -> the role, pluralized ("Defendants")
+//   - only some moving               -> their names, without the role
+//   - "et al." (truncated filer list) -> treat as all of that role
+// Everything degrades to '' (blank, manual) on any failure so Export never
+// breaks.
+
+function movantNormName(s) {
+  return (s || '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+const MOVANT_STOPWORDS = new Set(['the', 'of', 'for', 'and', 'to', 'a', 'an', 'on', 'in', 're', 'with', 'by']);
+
+function movantSigTokens(s) {
+  return (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+    .split(' ').filter(t => t.length > 1 && !MOVANT_STOPWORDS.has(t));
+}
+
+function movantTokenHit(a, b) {
+  if (a === b) return true;
+  if (a.length >= 4 && b.length >= 4 && (b.startsWith(a) || a.startsWith(b))) return true;
+  return false;
+}
+
+function movantMatchScore(motionType, docName) {
+  const mt = movantSigTokens(motionType);
+  const dn = movantSigTokens(docName);
+  if (!mt.length || !dn.length) return 0;
+  const uniq = new Set(mt);
+  let hit = 0;
+  for (const t of uniq) if (dn.some(d => movantTokenHit(t, d))) hit++;
+  return hit / uniq.size;
+}
+
+// Is this document Name an actual moving paper (motion/demurrer/etc.), not a
+// response, order, minute order, declaration, etc. that rides alongside it?
+function isMovingPaper(name) {
+  if (!name) return false;
+  const n = name.trim();
+  if (/^(Opposition|Reply|Response|Declaration|Proof of Service|Order\b|Minute Order|Notice\b|Brief|Request\b|Certificate|Summons|Appeal\b|Case Management|Ex Parte Proposed Order|Points and Authorities|Memorandum|Stipulation|Objection|Separate Statement)/i.test(n)) {
+    return false;
+  }
+  return /^(Motion|Demurrer|Petition|Application|Ex Parte Application|Anti-SLAPP|Special Motion|Amended Motion|Renewed Motion|Cross-?Motion)/i.test(n);
+}
+
+function bestFilingMatch(motionType, filings) {
+  let best = null, bestScore = 0;
+  for (const f of filings) {
+    if (!isMovingPaper(f.name)) continue;
+    const s = movantMatchScore(motionType, f.name);
+    if (s > bestScore) { bestScore = s; best = f; }
+  }
+  return bestScore >= 0.5 ? best : null;
+}
+
+// Parse a "Filed By" cell into { parties:[{name,role}], truncated }.
+function parseFiledByParties(text) {
+  if (!text) return { parties: [], truncated: false };
+  let s = text.replace(/\s+/g, ' ').trim();
+  let truncated = false;
+  if (/\bet al\.?\s*$/i.test(s)) { truncated = true; s = s.replace(/\s*\bet al\.?\s*$/i, '').trim(); }
+  const parts = s.split(';').map(x => x.trim()).filter(Boolean);
+  const parties = [];
+  for (const p of parts) {
+    const m = p.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+    if (m) parties.push({ name: m[1].trim(), role: m[2].trim() });
+    else parties.push({ name: p, role: '' });
+  }
+  return { parties, truncated };
+}
+
+function pluralizeRole(role, count) {
+  if (!role) return role;
+  if (count <= 1) return role;
+  return role.endsWith('s') ? role : role + 's';
+}
+
+function joinMovantNames(names) {
+  const a = names.filter(Boolean);
+  if (a.length <= 1) return a[0] || '';
+  if (a.length === 2) return a[0] + ' and ' + a[1];
+  return a.slice(0, -1).join(', ') + ', and ' + a[a.length - 1];
+}
+
+function movantNameMatch(a, b) {
+  return a === b || a.includes(b) || b.includes(a);
+}
+
+// roster: { byName: Map(normName -> role), byRole: Map(role -> Set(normName)) }
+function buildMovantRoster() {
+  const byName = new Map(), byRole = new Map();
+  let parties = [];
+  try { parties = parsePartiesTable() || []; } catch (_) { parties = []; }
+  for (const p of parties) {
+    if (!p || !p.name || !p.role) continue;
+    const nn = movantNormName(p.name);
+    const role = String(p.role).trim();
+    byName.set(nn, role);
+    if (!byRole.has(role)) byRole.set(role, new Set());
+    byRole.get(role).add(nn);
+  }
+  return { byName, byRole };
+}
+
+function formatMovant(parties, truncated, roster) {
+  const groups = new Map(); // role -> [display names]
+  for (const p of parties) {
+    if (!p.name || /^clerk$/i.test(p.name)) continue;
+    const role = roster.byName.get(movantNormName(p.name)) || p.role || '';
+    if (!groups.has(role)) groups.set(role, []);
+    groups.get(role).push(p.name);
+  }
+  const out = [];
+  for (const [role, names] of groups) {
+    const rosterSet = roster.byRole.get(role);
+    let all = false;
+    if (truncated) {
+      all = true; // user rule: "et al." means all of that role
+    } else if (rosterSet && rosterSet.size) {
+      const fn = names.map(movantNormName);
+      all = [...rosterSet].every(rn => fn.some(f => movantNameMatch(f, rn)));
+    }
+    if (all && role) out.push(pluralizeRole(role, rosterSet ? rosterSet.size : names.length));
+    else out.push(joinMovantNames(names));
+  }
+  return out.filter(Boolean).join('; ');
+}
+
+// Finds the Documents-page URL from the current case page: prefer the
+// "Documents" tab link's href; fall back to swapping formId=279 into the URL.
+function getDocumentsUrl() {
+  try {
+    const links = document.querySelectorAll('a[href*="/ecourt/ecms/case"]');
+    for (const a of links) {
+      if ((a.textContent || '').trim().toLowerCase() === 'documents' && a.href) return a.href;
+    }
+  } catch (_) {}
+  try {
+    const u = new URL(location.href);
+    u.searchParams.set('formId', '279');
+    return u.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+// Given a parsed HTML Document, pull moving-paper filings: [{name, filedBy}].
+function parseDocumentsFilingsFrom(doc) {
+  const tables = doc.querySelectorAll('table');
+  for (const table of tables) {
+    let headerRow = null, nameIdx = -1, filedByIdx = -1;
+    for (const tr of table.querySelectorAll('tr')) {
+      const texts = Array.from(tr.children).map(td => (td.textContent || '').replace(/\s+/g, ' ').trim());
+      const fb = texts.indexOf('Filed By');
+      const nm = texts.indexOf('Name');
+      if (fb !== -1 && nm !== -1) { headerRow = tr; filedByIdx = fb; nameIdx = nm; break; }
+    }
+    if (!headerRow) continue;
+
+    const filings = [];
+    let started = false;
+    for (const tr of table.querySelectorAll('tr')) {
+      if (tr === headerRow) { started = true; continue; }
+      if (!started) continue;
+      const cells = Array.from(tr.children);
+      if (cells.length <= filedByIdx) continue;
+      const name = (cells[nameIdx] ? cells[nameIdx].textContent : '').replace(/\s+/g, ' ').trim();
+      const filedBy = (cells[filedByIdx] ? cells[filedByIdx].textContent : '').replace(/\s+/g, ' ').trim();
+      if (!name || !filedBy) continue;
+      if (!isMovingPaper(name)) continue;
+      filings.push({ name, filedBy });
+    }
+    if (filings.length) return filings;
+  }
+  return [];
+}
+
+function fetchWithTimeout(url, ms) {
+  return Promise.race([
+    fetch(url, { credentials: 'include' }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
+  ]);
+}
+
+// Async: resolves to the Movant string, or '' on any failure / no match.
+async function computeMovant(motionType) {
+  try {
+    if (!motionType) return '';
+    const url = getDocumentsUrl();
+    if (!url) return '';
+    const res = await fetchWithTimeout(url, 6000);
+    if (!res || !res.ok) return '';
+    const html = await res.text();
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const filings = parseDocumentsFilingsFrom(doc);
+    if (!filings.length) return '';
+    const best = bestFilingMatch(motionType, filings);
+    if (!best) return '';
+    const { parties, truncated } = parseFiledByParties(best.filedBy);
+    if (!parties.length) return '';
+    const roster = buildMovantRoster();
+    const movant = formatMovant(parties, truncated, roster);
+    console.log('[LACourt] movant detected:', { motionType, doc: best.name, filedBy: best.filedBy, movant });
+    return movant || '';
+  } catch (err) {
+    console.warn('[LACourt] movant detection failed:', err);
+    return '';
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Subtle on-page toast confirmation                                   */
 /* ------------------------------------------------------------------ */
 
@@ -1940,10 +2162,14 @@ function renderFillFormButton() {
         );
       };
 
-      // For the Order Template popup, wait until the parsed fields are stored
-      // so the popup window reads them on load. OSC cases open the real form.
+      // For the Order Template popup, auto-detect the Movant and wait until the
+      // parsed fields are stored before opening the popup window. OSC cases open
+      // the real form.
       if (ctx.isOrderTemplate) {
-        storeOrderTemplateData(ctx.data.labeled).then(openWindow);
+        computeMovant(ctx.data.labeled.motionType).then(movant => {
+          if (movant) ctx.data.labeled.movant = movant;
+          storeOrderTemplateData(ctx.data.labeled).then(openWindow);
+        });
       } else {
         openWindow();
       }
