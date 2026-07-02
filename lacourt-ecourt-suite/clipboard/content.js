@@ -214,12 +214,14 @@
  * Does NOT touch the clipboard or storage — pure data extraction, used by the
  * Export flow.
  */
-function buildRotationData(root) {
+function buildRotationData(root, hearingOverride) {
   root = root || document;
   const parties = parsePartiesTable(root);
   const caseNumber = parseCaseNumber(root);
-  const hearingDate = parseHearingDate(root);
-  const motionType = parseMotionType(root);
+  // When Export resolved a different hearing (because the Next event was
+  // excluded), use its date/type; otherwise parse the Next event live.
+  const hearingDate = hearingOverride ? hearingOverride.hearingDate : parseHearingDate(root);
+  const motionType = hearingOverride ? hearingOverride.motionType : parseMotionType(root);
 
   // If the motion type indicates a proceeding that a dismissed party would
   // not be involved in (e.g. summary judgment, demurrer), drop dismissed
@@ -432,12 +434,12 @@ function storeOrderTemplateData(labeled) {
  *
  * mailtoUrl is null for non-OSC cases.
  */
-function getFillFormContext(root) {
+function getFillFormContext(root, hearingOverride) {
   root = root || document;
-  const data = buildRotationData(root);
+  const data = buildRotationData(root, hearingOverride);
   if (!data) return null;
 
-  const hearingType = parseHearingType(root);
+  const hearingType = hearingOverride ? hearingOverride.hearingType : parseHearingType(root);
   const isOsc = isOscDefaultJudgment(hearingType);
 
   if (!isOsc) {
@@ -1776,6 +1778,188 @@ function getPartiesUrl() {
   return getCaseTabUrl('parties');
 }
 
+// Hearings-page URL: the "Hearings" tab link, else swap formId=395 in.
+function getHearingsUrl() {
+  const link = getCaseTabUrl('hearings');
+  if (link) return link;
+  try {
+    const u = new URL(location.href);
+    u.searchParams.set('formId', '395');
+    return u.toString();
+  } catch (_) {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Hearing selection via the agenda exclusion terms                    */
+/* ------------------------------------------------------------------ */
+//
+// The case header's "Next" event is sometimes a routine hearing (a
+// conference, an OSC re: sanctions, an ex parte) that isn't the motion the
+// order is for. When the Next event matches the agenda exclusion list, we
+// look at the Hearings tab and use the soonest FUTURE, SCHEDULED, non-excluded
+// hearing instead. The exclusion list is the same `excludedTerms` the agenda
+// cleaner uses (chrome.storage.sync), so editing it in options affects both.
+
+// Keep in sync with agenda/content.js DEFAULT_EXCLUDED_TERMS.
+const DEFAULT_EXCLUDED_TERMS = [
+  'conference',
+  'non-appearance case revie',
+  'non-jury trial',
+  'order to show cause re: d',
+  'ex parte',
+  'application for order for',
+  'jury trial',
+  'post-arbitration status c',
+  'post-mediation status con',
+  'order to show cause re: s',
+  'informal discovery confer',
+];
+
+let EXCLUDED_TERMS_CACHE = null;
+
+function loadExcludedTerms() {
+  return new Promise(resolve => {
+    if (EXCLUDED_TERMS_CACHE) { resolve(EXCLUDED_TERMS_CACHE); return; }
+    try {
+      chrome.storage.sync.get(['excludedTerms'], r => {
+        const terms = (r && Array.isArray(r.excludedTerms) && r.excludedTerms.length)
+          ? r.excludedTerms : DEFAULT_EXCLUDED_TERMS;
+        EXCLUDED_TERMS_CACHE = terms;
+        resolve(terms);
+      });
+    } catch (_) {
+      EXCLUDED_TERMS_CACHE = DEFAULT_EXCLUDED_TERMS;
+      resolve(DEFAULT_EXCLUDED_TERMS);
+    }
+  });
+}
+
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.excludedTerms) {
+      EXCLUDED_TERMS_CACHE = Array.isArray(changes.excludedTerms.newValue) && changes.excludedTerms.newValue.length
+        ? changes.excludedTerms.newValue : DEFAULT_EXCLUDED_TERMS;
+    }
+  });
+} catch (_) {}
+
+// Case-insensitive substring match against the exclusion terms, mirroring the
+// agenda cleaner's isExcluded().
+function isHearingExcluded(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  const terms = EXCLUDED_TERMS_CACHE || DEFAULT_EXCLUDED_TERMS;
+  return terms.some(t => t && lower.includes(t));
+}
+
+function stripHearingOnPrefix(s) {
+  return (s || '').replace(/^\s*Hearing on\s+/i, '').trim();
+}
+
+// Parses "MM/DD/YYYY HH:MM AM/PM" into a Date (local). Returns null on failure.
+function parseHearingDateTime(s) {
+  const m = (s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})\s*(AM|PM)?)?/i);
+  if (!m) return null;
+  const mo = +m[1], d = +m[2], y = +m[3];
+  let hh = m[4] ? +m[4] : 0;
+  const mm = m[5] ? +m[5] : 0;
+  if (m[6]) {
+    const up = m[6].toUpperCase();
+    if (up === 'PM' && hh < 12) hh += 12;
+    if (up === 'AM' && hh === 12) hh = 0;
+  }
+  return new Date(y, mo - 1, d, hh, mm);
+}
+
+// Parses future scheduled hearings from a Hearings-tab document: rows in tables
+// whose header has Name / Date/Time / Status columns, kept when Status is
+// "Scheduled" and the date is today or later. Returns them soonest-first,
+// deduped by type+date. Each: { type, date, when }.
+function parseFutureHearings(doc) {
+  const rows = [];
+  const tables = doc.querySelectorAll('table');
+  for (const table of tables) {
+    let headerRow = null, nameIdx = -1, dateIdx = -1, statusIdx = -1;
+    for (const tr of table.querySelectorAll('tr')) {
+      const texts = Array.from(tr.children).map(td => (td.textContent || '').replace(/\s+/g, ' ').trim());
+      const ni = texts.indexOf('Name'), di = texts.indexOf('Date/Time'), si = texts.indexOf('Status');
+      if (ni !== -1 && di !== -1 && si !== -1) { headerRow = tr; nameIdx = ni; dateIdx = di; statusIdx = si; break; }
+    }
+    if (!headerRow) continue;
+
+    let started = false;
+    const maxIdx = Math.max(nameIdx, dateIdx, statusIdx);
+    for (const tr of table.querySelectorAll('tr')) {
+      if (tr === headerRow) { started = true; continue; }
+      if (!started) continue;
+      const cells = Array.from(tr.children);
+      if (cells.length <= maxIdx) continue; // skip the continuance sub-rows
+      const name = (cells[nameIdx] ? cells[nameIdx].textContent : '').replace(/\s+/g, ' ').trim();
+      const dateTime = (cells[dateIdx] ? cells[dateIdx].textContent : '').replace(/\s+/g, ' ').trim();
+      const status = (cells[statusIdx] ? cells[statusIdx].textContent : '').replace(/\s+/g, ' ').trim();
+      if (!name || !dateTime) continue;
+      if (!/^scheduled$/i.test(status)) continue; // only genuinely upcoming
+      const when = parseHearingDateTime(dateTime);
+      const dm = dateTime.match(/\d{1,2}\/\d{1,2}\/\d{4}/);
+      if (!when || !dm) continue;
+      rows.push({ type: stripEventId(name), date: dm[0], when });
+    }
+  }
+
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
+  const seen = new Set();
+  return rows
+    .filter(h => h.when >= startOfToday)
+    .filter(h => { const k = h.type + '@' + h.date; if (seen.has(k)) return false; seen.add(k); return true; })
+    .sort((a, b) => a.when - b.when);
+}
+
+// Resolves the effective hearing for Export: the Next event unless it's
+// excluded, in which case the soonest future scheduled non-excluded hearing
+// from the Hearings tab. Returns { motionType, hearingDate, hearingType }.
+async function resolveEffectiveHearing(root) {
+  root = root || document;
+  const nextType = parseHearingType(root);
+  const base = {
+    motionType: parseMotionType(root),
+    hearingDate: parseHearingDate(root),
+    hearingType: nextType,
+  };
+  try {
+    await loadExcludedTerms();
+    if (!nextType || !isHearingExcluded(nextType)) return base;
+
+    const url = getHearingsUrl();
+    if (!url) return base;
+    const doc = await fetchCaseDoc(url);
+    if (!doc) return base;
+
+    const hearings = parseFutureHearings(doc).filter(h => !isHearingExcluded(h.type));
+    if (!hearings.length) return base;
+
+    // Take the soonest non-excluded hearing. When several fall on that same
+    // date, prefer a Demurrer (with Motion to Strike) over a standalone Motion
+    // to Strike — a demurrer + motion to strike is filed together but shows as
+    // two hearing entries, and the demurrer is the one we want.
+    const soonestDate = hearings[0].date;
+    const sameDay = hearings.filter(h => h.date === soonestDate);
+    const pick = sameDay.find(h => /demurrer/i.test(h.type)) || sameDay[0];
+
+    console.log('[LACourt] Next hearing excluded (' + nextType +
+      '); using Hearings-tab pick:', pick.type, pick.date);
+    return {
+      motionType: stripHearingOnPrefix(pick.type),
+      hearingDate: pick.date,
+      hearingType: pick.type,
+    };
+  } catch (err) {
+    console.warn('[LACourt] hearing resolution failed:', err);
+    return base;
+  }
+}
+
 // Given a parsed HTML Document, pull moving-paper filings: [{name, filedBy}].
 function parseDocumentsFilingsFrom(doc) {
   const tables = doc.querySelectorAll('table');
@@ -1858,24 +2042,22 @@ async function computeMovant(motionType, partiesRoot) {
 // (so Export works from Documents/Summary/any case page). Resolves to
 // { ctx, partiesRoot } or null.
 async function getExportContext() {
-  const hasPartiesLocally = !!document.querySelector('a[title="UPDATE PARTY"]');
-  if (hasPartiesLocally) {
-    const ctx = getFillFormContext();
-    if (ctx) return { ctx, partiesRoot: document };
-  }
-
-  const url = getPartiesUrl();
-  if (url) {
-    const doc = await fetchCaseDoc(url);
-    if (doc) {
-      const ctx = getFillFormContext(doc);
-      if (ctx) return { ctx, partiesRoot: doc };
+  // 1) Resolve which document to read the party roster from (live page when it
+  //    has the parties table, else a background-fetched Parties page).
+  let partiesRoot = document;
+  if (!document.querySelector('a[title="UPDATE PARTY"]')) {
+    const url = getPartiesUrl();
+    if (url) {
+      const doc = await fetchCaseDoc(url);
+      if (doc) partiesRoot = doc;
     }
   }
 
-  // Last resort: whatever the live page yields (may be null).
-  const ctx = getFillFormContext();
-  return ctx ? { ctx, partiesRoot: document } : null;
+  // 2) Resolve the effective hearing (may fetch the Hearings tab when the Next
+  //    event is excluded), then build the context with that override.
+  const hearing = await resolveEffectiveHearing(partiesRoot);
+  const ctx = getFillFormContext(partiesRoot, hearing);
+  return ctx ? { ctx, partiesRoot } : null;
 }
 
 /* ------------------------------------------------------------------ */
