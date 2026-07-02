@@ -23,12 +23,16 @@
  */
 
 // Question fields, in export order. `key` matches the storage/labeled key from
-// the content script; `header` is the EXACT spreadsheet column header (note the
-// trailing space on "Case Number " and the no-hyphen cross-* headers — these
-// must match the merge source the user's template expects). `movant` has no
-// parsed value; the user fills it in.
+// the content script; `header` is the EXACT spreadsheet column header — these
+// must match the merge source the user's template expects. The Case Number
+// header ends with a NON-BREAKING space (U+00A0), exactly as the old Microsoft
+// Form exported it. Word derives merge-field names from the header by turning
+// invalid characters into underscores; a trailing regular space would produce
+// "Case_Number_", but the non-breaking space is dropped, yielding the
+// "Case_Number" field the template references. `movant` has no parsed value;
+// the user fills it in.
 const FIELDS = [
-  { key: 'caseNumber',        label: 'Case Number',        header: 'Case Number ',    multiline: false },
+  { key: 'caseNumber',        label: 'Case Number',        header: 'Case Number\u00A0', multiline: false },
   { key: 'hearingDate',       label: 'Hearing Date',       header: 'Hearing Date',    multiline: false },
   { key: 'motionType',        label: 'Motion Type',        header: 'Motion Type',     multiline: false },
   { key: 'titlePlaintiff',    label: 'Title Plaintiff',    header: 'Title Plaintiff', multiline: false },
