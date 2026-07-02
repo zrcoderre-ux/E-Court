@@ -2336,7 +2336,7 @@ function renderFillFormButton() {
   const btn = document.createElement('button');
   btn.id = '__lacourt_fill_btn__';
   btn.type = 'button';
-  btn.textContent = '⚖ Export';
+  btn.textContent = '📤 Export';
   Object.assign(btn.style, {
     position: 'fixed',
     top: '0px',
@@ -2359,16 +2359,16 @@ function renderFillFormButton() {
 
   btn.addEventListener('click', async () => {
     btn.disabled = true;
-    btn.textContent = '⚖ Working...';
+    btn.textContent = '📤 Working...';
     btn.style.opacity = '0.7';
 
     try {
       const result = await getExportContext();
       if (!result) {
-        btn.textContent = '⚖ No data found';
+        btn.textContent = '📤 No data found';
         setTimeout(() => {
           btn.disabled = false;
-          btn.textContent = '⚖ Export';
+          btn.textContent = '📤 Export';
           btn.style.opacity = '1';
         }, 2000);
         return;
@@ -2384,16 +2384,16 @@ function renderFillFormButton() {
         triggerMailto(ctx.mailtoUrl);
       }
 
-      const openedLabel = ctx.isOrderTemplate ? '⚖ Order Template Opened!' : '⚖ Form Opened!';
+      const openedLabel = ctx.isOrderTemplate ? '📤 Order Template Opened!' : '📤 Form Opened!';
       const openWindow = () => {
         chrome.runtime.sendMessage(
           { type: 'openFormOnOppositeDisplay', url: ctx.openUrl },
           response => {
             if (chrome.runtime.lastError || !response || !response.ok) {
-              btn.textContent = '⚖ Error opening';
+              btn.textContent = '📤 Error opening';
               setTimeout(() => {
                 btn.disabled = false;
-                btn.textContent = '⚖ Export';
+                btn.textContent = '📤 Export';
                 btn.style.opacity = '1';
               }, 2000);
               return;
@@ -2404,7 +2404,7 @@ function renderFillFormButton() {
             btn.style.opacity = '1';
             setTimeout(() => {
               btn.disabled = false;
-              btn.textContent = '⚖ Export';
+              btn.textContent = '📤 Export';
             }, 2000);
           }
         );
@@ -2423,10 +2423,10 @@ function renderFillFormButton() {
       }
     } catch (err) {
       console.error('[LACourt] fill button error:', err);
-      btn.textContent = '⚖ Error';
+      btn.textContent = '📤 Error';
       setTimeout(() => {
         btn.disabled = false;
-        btn.textContent = '⚖ Export';
+        btn.textContent = '📤 Export';
         btn.style.opacity = '1';
       }, 2000);
     }
