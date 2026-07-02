@@ -2481,10 +2481,22 @@ function renderDocumentsButton() {
     btn.style.opacity = '0.7';
     try {
       const res = await getRelevantDocuments();
-      let urls = (res.relevant || []).map(d => d.openUrl).filter(Boolean);
-      if (!urls.length) { reset('📂 None found'); return; }
+      let opened = (res.relevant || []).filter(d => d.openUrl);
+      if (!opened.length) { reset('📂 None found'); return; }
       let capped = false;
-      if (urls.length > MAX_DOCS_TO_OPEN) { capped = true; urls = urls.slice(0, MAX_DOCS_TO_OPEN); }
+      if (opened.length > MAX_DOCS_TO_OPEN) { capped = true; opened = opened.slice(0, MAX_DOCS_TO_OPEN); }
+      const urls = opened.map(d => d.openUrl);
+
+      // Debug tracking: record the documents the button opened.
+      try {
+        chrome.runtime.sendMessage({
+          type: 'recordOpenedDocs',
+          source: 'button',
+          caseNumber: parseCaseNumber(),
+          docs: opened.map(d => ({ docId: d.docId, name: d.name })),
+        }, () => void chrome.runtime.lastError);
+      } catch (_) {}
+
       chrome.runtime.sendMessage({ type: 'openDocsBackground', urls }, () => {
         void chrome.runtime.lastError;
         reset('📂 Opened ' + urls.length + (capped ? '+' : ''));
