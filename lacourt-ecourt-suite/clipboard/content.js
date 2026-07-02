@@ -1318,27 +1318,45 @@ function parsePartiesTable() {
   return parties;
 }
 
+// Matches both LA Superior Court case-number formats:
+//   - Current year-first: 2 digits + location/type letters + sequence digits,
+//     e.g. "25STCV32877", "21STCR00001".
+//   - Legacy district-prefix: a district letter + a case-type letter
+//     (C civil, D family, F paternity, P probate, Q DV, S special, T adoption)
+//     + a six-digit sequence, e.g. "BC654321", "SC123456". Unlimited civil in
+//     Central (Stanley Mosk) is the familiar "BC" prefix. Cases filed before
+//     the 2017/2018 rollout use this legacy form.
+const CASE_NUMBER_RE = /\b(?:\d{2}[A-Z]{4,6}\d{4,6}|[A-Z][CDFPQST]\d{6})\b/;
+
 /**
- * Finds the case number on the page. E-court typically displays it prominently;
- * we look for common patterns.
+ * Finds the case number on the page. Prefers the authoritative `caseNumber`
+ * URL query param (present on every eCourt case page), then the page title,
+ * then prominent header elements, then a whole-page scan — matching both the
+ * current and legacy formats.
  */
 function parseCaseNumber() {
-  // Try common selectors first.
-  const candidates = [
-    '#caseNumber',
-    '.case-number',
-    '[data-case-number]',
-    'h1', 'h2', 'h3',
-  ];
+  // 1) The URL query param is authoritative and format-agnostic.
+  try {
+    const q = (new URLSearchParams(location.search).get('caseNumber') || '').trim();
+    if (q && /^[0-9A-Z]{5,20}$/i.test(q)) return q;
+  } catch (_) {}
+
+  // 2) The page title leads with the case number, e.g. "BC717394: DOCUMENTS ...".
+  const titleM = (document.title || '').match(CASE_NUMBER_RE);
+  if (titleM) return titleM[0];
+
+  // 3) Prominent header elements.
+  const candidates = ['#caseNumber', '.case-number', '[data-case-number]', 'h1', 'h2', 'h3'];
   for (const sel of candidates) {
     const el = document.querySelector(sel);
     if (el) {
-      const m = (el.textContent || '').match(/\b\d{2}[A-Z]{4,6}\d{4,6}\b/);
+      const m = (el.textContent || '').match(CASE_NUMBER_RE);
       if (m) return m[0];
     }
   }
-  // Fallback: scan the whole page for a case-number-shaped token.
-  const m = document.body.innerText.match(/\b\d{2}[A-Z]{4,6}\d{4,6}\b/);
+
+  // 4) Fallback: scan the whole page for a case-number-shaped token.
+  const m = (document.body ? document.body.innerText : '').match(CASE_NUMBER_RE);
   return m ? m[0] : '';
 }
 
@@ -1445,7 +1463,7 @@ function parseHearingType() {
 function parseCaseName(caseNumberHint) {
   const caseNumberRe = caseNumberHint
     ? new RegExp('\\b' + caseNumberHint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b')
-    : /\b\d{2}[A-Z]{2,5}\d{3,8}\b/;
+    : CASE_NUMBER_RE;
 
   // Cut at trailing JS noise. ReactDOM.render is the observed leak; we
   // also defensively cut at any '<' (HTML), 'function(' (JS), or a stray
