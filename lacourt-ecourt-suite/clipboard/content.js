@@ -2061,6 +2061,226 @@ async function getExportContext() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Documents button: open the documents relevant to the motion         */
+/* ------------------------------------------------------------------ */
+//
+// Identifies and opens (as background tabs) the documents relevant to the
+// selected motion, all sourced from the Documents tab (deduped by docId):
+//   - the operative complaint + cross-complaint (latest, not fictitious-name
+//     amendments)
+//   - the moving paper + anything the moving party filed the same day
+//   - documents the Hearings tab lists for that motion
+//   - one upcoming hearing  -> everything filed after the motion
+//   - multiple hearings     -> documents after the motion whose title shares a
+//     meaningful word with the motion type, plus each Opposition/Reply and its
+//     same-day co-filings.
+
+const DOC_STOP = new Set(['motion','opposition','reply','response','notice','declaration',
+  'memorandum','points','authorities','support','order','proposed','hearing','plaintiff',
+  'defendant','plaintiffs','defendants','exhibit','proof','service','with','from','that',
+  'this','case','court','filed','amended']);
+
+function docSigTokens(s) {
+  return (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+    .filter(t => t.length >= 4 && !DOC_STOP.has(t));
+}
+function docWordOverlap(name, motionType) {
+  const a = new Set(docSigTokens(motionType));
+  if (!a.size) return false;
+  return docSigTokens(name).some(t => a.has(t));
+}
+function docPartyNames(filedBy) {
+  return parseFiledByParties(filedBy).parties.map(p => movantNormName(p.name)).filter(Boolean);
+}
+function docSharesParty(a, b) { const A = new Set(a); return b.some(x => A.has(x)); }
+function sameCalendarDay(x, y) { return !!(x && y && x.getTime() === y.getTime()); }
+
+function isComplaintDoc(name) {
+  const n = (name || '').trim();
+  if (/^amendment to /i.test(n)) return false;              // "Amendment to Complaint (Fictitious/Incorrect Name)"
+  if (/fictitious|incorrect\s+name/i.test(n)) return false;
+  return /^(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+)?amended\s+complaint\b/i.test(n)
+      || /^complaint\b/i.test(n);
+}
+function isCrossComplaintDoc(name) {
+  const n = (name || '').trim();
+  if (/^amendment to /i.test(n)) return false;
+  return /^(?:(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+)?(?:amended\s+)?cross-?complaint\b/i.test(n);
+}
+// Latest openable doc in a list (operative pleading).
+function latestDoc(list) {
+  let best = null;
+  for (const d of list) {
+    if (!d.openUrl) continue;
+    if (!best || (d.when && best.when && d.when > best.when) || (!best.when && d.when)) best = d;
+  }
+  return best;
+}
+
+function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearing) {
+  const rel = new Map();
+  const add = d => { if (d && d.docId && d.openUrl) rel.set(d.docId, d); };
+
+  // Operative complaint + cross-complaint.
+  add(latestDoc(docs.filter(d => isComplaintDoc(d.name))));
+  add(latestDoc(docs.filter(d => isCrossComplaintDoc(d.name))));
+
+  const motionDoc = bestFilingMatch(motionType, docs);
+  if (motionDoc) {
+    add(motionDoc);
+    const mov = docPartyNames(motionDoc.filedBy), mw = motionDoc.when;
+
+    // Same-day filings by the moving party (incl. just before the motion).
+    for (const d of docs) if (sameCalendarDay(d.when, mw) && docSharesParty(docPartyNames(d.filedBy), mov)) add(d);
+
+    // Documents the Hearings tab lists for this motion (substring containment).
+    if (hearingDocBlob) {
+      const blob = movantNormName(hearingDocBlob);
+      for (const d of docs) { const nn = movantNormName(d.name); if (nn && nn.length >= 6 && blob.indexOf(nn) !== -1) add(d); }
+    }
+
+    if (singleHearing) {
+      // One upcoming hearing: everything after the motion is fair game.
+      for (const d of docs) if (d.when && mw && d.when > mw) add(d);
+    } else {
+      // Multiple hearings: match by shared words + Opposition/Reply co-filings.
+      for (const d of docs) if (d.when && mw && d.when >= mw && docWordOverlap(d.name, motionType)) add(d);
+      const after = docs.filter(d => d.when && mw && d.when >= mw);
+      for (const opp of after) if (/\bopposition\b/i.test(opp.name) && docWordOverlap(opp.name, motionType)) {
+        add(opp); const P = docPartyNames(opp.filedBy);
+        for (const d of docs) if (sameCalendarDay(d.when, opp.when) && docSharesParty(docPartyNames(d.filedBy), P)) add(d);
+      }
+      for (const rep of after) if (/\breply\b/i.test(rep.name) && docWordOverlap(rep.name, motionType)) {
+        add(rep); const P = docPartyNames(rep.filedBy);
+        for (const d of docs) if (sameCalendarDay(d.when, rep.when) && docSharesParty(docPartyNames(d.filedBy), P)) add(d);
+      }
+    }
+  }
+
+  return Array.from(rel.values());
+}
+
+function absoluteDocUrl(u) { try { return new URL(u, location.origin).href; } catch (_) { return u; } }
+
+// Parses openable document rows from a Documents-tab document or paged fragment:
+// each openInNewWindow anchor yields { docId, openUrl, name, dateStr, when, filedBy }.
+function parseDocRows(root) {
+  const rows = [], seen = new Set();
+  const anchors = root.querySelectorAll('a[onclick*="openInNewWindow"]');
+  for (const a of anchors) {
+    const oc = a.getAttribute('onclick') || '';
+    const um = oc.match(/openInNewWindow\('((?:[^'\\]|\\.)*)'\s*,\s*'((?:[^'\\]|\\.)*)'/);
+    if (!um) continue;
+    const url = um[1].replace(/\\\//g, '/');
+    if (!/\/ecourt\/ecms\/doc\?docId=/.test(url)) continue;
+    const idm = url.match(/docId=(\d+)/); if (!idm) continue;
+    const docId = idm[1]; if (seen.has(docId)) continue; seen.add(docId);
+    const title = um[2].replace(/\\\//g, '/').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
+    const tm = title.match(/^[^:]*:\s*([\s\S]*?)\s+on\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*$/);
+    const name = tm ? tm[1].trim() : title;
+    const dateStr = tm ? tm[2] : '';
+    let filedBy = ''; const tr = a.closest('tr');
+    if (tr) { const cells = Array.from(tr.children); if (cells.length > 6) filedBy = (cells[6].textContent || '').replace(/\s+/g, ' ').trim(); }
+    rows.push({ docId, openUrl: absoluteDocUrl(url), name, dateStr, when: dateStr ? parseHearingDateTime(dateStr) : null, filedBy });
+  }
+  return rows;
+}
+
+// POSTs the eCourt tree-table pager to fetch a page of documents at `offset`,
+// using the pageData token read from the live Documents page. Returns a parsed
+// fragment (wrapped in a table so rows survive) or null.
+async function postPanelPage(offset, pageData) {
+  try {
+    const body = 'offset=' + offset + '&pageData=' + encodeURIComponent(pageData);
+    const res = await Promise.race([
+      fetch('/ecourt/ecms/forms/support/onPanelPage', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+        body,
+      }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+    ]);
+    if (!res || !res.ok) return null;
+    const html = await res.text();
+    return new DOMParser().parseFromString('<table><tbody>' + html + '</tbody></table>', 'text/html');
+  } catch (_) { return null; }
+}
+
+// Fetches ALL documents for a case: page 1 plus every subsequent page via the
+// pager (so old pleadings like the complaint are included, not just the newest).
+async function fetchAllDocuments(docsUrl) {
+  const doc1 = await fetchCaseDoc(docsUrl);
+  if (!doc1) return [];
+  const rows = parseDocRows(doc1);
+  const seen = new Set(rows.map(r => r.docId));
+
+  let pageData = null, count = 0;
+  const pgEl = doc1.querySelector('[data-ec-pagedata]');
+  if (pgEl) { pageData = pgEl.getAttribute('data-ec-pagedata'); try { count = (JSON.parse(pageData) || {}).count || 0; } catch (_) {} }
+
+  if (pageData && count > rows.length) {
+    const offsets = [];
+    for (let o = 50; o < count && o <= 2000; o += 50) offsets.push(o);
+    const results = await Promise.all(offsets.map(o => postPanelPage(o, pageData)));
+    for (const frag of results) {
+      if (!frag) continue;
+      for (const r of parseDocRows(frag)) if (!seen.has(r.docId)) { seen.add(r.docId); rows.push(r); }
+    }
+  }
+  return rows;
+}
+
+// From a Hearings-tab document, returns the "Document" column text of the
+// hearing matching the motion type (used to mark those documents relevant).
+function findHearingDocBlob(hearingsDoc, motionType) {
+  const tables = hearingsDoc.querySelectorAll('table');
+  for (const table of tables) {
+    let headerRow = null, nameIdx = -1, docIdx = -1;
+    for (const tr of table.querySelectorAll('tr')) {
+      const texts = Array.from(tr.children).map(td => (td.textContent || '').replace(/\s+/g, ' ').trim());
+      const ni = texts.indexOf('Name'), di = texts.indexOf('Document');
+      if (ni !== -1 && di !== -1) { headerRow = tr; nameIdx = ni; docIdx = di; break; }
+    }
+    if (!headerRow) continue;
+    let started = false;
+    for (const tr of table.querySelectorAll('tr')) {
+      if (tr === headerRow) { started = true; continue; }
+      if (!started) continue;
+      const cells = Array.from(tr.children);
+      if (cells.length <= docIdx) continue;
+      const name = stripEventId((cells[nameIdx] ? cells[nameIdx].textContent : '').replace(/\s+/g, ' ').trim());
+      if (name && docWordOverlap(name, motionType)) {
+        return (cells[docIdx] ? cells[docIdx].textContent : '').replace(/\s+/g, ' ').trim();
+      }
+    }
+  }
+  return '';
+}
+
+// Orchestrates: resolve the motion, fetch all documents + hearings, compute the
+// relevant set. Resolves to { relevant, motionType, docCount, singleHearing }.
+async function getRelevantDocuments() {
+  const hearing = await resolveEffectiveHearing(document);
+  const motionType = hearing && hearing.motionType;
+  if (!motionType) return { relevant: [], reason: 'no-motion' };
+
+  const docsUrl = getDocumentsUrl();
+  const docs = docsUrl ? await fetchAllDocuments(docsUrl) : [];
+  if (!docs.length) return { relevant: [], reason: 'no-documents' };
+
+  const hearingsUrl = getHearingsUrl();
+  const hearingsDoc = hearingsUrl ? await fetchCaseDoc(hearingsUrl) : null;
+  const singleHearing = hearingsDoc ? parseFutureHearings(hearingsDoc).length <= 1 : true;
+  const hearingDocBlob = hearingsDoc ? findHearingDocBlob(hearingsDoc, motionType) : '';
+
+  const relevant = computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearing);
+  console.log('[LACourt] relevant documents:', {
+    motionType, docCount: docs.length, singleHearing, relevant: relevant.map(d => d.name),
+  });
+  return { relevant, motionType, docCount: docs.length, singleHearing };
+}
+
+/* ------------------------------------------------------------------ */
 /* Subtle on-page toast confirmation                                   */
 /* ------------------------------------------------------------------ */
 
@@ -2215,10 +2435,73 @@ function renderFillFormButton() {
   document.body.appendChild(btn);
 }
 
+/* ------------------------------------------------------------------ */
+/* Floating "Documents" button (left of Export)                        */
+/* ------------------------------------------------------------------ */
+
+const MAX_DOCS_TO_OPEN = 60; // safety cap on how many tabs to open at once
+
+function renderDocumentsButton() {
+  if (document.getElementById('__lacourt_docs_btn__')) return;
+  const caseReady = document.querySelector('a[href*="/ecourt/ecms/case"]');
+  if (!caseReady) return;
+
+  const btn = document.createElement('button');
+  btn.id = '__lacourt_docs_btn__';
+  btn.type = 'button';
+  btn.textContent = '📂 Documents';
+  Object.assign(btn.style, {
+    position: 'fixed',
+    top: '0px',
+    right: '150px',
+    zIndex: '999998',
+    padding: '6px 16px',
+    background: '#1a5d3a',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0 0 6px 6px',
+    fontFamily: 'Georgia, serif',
+    fontSize: '13px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+    transition: 'background 0.15s, opacity 0.2s',
+  });
+  btn.addEventListener('mouseover', () => { btn.style.background = '#248250'; });
+  btn.addEventListener('mouseout',  () => { btn.style.background = '#1a5d3a'; });
+
+  const reset = (text, ms) => {
+    btn.textContent = text;
+    setTimeout(() => { btn.disabled = false; btn.textContent = '📂 Documents'; btn.style.opacity = '1'; }, ms || 2500);
+  };
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = '📂 Finding…';
+    btn.style.opacity = '0.7';
+    try {
+      const res = await getRelevantDocuments();
+      let urls = (res.relevant || []).map(d => d.openUrl).filter(Boolean);
+      if (!urls.length) { reset('📂 None found'); return; }
+      let capped = false;
+      if (urls.length > MAX_DOCS_TO_OPEN) { capped = true; urls = urls.slice(0, MAX_DOCS_TO_OPEN); }
+      chrome.runtime.sendMessage({ type: 'openDocsBackground', urls }, () => {
+        void chrome.runtime.lastError;
+        reset('📂 Opened ' + urls.length + (capped ? '+' : ''));
+      });
+    } catch (err) {
+      console.error('[LACourt] documents button error:', err);
+      reset('📂 Error');
+    }
+  });
+
+  document.body.appendChild(btn);
+}
+
 function setupFillFormButton() {
   // The parties table loads after initial page render. Try once on DOMContentLoaded
   // and once on full load, then poll briefly until it appears (cap at ~10s).
-  const tryRender = () => renderFillFormButton();
+  const tryRender = () => { renderFillFormButton(); renderDocumentsButton(); };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', tryRender, { once: true });
@@ -2231,7 +2514,7 @@ function setupFillFormButton() {
   let polls = 0;
   const interval = setInterval(() => {
     polls++;
-    if (document.getElementById('__lacourt_fill_btn__') || polls > 20) {
+    if (document.getElementById('__lacourt_docs_btn__') || polls > 20) {
       clearInterval(interval);
       return;
     }

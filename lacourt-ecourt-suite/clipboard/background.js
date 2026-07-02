@@ -119,6 +119,29 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  // Open a batch of e-court document URLs as background tabs next to the
+  // requesting case tab (used by the Documents button).
+  if (msg.type === 'openDocsBackground' && Array.isArray(msg.urls)) {
+    const tab = _sender && _sender.tab;
+    let count = 0;
+    if (tab && tab.url && tab.url.includes('civil.lacourt.org')) {
+      let i = 1;
+      for (const url of msg.urls) {
+        if (typeof url !== 'string' || !url.includes('/ecourt/ecms/doc')) continue;
+        chrome.tabs.create({
+          url,
+          active: false,
+          windowId: tab.windowId,
+          index: tab.index + (i++),
+          openerTabId: tab.id,
+        });
+        count++;
+      }
+    }
+    sendResponse({ ok: true, count });
+    return false;
+  }
+
   return false;
 });
 
