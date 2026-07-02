@@ -571,6 +571,8 @@ async function performExport() {
 
   const autoRunEl = document.getElementById('autoRun');
   const wantAutoRun = autoRunEl ? autoRunEl.checked : true;
+  const closeAfterEl = document.getElementById('closeAfter');
+  const wantClose = closeAfterEl ? closeAfterEl.checked : false;
 
   downloadBtn.disabled = true;
   setStatus('Saving ' + filename + '…');
@@ -602,6 +604,7 @@ async function performExport() {
   if (!wantAutoRun) {
     setStatus('Downloaded ' + filename, 'success');
     downloadBtn.disabled = false;
+    if (wantClose) window.close();
     return;
   }
 
@@ -619,6 +622,9 @@ async function performExport() {
       + (res && res.error ? res.error : 'host not set up') + ').');
   }
   downloadBtn.disabled = false;
+  // Close only after the mail-merge trigger has been sent and acknowledged, so
+  // tearing down the page can't cut off the native message mid-flight.
+  if (wantClose) window.close();
 }
 
 // Download button first runs the "did you pull the PDFs?" guard.
