@@ -73,6 +73,51 @@ function getDocIdForAnchor(anchor) {
   return extractDocId(onclick);
 }
 
+// Pull the e-court document name + case number out of an anchor's
+// openInNewWindow title argument. The onclick looks like:
+//   eCourt.openInNewWindow('/ecourt/ecms/doc?docId=123&v=...',
+//                          'CASE#: <name> on MM/DD/YYYY')
+// so the second string literal is "<caseNumber>: <name> on <date>".
+function docInfoFromAnchor(anchor) {
+  if (!anchor) return { name: '', caseNumber: '' };
+  const onclick = anchor.getAttribute('onclick') || '';
+  // Grab the openInNewWindow(...) call and its two quoted arguments.
+  const m = onclick.match(/openInNewWindow\s*\(\s*(['"])(.*?)\1\s*,\s*(['"])([\s\S]*?)\3/);
+  const title = m ? m[4] : '';
+  let caseNumber = '';
+  let name = '';
+  if (title) {
+    const colon = title.indexOf(': ');
+    let rest = title;
+    if (colon !== -1) {
+      caseNumber = title.slice(0, colon).trim();
+      rest = title.slice(colon + 2);
+    }
+    // Strip a trailing " on <date>" suffix to leave just the document name.
+    name = rest.replace(/\s+on\s+\d{1,2}\/\d{1,2}\/\d{2,4}\s*$/i, '').trim();
+  }
+  if (!caseNumber) {
+    // Fall back to the docId's sibling context if the title lacked a prefix.
+    caseNumber = '';
+  }
+  return { name, caseNumber };
+}
+
+// Record a manually-opened document in the background debug tracker.
+function recordManualOpen(anchor, docId) {
+  try {
+    const info = docInfoFromAnchor(anchor);
+    chrome.runtime.sendMessage({
+      type: 'recordOpenedDocs',
+      source: 'manual',
+      caseNumber: info.caseNumber || '',
+      docs: [{ docId: String(docId), name: info.name || '' }],
+    }, () => { void chrome.runtime.lastError; });
+  } catch (e) {
+    log('recordManualOpen failed:', e);
+  }
+}
+
 // ============================================================
 // Checkmark rendering (inline, as a sibling of the button)
 // ============================================================
@@ -203,6 +248,7 @@ document.addEventListener('click', (e) => {
   log('click captured, docId=', docId, 'anchor=', anchor);
   if (!docId) return;
   rememberOpened(docId);
+  recordManualOpen(anchor, docId);
   setTimeout(scanAndStampAll, 0);
 }, true);
 

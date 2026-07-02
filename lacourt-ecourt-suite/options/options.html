@@ -198,6 +198,19 @@
       font-style: italic;
       padding: 8px 0;
     }
+    .doc-tracking { font-size: 13px; margin: 8px 0; }
+    .doc-tracking .dt-case { margin-bottom: 14px; }
+    .doc-tracking .dt-case-title { font-weight: bold; color: #1a365d; margin-bottom: 4px; }
+    .doc-tracking .dt-sub { color: #666; font-weight: normal; font-size: 12px; }
+    .doc-tracking ul { list-style: none; padding-left: 12px; margin: 4px 0; }
+    .doc-tracking li { padding: 2px 0; }
+    .doc-tracking li.dt-notdl { color: #c0392b; }
+    .doc-tracking li.dt-notdl::before { content: '⚠ not downloaded — '; font-style: italic; }
+    .doc-tracking li.dt-dl { color: #1a6b3a; }
+    .doc-tracking li.dt-dl::before { content: '✓ '; }
+    .doc-tracking li.dt-manual { border-left: 3px solid #b8860b; padding-left: 6px; }
+    .doc-tracking li.dt-manual::after { content: ' ⟵ button missed'; color: #b8860b; font-style: italic; }
+    .doc-tracking .dt-src { color: #999; font-size: 11px; font-family: 'Courier New', monospace; }
   </style>
 </head>
 <body>
@@ -242,6 +255,25 @@
         <button class="btn-save" id="dismissedSaveBtn">Save Changes</button>
         <button class="btn-reset" id="dismissedResetBtn">Reset to Defaults</button>
         <span class="save-status" id="dismissedSaveStatus">✓ Saved</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Documents Button — Debug Tracking</h2>
+      <p class="hint">Records every document opened for a case, tagged by source:
+        <strong>[button]</strong> the Documents button opened it, <strong>[manual]</strong> you opened it yourself,
+        <strong>[button + manual]</strong> both.
+        When you download at least one document from a case, the ones opened but
+        <strong>not</strong> downloaded are flagged in red (likely <em>over</em>-inclusions to refine).
+        Documents you opened manually that the button never opened (<span style="color:#b8860b;">button missed</span>)
+        are candidate <em>under</em>-inclusions. Names match e-court, not the PDF filenames.
+        Cases where you downloaded nothing are shown for reference only.</p>
+      <div id="docTrackingView" class="doc-tracking"></div>
+      <div class="actions">
+        <button class="btn-reset" id="docTrackingRefresh">Refresh</button>
+        <button class="btn-reset" id="docTrackingCopy">Copy as text</button>
+        <button class="btn-reset" id="docTrackingClear">Clear tracking</button>
+        <span class="save-status" id="docTrackingStatus">✓ Done</span>
       </div>
     </div>
   </div>

@@ -142,8 +142,88 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return false;
   }
 
+  // Debug tracking: record documents that were opened, either by the Documents
+  // button (source 'button') or manually by the user (source 'manual').
+  if (msg.type === 'recordOpenedDocs' && Array.isArray(msg.docs)) {
+    const source = msg.source === 'manual' ? 'manual' : 'button';
+    updateDocTracking(t => {
+      const now = Date.now();
+      for (const d of msg.docs) {
+        if (!d || !d.docId) continue;
+        const id = String(d.docId);
+        const prev = t.opened[id] || { button: false, manual: false };
+        t.opened[id] = {
+          name: d.name || prev.name || '',
+          caseNumber: msg.caseNumber || prev.caseNumber || '',
+          at: now,
+          button: prev.button || source === 'button',
+          manual: prev.manual || source === 'manual',
+        };
+      }
+    });
+    sendResponse({ ok: true });
+    return false;
+  }
+
   return false;
 });
+
+/* ------------------------------------------------------------------ */
+/* Documents-button debug tracking store                               */
+/* ------------------------------------------------------------------ */
+//
+// docTracking = {
+//   opened:     { <docId>: { name, caseNumber, at, button, manual } },
+//   downloaded: { <docId>: { at } },   // only docIds we also opened
+// }
+// The options page reads this to surface over-inclusion (opened by the button
+// but not downloaded) and under-inclusion (opened manually, missed by button).
+
+const DOC_TRACKING_CAP = 1000;
+
+function updateDocTracking(mutator) {
+  chrome.storage.local.get(['docTracking'], result => {
+    const t = (result && result.docTracking) || {};
+    if (!t.opened) t.opened = {};
+    if (!t.downloaded) t.downloaded = {};
+    try { mutator(t); } catch (_) {}
+
+    // Prune the oldest opened entries (and their download marks) if unbounded.
+    const ids = Object.keys(t.opened);
+    if (ids.length > DOC_TRACKING_CAP) {
+      ids.sort((a, b) => (t.opened[a].at || 0) - (t.opened[b].at || 0));
+      for (const id of ids.slice(0, ids.length - DOC_TRACKING_CAP)) {
+        delete t.opened[id];
+        delete t.downloaded[id];
+      }
+    }
+    chrome.storage.local.set({ docTracking: t });
+  });
+}
+
+// Pull an e-court docId out of a download's URLs (the PDF is served from
+// /ecourt/ecms/doc?docId=<n>&v=...). Returns null if none.
+function docIdFromDownload(item) {
+  const fields = [item && item.url, item && item.finalUrl, item && item.referrer];
+  for (const f of fields) {
+    if (!f) continue;
+    const m = String(f).match(/[?&]docId=(\d+)/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// Mark a downloaded docId — but only if we opened it (so "not downloaded"
+// stays meaningful and the store stays bounded to tracked docs).
+if (chrome.downloads && chrome.downloads.onCreated) {
+  chrome.downloads.onCreated.addListener(item => {
+    const docId = docIdFromDownload(item);
+    if (!docId) return;
+    updateDocTracking(t => {
+      if (t.opened[docId]) t.downloaded[docId] = { at: Date.now() };
+    });
+  });
+}
 
 /**
  * Opens the given URL in a new window placed on a display that does NOT
