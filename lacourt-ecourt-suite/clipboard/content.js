@@ -2822,78 +2822,126 @@ function findNextHeaderSpan() {
 }
 function dayMs(d) { return (d && !isNaN(d)) ? new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() : null; }
 
-// Runs at most once per page load (fetches the Documents page). 'done' is set
-// synchronously the moment a real motion header is found, before any await, so
-// the render poll never kicks off a second fetch.
-let __nextDlState = 'pending';
-async function renderNextHeaderDeadlines() {
+const NEXT_DL_GAP = '<span style="display:inline-block;width:20px"></span>';
+// Computed once per page: { skip } or { motionType, cat, motionDue, oppDue, replyDue }.
+let __nextDlComputed = null;
+// Filing status once the Documents fetch resolves: { filedKnown, motion, opp, reply }.
+let __nextDlFiled = null;
+let __nextDlFetchStarted = false;
+
+function computeDueDates() {
+  const D = window.LACourtDeadlines;
+  if (!D) return null;
+  // Only "Hearing on <motion>" events are §1005/§437c-briefed. Non-motion
+  // events (CMC, OSC, trial, status conference) have no "Hearing on" prefix.
+  const motionType = parseMotionType(document);
+  if (!motionType) return null; // header not rendered yet (or not a motion)
+  const cat = D.classifyMotion(motionType);
+  if (cat !== 'standard' && cat !== 'msj') return { skip: true }; // new trial / recon aren't hearing-based
+  const hearing = parseHearingDateTime(parseHearingDate(document));
+  if (!hearing) return null;
+  return {
+    skip: false, motionType, cat,
+    motionDue: cat === 'msj' ? D.msjMotion(hearing, 'electronic') : D.stdMotion(hearing, 'electronic'),
+    oppDue:    cat === 'msj' ? D.msjOpp(hearing) : D.stdOpp(hearing),
+    replyDue:  cat === 'msj' ? D.msjReply(hearing) : D.stdReply(hearing),
+  };
+}
+
+// Colour: green = filed on time; red = overdue and not timely filed; neutral =
+// not yet due (or filing status not yet known / unavailable).
+function nextDlColor(due, filed) {
+  const dd = dayMs(due);
+  if (dd == null) return '#0a6e6e';
+  if (__nextDlFiled && __nextDlFiled.filedKnown) {
+    const fm = dayMs(filed);
+    if (fm != null && fm <= dd) return '#1a6b3a';
+  }
+  return dd < dayMs(new Date()) ? '#c0392b' : '#0a6e6e';
+}
+
+function nextDlHtml() {
+  const c = __nextDlComputed;
+  const f = __nextDlFiled || {};
+  const item = (label, key, due) =>
+    `<span style="color:${nextDlColor(due, f[key])}">${label} ${fmtShortDate(due)}</span>`;
+  return item('Motion Due', 'motion', c.motionDue) + NEXT_DL_GAP +
+    item('Opposition Due', 'opp', c.oppDue) + NEXT_DL_GAP +
+    item('Reply Due', 'reply', c.replyDue);
+}
+
+// Idempotent: injects the widget if missing, else refreshes its colours. Re-finds
+// the header each time so it survives e-court's React re-renders.
+function injectNextDeadlines() {
+  if (!__nextDlComputed || __nextDlComputed.skip) return;
+  const span = findNextHeaderSpan();
+  if (!span || !span.parentNode) return;
+  let el = span.parentNode.querySelector('.__lacourt_next_dl__');
+  if (el) { el.innerHTML = nextDlHtml(); return; }
+  el = document.createElement('span');
+  el.className = '__lacourt_next_dl__';
+  el.setAttribute('style', 'margin-left:22px;font-weight:600;white-space:nowrap;font-family:inherit;');
+  el.innerHTML = nextDlHtml();
+  span.parentNode.insertBefore(el, span.nextSibling);
+}
+
+// Fetch the case Documents once and recolour by whether each paper was filed on
+// time. Best-effort — the dates are already shown regardless.
+async function fetchNextDeadlineFilings() {
+  if (__nextDlFetchStarted || !__nextDlComputed || __nextDlComputed.skip) return;
+  __nextDlFetchStarted = true;
+  const c = __nextDlComputed;
+  const filed = { filedKnown: false, motion: null, opp: null, reply: null };
   try {
-    if (__nextDlState === 'done') return;
-    const D = window.LACourtDeadlines;
-    if (!D) return;
-    const span = findNextHeaderSpan();
-    if (!span || !span.parentNode) return; // header not rendered yet — retry later
-
-    // Only "Hearing on <motion>" events are §1005/§437c-briefed. Non-motion
-    // events (CMC, OSC, trial, status conference) have no "Hearing on" prefix.
-    const motionType = parseMotionType(document);
-    if (!motionType) return; // not a motion (or not parsed yet) — retry later
-    __nextDlState = 'done'; // committed: don't run again this page
-
-    const cat = D.classifyMotion(motionType);
-    if (cat !== 'standard' && cat !== 'msj') return; // new trial / recon aren't hearing-based
-
-    const hearing = parseHearingDateTime(parseHearingDate(document));
-    if (!hearing) return;
-
-    const motionDue = cat === 'msj' ? D.msjMotion(hearing, 'electronic') : D.stdMotion(hearing, 'electronic');
-    const oppDue    = cat === 'msj' ? D.msjOpp(hearing) : D.stdOpp(hearing);
-    const replyDue  = cat === 'msj' ? D.msjReply(hearing) : D.stdReply(hearing);
-
-    // Find the actual filings so we only flag papers that weren't filed on time.
-    let filedKnown = false, motionFiled = null, oppFiled = null, replyFiled = null;
-    try {
-      const docsUrl = getDocumentsUrl();
-      if (docsUrl) {
-        const docs = await fetchAllDocuments(docsUrl);
-        if (docs && docs.length) {
-          filedKnown = true;
-          const md = bestFilingMatch(motionType, docs);
-          motionFiled = md ? md.when : null;
-          const mw = md ? md.when : null;
-          const after = docs.filter(d => d.when && (!mw || d.when >= mw));
-          const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
-          const opp = earliest(after.filter(d => /\bopposition\b/i.test(d.name) && docWordOverlap(d.name, motionType)));
-          const rep = earliest(after.filter(d => /\breply\b/i.test(d.name) && docWordOverlap(d.name, motionType)));
-          oppFiled = opp ? opp.when : null;
-          replyFiled = rep ? rep.when : null;
-        }
+    const docsUrl = getDocumentsUrl();
+    if (docsUrl) {
+      const docs = await fetchAllDocuments(docsUrl);
+      if (docs && docs.length) {
+        filed.filedKnown = true;
+        const md = bestFilingMatch(c.motionType, docs);
+        filed.motion = md ? md.when : null;
+        const mw = md ? md.when : null;
+        const after = docs.filter(d => d.when && (!mw || d.when >= mw));
+        const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
+        const o = earliest(after.filter(d => /\bopposition\b/i.test(d.name) && docWordOverlap(d.name, c.motionType)));
+        const r = earliest(after.filter(d => /\breply\b/i.test(d.name) && docWordOverlap(d.name, c.motionType)));
+        filed.opp = o ? o.when : null;
+        filed.reply = r ? r.when : null;
       }
-    } catch (_) { /* fall back to date-only below */ }
+    }
+  } catch (_) { /* keep date-only colours */ }
+  __nextDlFiled = filed;
+  injectNextDeadlines(); // recolour
+}
 
-    const todayMs = dayMs(new Date());
-    // Colour: green = filed on time; red = overdue and not timely filed; neutral
-    // = not yet due (or filing status unknown and not yet past due).
-    const colorFor = (due, filed) => {
-      const dd = dayMs(due);
-      if (dd == null) return '#0a6e6e';
-      const fm = dayMs(filed);
-      if (filedKnown && fm != null && fm <= dd) return '#1a6b3a'; // filed on time
-      return dd < todayMs ? '#c0392b' : '#0a6e6e';                 // overdue vs pending
-    };
-    const item = (label, due, filed) =>
-      `<span style="color:${colorFor(due, filed)}">${label} ${fmtShortDate(due)}</span>`;
-    const gap = '<span style="display:inline-block;width:20px"></span>';
-
-    if (!span.parentNode || span.parentNode.querySelector('.__lacourt_next_dl__')) return;
-    const el = document.createElement('span');
-    el.className = '__lacourt_next_dl__';
-    el.setAttribute('style', 'margin-left:22px;font-weight:600;white-space:nowrap;font-family:inherit;');
-    el.innerHTML = item('Motion Due', motionDue, motionFiled) + gap +
-      item('Opposition Due', oppDue, oppFiled) + gap +
-      item('Reply Due', replyDue, replyFiled);
-    span.parentNode.insertBefore(el, span.nextSibling);
+function renderNextHeaderDeadlines() {
+  try {
+    if (!window.LACourtDeadlines) return;
+    if (!__nextDlComputed) {
+      const c = computeDueDates();
+      if (!c) return; // header not ready — a later poll/observer will retry
+      __nextDlComputed = c;
+      if (c.skip) return;
+      injectNextDeadlines();        // paint dates immediately (date-only colours)
+      fetchNextDeadlineFilings();   // then refine with filing status
+      return;
+    }
+    injectNextDeadlines(); // keep present + coloured across re-renders
   } catch (_) { /* best-effort UI */ }
+}
+
+// Re-inject if e-court re-renders the header and strips our node (the render
+// poll stops after ~10s, so an observer keeps it pinned thereafter).
+let __nextDlObserver = null;
+function observeNextHeader() {
+  if (__nextDlObserver || typeof MutationObserver === 'undefined' || !document.body) return;
+  let pending = false;
+  const obs = new MutationObserver(() => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; try { renderNextHeaderDeadlines(); } catch (_) {} });
+  });
+  try { obs.observe(document.body, { childList: true, subtree: true }); __nextDlObserver = obs; } catch (_) {}
 }
 
 function setupFillFormButton() {
@@ -2905,6 +2953,7 @@ function setupFillFormButton() {
     renderDocumentsButton();
     renderDeadlineButton();
     renderNextHeaderDeadlines();
+    observeNextHeader();
     scheduleButtonCollapse();
   };
 
