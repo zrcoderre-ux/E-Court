@@ -2354,16 +2354,17 @@ function renderFillFormButton() {
 
   // Export icon: a curved arrow rising and curving up-and-right out of a box.
   const EXPORT_ICON =
+    '<span class="lac-btn-icon" style="vertical-align:middle">' +
     '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" ' +
     'stroke="currentColor" stroke-width="3" stroke-linecap="round" ' +
-    'stroke-linejoin="round" style="vertical-align:middle;margin:-4px 5px -4px 0">' +
+    'stroke-linejoin="round" style="vertical-align:middle;margin:-4px 0">' +
     '<path d="M5 12v6a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-6"/>' +
     '<path d="M12 14V8C12 5 14 4 19 4"/>' +
     '<path d="M16 1.5 19 4l-3 2.5"/>' +
-    '</svg>';
+    '</svg></span>';
   const setLabel = (text) => {
     btn.innerHTML = EXPORT_ICON +
-      '<span style="vertical-align:middle">' + text + '</span>';
+      '<span class="lac-btn-text" style="vertical-align:middle">' + text + '</span>';
   };
   setLabel('Export');
   Object.assign(btn.style, {
@@ -2478,7 +2479,11 @@ function renderDocumentsButton() {
   const btn = document.createElement('button');
   btn.id = '__lacourt_docs_btn__';
   btn.type = 'button';
-  btn.textContent = '📂 Documents';
+  const setDocLabel = (text) => {
+    btn.innerHTML = '<span class="lac-btn-icon" style="vertical-align:middle">📂</span>' +
+      '<span class="lac-btn-text" style="vertical-align:middle">' + text + '</span>';
+  };
+  setDocLabel('Documents');
   Object.assign(btn.style, {
     position: 'fixed',
     top: '0px',
@@ -2500,18 +2505,18 @@ function renderDocumentsButton() {
   btn.addEventListener('mouseout',  () => { btn.style.background = '#1a5d3a'; });
 
   const reset = (text, ms) => {
-    btn.textContent = text;
-    setTimeout(() => { btn.disabled = false; btn.textContent = '📂 Documents'; btn.style.opacity = '1'; }, ms || 2500);
+    setDocLabel(text);
+    setTimeout(() => { btn.disabled = false; setDocLabel('Documents'); btn.style.opacity = '1'; }, ms || 2500);
   };
 
   btn.addEventListener('click', async () => {
     btn.disabled = true;
-    btn.textContent = '📂 Finding…';
+    setDocLabel('Finding…');
     btn.style.opacity = '0.7';
     try {
       const res = await getRelevantDocuments();
       let opened = (res.relevant || []).filter(d => d.openUrl);
-      if (!opened.length) { reset('📂 None found'); return; }
+      if (!opened.length) { reset('None found'); return; }
       let capped = false;
       if (opened.length > MAX_DOCS_TO_OPEN) { capped = true; opened = opened.slice(0, MAX_DOCS_TO_OPEN); }
       const urls = opened.map(d => d.openUrl);
@@ -2528,21 +2533,120 @@ function renderDocumentsButton() {
 
       chrome.runtime.sendMessage({ type: 'openDocsBackground', urls }, () => {
         void chrome.runtime.lastError;
-        reset('📂 Opened ' + urls.length + (capped ? '+' : ''));
+        reset('Opened ' + urls.length + (capped ? '+' : ''));
       });
     } catch (err) {
       console.error('[LACourt] documents button error:', err);
-      reset('📂 Error');
+      reset('Error');
     }
   });
 
   document.body.appendChild(btn);
 }
 
+/* ------------------------------------------------------------------ */
+/* Collapse the floating buttons to icons when zoomed in enough that     */
+/* their expanded labels would sit over e-court text.                    */
+/* ------------------------------------------------------------------ */
+
+const BTN_EDGE = 16;  // Export button's right offset (px from viewport edge)
+const BTN_GAP = 8;    // gap between the two floating buttons
+
+// Inject the icon/text collapse rules once. Hiding .lac-btn-text (and tightening
+// horizontal padding) leaves just the icon; scoped to our two button IDs.
+function ensureButtonStyles() {
+  if (document.getElementById('__lacourt_btn_styles__')) return;
+  const st = document.createElement('style');
+  st.id = '__lacourt_btn_styles__';
+  st.textContent =
+    '#__lacourt_fill_btn__ .lac-btn-text,#__lacourt_docs_btn__ .lac-btn-text{margin-left:6px}' +
+    '#__lacourt_fill_btn__[data-collapsed="1"] .lac-btn-text,' +
+    '#__lacourt_docs_btn__[data-collapsed="1"] .lac-btn-text{display:none}' +
+    '#__lacourt_fill_btn__[data-collapsed="1"],#__lacourt_docs_btn__[data-collapsed="1"]' +
+    '{padding-left:9px!important;padding-right:9px!important}';
+  (document.head || document.documentElement).appendChild(st);
+}
+
+// True if viewport point (x,y) lands on rendered text of some non-button element.
+function lacPointOverText(x, y, btns) {
+  const el = document.elementFromPoint(x, y);
+  if (!el || el === document.body || el === document.documentElement) return false;
+  if (btns.indexOf(el) !== -1) return false;
+  for (let i = 0; i < el.childNodes.length; i++) {
+    const node = el.childNodes[i];
+    if (node.nodeType === 3 && node.nodeValue && node.nodeValue.trim()) {
+      const r = document.createRange();
+      r.selectNodeContents(node);
+      const rects = r.getClientRects();
+      for (let j = 0; j < rects.length; j++) {
+        const rc = rects[j];
+        if (x >= rc.left && x <= rc.right && y >= rc.top && y <= rc.bottom) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Scans the buttons' expanded footprint for any e-court text beneath it.
+function lacRegionHasText(left, right, top, bottom, btns) {
+  btns.forEach(b => { b.style.pointerEvents = 'none'; });
+  const ys = [top, (top + bottom) / 2, bottom];
+  let hit = false;
+  for (let yi = 0; yi < ys.length && !hit; yi++) {
+    for (let x = right; x >= left; x -= 6) {
+      if (lacPointOverText(x, ys[yi], btns)) { hit = true; break; }
+    }
+  }
+  btns.forEach(b => { b.style.pointerEvents = ''; });
+  return hit;
+}
+
+// Measures the expanded footprint (toggling attributes synchronously so nothing
+// paints mid-measurement), then collapses both buttons to icons if that
+// footprint would overlap e-court text. Also keeps the Documents button docked
+// just left of the Export button in whichever state.
+function updateButtonCollapse() {
+  const exp = document.getElementById('__lacourt_fill_btn__');
+  if (!exp) return;
+  const doc = document.getElementById('__lacourt_docs_btn__');
+  const btns = doc ? [exp, doc] : [exp];
+
+  // Force expanded and dock Documents next to the expanded Export width.
+  btns.forEach(b => b.removeAttribute('data-collapsed'));
+  exp.style.right = BTN_EDGE + 'px';
+  const expW = exp.offsetWidth;
+  if (doc) doc.style.right = (BTN_EDGE + expW + BTN_GAP) + 'px';
+  const docW = doc ? doc.offsetWidth : 0;
+
+  const vw = document.documentElement.clientWidth;
+  const right = vw - BTN_EDGE;
+  const left = Math.max(0, vw - BTN_EDGE - expW - (doc ? BTN_GAP + docW : 0));
+  const bottom = Math.max(exp.offsetHeight, doc ? doc.offsetHeight : 0) - 3;
+
+  const overlap = lacRegionHasText(left, right, 3, Math.max(3, bottom), btns);
+
+  if (overlap) {
+    btns.forEach(b => b.setAttribute('data-collapsed', '1'));
+    if (doc) doc.style.right = (BTN_EDGE + exp.offsetWidth + BTN_GAP) + 'px';
+  }
+}
+
+let lacCollapseTimer = null;
+function scheduleButtonCollapse() {
+  if (lacCollapseTimer) clearTimeout(lacCollapseTimer);
+  lacCollapseTimer = setTimeout(() => { try { updateButtonCollapse(); } catch (_) {} }, 120);
+}
+window.addEventListener('resize', scheduleButtonCollapse);
+
 function setupFillFormButton() {
   // The parties table loads after initial page render. Try once on DOMContentLoaded
   // and once on full load, then poll briefly until it appears (cap at ~10s).
-  const tryRender = () => { renderFillFormButton(); renderDocumentsButton(); };
+  const tryRender = () => {
+    ensureButtonStyles();
+    renderFillFormButton();
+    renderDocumentsButton();
+    scheduleButtonCollapse();
+  };
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', tryRender, { once: true });
