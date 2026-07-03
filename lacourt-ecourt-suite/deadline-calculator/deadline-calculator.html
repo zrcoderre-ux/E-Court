@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CA Motion Deadline Calculator</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #f0f4f8;
+    --surface:   #ffffff;
+    --fg:        #0f1923;
+    --fg2:       #2d3f50;
+    --muted:     #526070;
+    --accent:    #0a6e6e;
+    --accent2:   #0d8f8f;
+    --accent-lt: #e6f4f4;
+    --accent-border: #a0d4d4;
+    --gold:      #b87000;
+    --gold-lt:   #fff8e6;
+    --gold-border:#e0b84a;
+    --red:       #c0392b;
+    --red-lt:    #fdf0ee;
+    --border:    #ccd6e0;
+    --border2:   #e2eaf0;
+    --row-a:     #ffffff;
+    --row-b:     #f5f8fb;
+    --header-bg: #0a6e6e;
+    --header-fg: #ffffff;
+  }
+
+  body {
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* ── HEADER ── */
+  .app-header {
+    background: var(--header-bg);
+    color: var(--header-fg);
+    padding: 18px 28px 16px;
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .app-header h1 {
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .app-header .subtitle {
+    font-size: 0.78rem;
+    opacity: 0.75;
+    font-weight: 400;
+  }
+
+  /* ── DETECTED BANNER ── */
+  .detected {
+    background: var(--accent-lt);
+    border-bottom: 1px solid var(--accent-border);
+    padding: 10px 28px;
+    font-size: 0.82rem;
+    color: var(--fg2);
+  }
+  .detected .det-tag {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 2px 7px;
+    border-radius: 3px;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  .detected .det-rule {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-top: 3px;
+  }
+  .detected .det-rule strong { color: var(--accent); }
+
+  /* ── CONTROLS BAR ── */
+  .controls {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 28px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .control-group label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  input[type="date"] {
+    border: 1.5px solid var(--border);
+    border-radius: 6px;
+    padding: 7px 11px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    color: var(--fg);
+    background: var(--surface);
+    outline: none;
+    transition: border-color .15s;
+  }
+  input[type="date"]:focus { border-color: var(--accent); }
+  .date-display {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
+  /* ── MODE TABS ── */
+  .tabs {
+    display: flex;
+    border-radius: 7px;
+    overflow: hidden;
+    border: 1.5px solid var(--border);
+    background: var(--bg);
+  }
+  .tab {
+    padding: 6px 18px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    letter-spacing: 0.02em;
+    transition: background .15s, color .15s;
+  }
+  .tab.active {
+    background: var(--accent);
+    color: #fff;
+  }
+
+  /* ── MAIN ── */
+  .main {
+    padding: 20px 28px 40px;
+    max-width: 1100px;
+  }
+
+  /* ── TABLE ── */
+  .table-wrap { overflow-x: auto; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.82rem;
+    background: var(--surface);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+  thead tr.group-row th {
+    padding: 6px 10px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    border-bottom: 1px solid var(--border);
+  }
+  thead tr.col-row th {
+    padding: 8px 10px;
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: var(--fg2);
+    background: #f0f4f8;
+    border-bottom: 2px solid var(--border);
+    white-space: nowrap;
+    text-align: center;
+  }
+  thead tr.col-row th.left { text-align: left; }
+
+  tbody tr { border-bottom: 1px solid var(--border2); }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr.row-a { background: var(--row-a); }
+  tbody tr.row-b { background: var(--row-b); }
+  td {
+    padding: 10px 10px;
+    vertical-align: middle;
+  }
+  td.section-cell {
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--accent);
+    border-right: 2px solid var(--accent-border);
+    width: 108px;
+    white-space: nowrap;
+  }
+  td.opp-cell, td.reply-cell {
+    background: var(--accent-lt);
+    text-align: center;
+    border-right: 1px solid var(--accent-border);
+  }
+  td.opp-cell { border-left: 2px solid var(--accent); }
+  td.motion-cell { text-align: center; border-left: 1px solid var(--border2); }
+  td.motion-cell.first-service { border-left: 2px solid var(--border); }
+  .date-main { font-weight: 600; color: var(--fg); }
+  .date-note { font-size: 0.67rem; color: var(--muted); margin-top: 2px; }
+  .warn-cell .date-main { color: var(--red); }
+  .warn-badge {
+    display: inline-block;
+    background: var(--red-lt);
+    color: var(--red);
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-bottom: 3px;
+    border: 1px solid #f0b0aa;
+  }
+  .italic-note { font-style: italic; color: var(--muted); font-size: 0.75rem; }
+
+  /* group header spanning */
+  th.gh-empty {
+    background: #f0f4f8;
+    border-bottom: 2px solid var(--border);
+  }
+  th.gh-opp-reply {
+    background: var(--accent-lt);
+    color: var(--accent);
+    border-left: 2px solid var(--accent);
+    border-bottom: 2px solid var(--accent);
+    text-align: center;
+  }
+  th.gh-motion {
+    background: #f0f4f8;
+    color: var(--muted);
+    border-left: 2px solid var(--border);
+    border-bottom: 2px solid var(--border);
+    text-align: center;
+  }
+
+  /* expand button */
+  .expand-btn {
+    background: none;
+    border: 1.5px solid var(--border);
+    color: var(--accent);
+    padding: 5px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-family: inherit;
+    transition: background .15s;
+    white-space: nowrap;
+  }
+  .expand-btn:hover { background: var(--accent-lt); }
+
+  .table-meta {
+    margin-top: 10px;
+    font-size: 0.7rem;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  /* ── MODE B ── */
+  .mode-b {
+    max-width: 520px;
+  }
+  .field-group { margin-bottom: 20px; }
+  .field-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+    margin-bottom: 8px;
+    display: block;
+  }
+  .field-label .sub { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted); }
+  .chips { display: flex; gap: 7px; flex-wrap: wrap; }
+  .chip {
+    padding: 6px 16px;
+    border: 1.5px solid var(--border);
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    font-weight: 500;
+    font-family: inherit;
+    background: var(--surface);
+    color: var(--fg2);
+    transition: all .15s;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+  .chip.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .mail-sub {
+    margin-top: 8px;
+    padding: 10px 14px;
+    background: var(--accent-lt);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    display: flex;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+  .mail-sub .chip {
+    font-size: 0.75rem;
+    padding: 4px 12px;
+  }
+  .svc-note {
+    font-size: 0.76rem;
+    font-style: italic;
+    color: var(--muted);
+    padding: 6px 0;
+  }
+
+  /* result cards */
+  .result-cards { display: flex; flex-direction: column; gap: 10px; }
+  .result-card {
+    border: 1.5px solid var(--border);
+    border-left: 4px solid var(--border);
+    border-radius: 7px;
+    padding: 12px 16px;
+    background: var(--surface);
+  }
+  .result-card.highlight {
+    border-color: var(--accent);
+    border-left-color: var(--accent);
+    background: var(--accent-lt);
+  }
+  .result-card .card-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .result-card .card-date {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--fg);
+  }
+  .result-card .card-note {
+    font-size: 0.72rem;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+  .result-card .card-italic {
+    font-size: 0.85rem;
+    font-style: italic;
+    color: var(--muted);
+  }
+
+  .warn-box {
+    background: var(--red-lt);
+    border: 1.5px solid #e0b0aa;
+    border-radius: 7px;
+    padding: 10px 14px;
+    color: var(--red);
+    font-size: 0.8rem;
+    font-weight: 600;
+    line-height: 1.5;
+    margin-bottom: 10px;
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 48px 0;
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  .empty-state .big { font-size: 2rem; margin-bottom: 8px; }
+
+  /* divider between controls and main */
+  .section-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .section-bar .info {
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+  .section-bar .info strong { color: var(--fg); }
+</style>
+</head>
+<body>
+
+<div class="app-header">
+  <h1>Motion Deadline Calculator</h1>
+  <span class="subtitle">California Superior Court · CCP §§ 1005, 437c, 659, 1008</span>
+</div>
+
+<div class="detected" id="detected" style="display:none"></div>
+
+<div class="controls">
+  <div class="control-group">
+    <label>Hearing / Trigger Date</label>
+    <input type="date" id="baseDate">
+    <span class="date-display" id="dateFriendly"></span>
+  </div>
+  <div class="tabs">
+    <button class="tab active" id="tabA" data-action="mode" data-value="A">Quick Table</button>
+    <button class="tab" id="tabB" data-action="mode" data-value="B">Step-by-Step</button>
+  </div>
+</div>
+
+<div class="main">
+  <div id="modeA"></div>
+  <div id="modeB" style="display:none"></div>
+</div>
+
+<script src="deadline-calculator.js"></script>
+</body>
+</html>

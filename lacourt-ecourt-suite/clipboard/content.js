@@ -2545,6 +2545,84 @@ function renderDocumentsButton() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Floating "Deadlines" button (left of Documents)                     */
+/* ------------------------------------------------------------------ */
+//
+// Opens the in-extension Motion Deadline Calculator in its own window (on the
+// opposite display, like Export). Uses the same hearing detection as Export and
+// Documents to seed the calculator with the effective motion type + date.
+
+function renderDeadlineButton() {
+  if (document.getElementById('__lacourt_deadline_btn__')) return;
+  const caseReady = document.querySelector('a[href*="/ecourt/ecms/case"]');
+  if (!caseReady) return;
+
+  const btn = document.createElement('button');
+  btn.id = '__lacourt_deadline_btn__';
+  btn.type = 'button';
+  const setDlLabel = (text) => {
+    btn.innerHTML = '<span class="lac-btn-icon" style="vertical-align:middle">📅</span>' +
+      '<span class="lac-btn-text" style="vertical-align:middle">' + text + '</span>';
+  };
+  setDlLabel('Deadlines');
+  Object.assign(btn.style, {
+    position: 'fixed',
+    top: '0px',
+    right: '290px',
+    zIndex: '999998',
+    padding: '6px 16px',
+    background: '#0a6e6e',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0 0 6px 6px',
+    fontFamily: 'Georgia, serif',
+    fontSize: '13px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+    transition: 'background 0.15s, opacity 0.2s',
+  });
+  btn.addEventListener('mouseover', () => { btn.style.background = '#0d8f8f'; });
+  btn.addEventListener('mouseout',  () => { btn.style.background = '#0a6e6e'; });
+
+  const reset = (text, ms) => {
+    setDlLabel(text);
+    setTimeout(() => { btn.disabled = false; setDlLabel('Deadlines'); btn.style.opacity = '1'; }, ms || 2000);
+  };
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    setDlLabel('Detecting…');
+    btn.style.opacity = '0.7';
+    try {
+      const hearing = await resolveEffectiveHearing(document);
+      const payload = {
+        motionType: (hearing && hearing.motionType) || '',
+        hearingDate: (hearing && hearing.hearingDate) || '',
+        hearingType: (hearing && hearing.hearingType) || '',
+        caseNumber: parseCaseNumber() || '',
+        createdAt: Date.now(),
+      };
+      await new Promise(res => {
+        try {
+          chrome.storage.local.set({ deadlineCalcData: payload }, () => { void chrome.runtime.lastError; res(); });
+        } catch (_) { res(); }
+      });
+      const url = chrome.runtime.getURL('deadline-calculator/deadline-calculator.html');
+      chrome.runtime.sendMessage({ type: 'openFormOnOppositeDisplay', url }, () => {
+        void chrome.runtime.lastError;
+        reset('Opened');
+      });
+    } catch (err) {
+      console.error('[LACourt] deadline button error:', err);
+      reset('Error');
+    }
+  });
+
+  document.body.appendChild(btn);
+}
+
+/* ------------------------------------------------------------------ */
 /* Collapse the floating buttons to icons when zoomed in enough that     */
 /* their expanded labels would sit over e-court text.                    */
 /* ------------------------------------------------------------------ */
@@ -2559,10 +2637,13 @@ function ensureButtonStyles() {
   const st = document.createElement('style');
   st.id = '__lacourt_btn_styles__';
   st.textContent =
-    '#__lacourt_fill_btn__ .lac-btn-text,#__lacourt_docs_btn__ .lac-btn-text{margin-left:6px}' +
+    '#__lacourt_fill_btn__ .lac-btn-text,#__lacourt_docs_btn__ .lac-btn-text,' +
+    '#__lacourt_deadline_btn__ .lac-btn-text{margin-left:6px}' +
     '#__lacourt_fill_btn__[data-collapsed="1"] .lac-btn-text,' +
-    '#__lacourt_docs_btn__[data-collapsed="1"] .lac-btn-text{display:none}' +
-    '#__lacourt_fill_btn__[data-collapsed="1"],#__lacourt_docs_btn__[data-collapsed="1"]' +
+    '#__lacourt_docs_btn__[data-collapsed="1"] .lac-btn-text,' +
+    '#__lacourt_deadline_btn__[data-collapsed="1"] .lac-btn-text{display:none}' +
+    '#__lacourt_fill_btn__[data-collapsed="1"],#__lacourt_docs_btn__[data-collapsed="1"],' +
+    '#__lacourt_deadline_btn__[data-collapsed="1"]' +
     '{padding-left:9px!important;padding-right:9px!important}';
   (document.head || document.documentElement).appendChild(st);
 }
@@ -2601,33 +2682,42 @@ function lacRegionHasText(left, right, top, bottom, btns) {
   return hit;
 }
 
-// Measures the expanded footprint (toggling attributes synchronously so nothing
-// paints mid-measurement), then collapses both buttons to icons if that
-// footprint would overlap e-court text. Also keeps the Documents button docked
-// just left of the Export button in whichever state.
-function updateButtonCollapse() {
-  const exp = document.getElementById('__lacourt_fill_btn__');
-  if (!exp) return;
-  const doc = document.getElementById('__lacourt_docs_btn__');
-  const btns = doc ? [exp, doc] : [exp];
+// Docks the buttons in a row from the right edge inward (rightmost first) and
+// returns the left edge of the leftmost button.
+function dockButtonsRow(btns) {
+  const vw = document.documentElement.clientWidth;
+  let rightPx = BTN_EDGE, leftEdge = vw - BTN_EDGE;
+  for (const b of btns) {
+    b.style.right = rightPx + 'px';
+    const w = b.offsetWidth;
+    leftEdge = Math.min(leftEdge, vw - rightPx - w);
+    rightPx += w + BTN_GAP;
+  }
+  return leftEdge;
+}
 
-  // Force expanded and dock Documents next to the expanded Export width.
+// Measures the expanded footprint (toggling attributes synchronously so nothing
+// paints mid-measurement), then collapses all floating buttons to icons if that
+// footprint would overlap e-court text. Keeps the buttons docked in a row
+// (Export rightmost, then Documents, then Deadlines) in whichever state.
+function updateButtonCollapse() {
+  const ids = ['__lacourt_fill_btn__', '__lacourt_docs_btn__', '__lacourt_deadline_btn__'];
+  const btns = ids.map(id => document.getElementById(id)).filter(Boolean);
+  if (!btns.length) return;
+
+  // Force expanded and dock across the row to measure the full footprint.
   btns.forEach(b => b.removeAttribute('data-collapsed'));
-  exp.style.right = BTN_EDGE + 'px';
-  const expW = exp.offsetWidth;
-  if (doc) doc.style.right = (BTN_EDGE + expW + BTN_GAP) + 'px';
-  const docW = doc ? doc.offsetWidth : 0;
+  const leftEdge = dockButtonsRow(btns);
 
   const vw = document.documentElement.clientWidth;
-  const right = vw - BTN_EDGE;
-  const left = Math.max(0, vw - BTN_EDGE - expW - (doc ? BTN_GAP + docW : 0));
-  const bottom = Math.max(exp.offsetHeight, doc ? doc.offsetHeight : 0) - 3;
+  let maxH = 0;
+  btns.forEach(b => { if (b.offsetHeight > maxH) maxH = b.offsetHeight; });
 
-  const overlap = lacRegionHasText(left, right, 3, Math.max(3, bottom), btns);
+  const overlap = lacRegionHasText(Math.max(0, leftEdge), vw - BTN_EDGE, 3, Math.max(3, maxH - 3), btns);
 
   if (overlap) {
     btns.forEach(b => b.setAttribute('data-collapsed', '1'));
-    if (doc) doc.style.right = (BTN_EDGE + exp.offsetWidth + BTN_GAP) + 'px';
+    dockButtonsRow(btns); // re-dock at the narrower collapsed widths
   }
 }
 
@@ -2645,6 +2735,7 @@ function setupFillFormButton() {
     ensureButtonStyles();
     renderFillFormButton();
     renderDocumentsButton();
+    renderDeadlineButton();
     scheduleButtonCollapse();
   };
 
