@@ -2108,13 +2108,16 @@ function isCrossComplaintDoc(name) {
   return /^(?:(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+)?(?:amended\s+)?cross-?complaint\b/i.test(n);
 }
 // A petition is another kind of initial pleading (probate, family, writ, etc.),
-// used as the operative pleading only when the case has no complaint. Word-
-// boundary match, so "Petitioner" in other filings doesn't count.
+// used as the operative pleading only when the case has no complaint. Match the
+// pleading ITSELF — a name that starts with "Petition" (optionally prefixed by
+// "Verified"/"Amended"/an ordinal) — NOT documents that merely reference one
+// ("Notice of Hearing on Petition", "Proof of Service of Petition", "Order on
+// Petition").
 function isPetitionDoc(name) {
   const n = (name || '').trim();
   if (/^amendment to /i.test(n)) return false;
   if (/fictitious|incorrect\s+name/i.test(n)) return false;
-  return /\bpetition\b/i.test(n);
+  return /^(?:(?:verified|amended|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+)*petition\b/i.test(n);
 }
 // Latest openable doc in a list (operative pleading).
 function latestDoc(list) {
