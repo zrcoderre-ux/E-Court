@@ -199,18 +199,24 @@
       padding: 8px 0;
     }
     .doc-tracking { font-size: 13px; margin: 8px 0; }
-    .doc-tracking .dt-case { margin-bottom: 14px; }
-    .doc-tracking .dt-case-title { font-weight: bold; color: #1a365d; margin-bottom: 4px; }
-    .doc-tracking .dt-sub { color: #666; font-weight: normal; font-size: 12px; }
-    .doc-tracking ul { list-style: none; padding-left: 12px; margin: 4px 0; }
-    .doc-tracking li { padding: 2px 0; }
-    .doc-tracking li.dt-notdl { color: #c0392b; }
-    .doc-tracking li.dt-notdl::before { content: '⚠ not downloaded — '; font-style: italic; }
-    .doc-tracking li.dt-dl { color: #1a6b3a; }
-    .doc-tracking li.dt-dl::before { content: '✓ '; }
-    .doc-tracking li.dt-manual { border-left: 3px solid #b8860b; padding-left: 6px; }
-    .doc-tracking li.dt-manual::after { content: ' ⟵ button missed'; color: #b8860b; font-style: italic; }
-    .doc-tracking .dt-src { color: #999; font-size: 11px; font-family: 'Courier New', monospace; }
+    .doc-tracking .dt-summary { font-size: 12px; color: #666; margin-bottom: 6px; }
+    .dt-tablewrap { max-height: 440px; overflow: auto; border: 1px solid #e0d8cc; border-radius: 4px; }
+    .dt-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+    .dt-table th, .dt-table td { border: 1px solid #e8e0d4; padding: 5px 9px; text-align: left; vertical-align: top; }
+    .dt-table th {
+      background: #f0ebe0; color: #1a365d; cursor: pointer; white-space: nowrap;
+      user-select: none; position: sticky; top: 0; z-index: 1;
+    }
+    .dt-table th:hover { background: #e6dcc8; }
+    .dt-table tbody tr:nth-child(even) td { background: #faf8f4; }
+    .dt-table .dt-src-cell { font-family: 'Courier New', monospace; font-size: 11px; color: #555; white-space: nowrap; }
+    .dt-table .dt-when { color: #888; white-space: nowrap; }
+    .dt-table .dt-yes { color: #1a6b3a; font-weight: bold; }
+    .dt-table .dt-no { color: #c0392b; font-weight: bold; }
+    .dt-table .dt-muted { color: #bbb; }
+    .dt-table .dt-missed { color: #b8860b; font-style: italic; }
+    .dt-table tr.dt-row-over td { background: #fdf0ee; }
+    .dt-table tr.dt-row-under td:first-child { box-shadow: inset 3px 0 0 #b8860b; }
   </style>
 </head>
 <body>
@@ -260,18 +266,17 @@
 
     <div class="card">
       <h2>Documents Button — Debug Tracking</h2>
-      <p class="hint">Records every document opened for a case, tagged by source:
-        <strong>[button]</strong> the Documents button opened it, <strong>[manual]</strong> you opened it yourself,
-        <strong>[button + manual]</strong> both.
-        When you download at least one document from a case, the ones opened but
-        <strong>not</strong> downloaded are flagged in red (likely <em>over</em>-inclusions to refine).
-        Documents you opened manually that the button never opened (<span style="color:#b8860b;">button missed</span>)
-        are candidate <em>under</em>-inclusions. Names match e-court, not the PDF filenames.
-        Cases where you downloaded nothing are shown for reference only.</p>
+      <p class="hint">One row per document opened for a case, tagged by <strong>source</strong>
+        (<code>button</code> / <code>manual</code> / <code>button+manual</code>). Click any column header to sort.
+        Rows shaded red are <em>over</em>-inclusions (opened but you didn't download it, once the case has ≥1 download);
+        rows with a <span style="color:#b8860b;">gold edge / "button missed"</span> are <em>under</em>-inclusions
+        (you opened it yourself, the button never did). Names match e-court, not the PDF filenames.
+        <strong>Download CSV</strong> to open in Excel/Sheets and sort, filter, or pivot across all cases.</p>
       <div id="docTrackingView" class="doc-tracking"></div>
       <div class="actions">
         <button class="btn-reset" id="docTrackingRefresh">Refresh</button>
-        <button class="btn-reset" id="docTrackingCopy">Copy as text</button>
+        <button class="btn-reset" id="docTrackingDownload">Download CSV</button>
+        <button class="btn-reset" id="docTrackingCopy">Copy CSV</button>
         <button class="btn-reset" id="docTrackingClear">Clear tracking</button>
         <span class="save-status" id="docTrackingStatus">✓ Done</span>
       </div>

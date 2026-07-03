@@ -217,113 +217,139 @@ makeListController({
 });
 
 /* ------------------------------------------------------------------ */
-/* Card 3: Documents-button debug tracking                             */
+/* Card 3: Documents-button debug tracking (sortable table + CSV)      */
 /* ------------------------------------------------------------------ */
 
-// Groups the opened-document tracking by case. Each entry is
-// { docId, name, at, downloaded, button, manual }. Cases with >=1 download flag
-// the docs that were opened but not downloaded (candidate over-inclusions).
-// Docs opened only manually (button === false) are candidate under-inclusions
-// the Documents button should have opened but didn't.
-function loadDocTrackingGrouped(cb) {
+// Flattens the opened-document tracking into one row per document:
+//   { caseNumber, name, source, downloaded, dlKnown, buttonMissed, at }
+// dlKnown is true once the case has >=1 recorded download, which is what makes
+// "not downloaded" (over-inclusion) meaningful. buttonMissed flags docs opened
+// only manually — candidate under-inclusions the button should have opened.
+function loadDocTrackingRows(cb) {
   chrome.storage.local.get(['docTracking'], result => {
     const t = (result && result.docTracking) || {};
     const opened = t.opened || {};
     const downloaded = t.downloaded || {};
-    const byCase = {};
-    Object.keys(opened).forEach(docId => {
-      const o = opened[docId] || {};
-      const cn = o.caseNumber || '(unknown case)';
-      (byCase[cn] = byCase[cn] || []).push({
-        docId,
-        name: o.name || '(unnamed)',
-        at: o.at || 0,
-        downloaded: !!downloaded[docId],
-        button: !!o.button,
-        manual: !!o.manual,
-      });
+
+    const dlByCase = {};
+    Object.keys(opened).forEach(id => {
+      const cn = (opened[id] || {}).caseNumber || '(unknown case)';
+      if (!(cn in dlByCase)) dlByCase[cn] = 0;
+      if (downloaded[id]) dlByCase[cn]++;
     });
-    cb(byCase);
+
+    const rows = Object.keys(opened).map(id => {
+      const o = opened[id] || {};
+      const cn = o.caseNumber || '(unknown case)';
+      return {
+        caseNumber: cn,
+        name: o.name || '(unnamed)',
+        source: (o.button && o.manual) ? 'button+manual' : (o.button ? 'button' : 'manual'),
+        downloaded: !!downloaded[id],
+        dlKnown: dlByCase[cn] > 0,
+        buttonMissed: !!(o.manual && !o.button),
+        at: o.at || 0,
+      };
+    });
+    cb(rows);
+  });
+}
+
+function dtEscHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function dtWhen(at) { return at ? new Date(at).toLocaleString() : ''; }
+
+// Rank downloaded state so the column sorts sensibly: 0 unknown, 1 not, 2 yes.
+function dtDlRank(r) { return !r.dlKnown ? 0 : (r.downloaded ? 2 : 1); }
+
+let dtSortKey = 'caseNumber';
+let dtSortDir = 1;
+
+function dtSortRows(rows) {
+  const dir = dtSortDir;
+  return rows.slice().sort((a, b) => {
+    let av, bv;
+    if (dtSortKey === 'name') { av = a.name.toLowerCase(); bv = b.name.toLowerCase(); }
+    else if (dtSortKey === 'source') { av = a.source; bv = b.source; }
+    else if (dtSortKey === 'downloaded') { av = dtDlRank(a); bv = dtDlRank(b); }
+    else if (dtSortKey === 'at') { av = a.at; bv = b.at; }
+    else { av = a.caseNumber; bv = b.caseNumber; }
+    if (av < bv) return -dir;
+    if (av > bv) return dir;
+    return b.at - a.at; // stable tiebreak: newest first
   });
 }
 
 function renderDocTracking() {
   const view = document.getElementById('docTrackingView');
   if (!view) return;
-  loadDocTrackingGrouped(byCase => {
-    const cases = Object.keys(byCase);
-    if (!cases.length) {
+  loadDocTrackingRows(rows => {
+    if (!rows.length) {
       view.innerHTML = '<p class="empty-note">No documents opened yet.</p>';
       return;
     }
-    const lastAt = cn => Math.max.apply(null, byCase[cn].map(d => d.at));
-    cases.sort((a, b) => lastAt(b) - lastAt(a));
+    const over = rows.filter(r => r.dlKnown && !r.downloaded).length;
+    const under = rows.filter(r => r.buttonMissed).length;
+    const arrow = k => dtSortKey === k ? (dtSortDir > 0 ? ' ▲' : ' ▼') : '';
+    const cols = [
+      ['caseNumber', 'Case'], ['name', 'Document'], ['source', 'Source'],
+      ['downloaded', 'Downloaded'], ['at', 'Opened'],
+    ];
 
-    view.innerHTML = '';
-    cases.forEach(cn => {
-      const docs = byCase[cn].slice().sort((a, b) => b.at - a.at);
-      const dlCount = docs.filter(d => d.downloaded).length;
-      const manualOnly = docs.filter(d => d.manual && !d.button).length;
+    let html = '<div class="dt-summary">' + rows.length + ' documents · ' +
+      over + ' opened-not-downloaded (over) · ' + under + ' button-missed (under)</div>' +
+      '<div class="dt-tablewrap"><table class="dt-table"><thead><tr>' +
+      cols.map(c => `<th data-sort="${c[0]}">${c[1]}${arrow(c[0])}</th>`).join('') +
+      '</tr></thead><tbody>';
 
-      const wrap = document.createElement('div');
-      wrap.className = 'dt-case';
+    dtSortRows(rows).forEach(r => {
+      const dlCell = !r.dlKnown ? '<span class="dt-muted">—</span>'
+        : (r.downloaded ? '<span class="dt-yes">✓ yes</span>' : '<span class="dt-no">✗ no</span>');
+      const cls = [];
+      if (r.dlKnown && !r.downloaded) cls.push('dt-row-over');
+      if (r.buttonMissed) cls.push('dt-row-under');
+      html += `<tr class="${cls.join(' ')}">` +
+        `<td>${dtEscHtml(r.caseNumber)}</td>` +
+        `<td>${dtEscHtml(r.name)}</td>` +
+        `<td class="dt-src-cell">${r.source}${r.buttonMissed ? ' <span class="dt-missed">button missed</span>' : ''}</td>` +
+        `<td>${dlCell}</td>` +
+        `<td class="dt-when">${dtEscHtml(dtWhen(r.at))}</td>` +
+        '</tr>';
+    });
+    html += '</tbody></table></div>';
+    view.innerHTML = html;
 
-      const title = document.createElement('div');
-      title.className = 'dt-case-title';
-      title.textContent = cn;
-      const sub = document.createElement('span');
-      sub.className = 'dt-sub';
-      sub.textContent = '  — ' + docs.length + ' opened' +
-        (dlCount > 0 ? (', ' + (docs.length - dlCount) + ' not downloaded') : ' (no downloads recorded)') +
-        (manualOnly > 0 ? (', ' + manualOnly + ' button missed') : '');
-      title.appendChild(sub);
-      wrap.appendChild(title);
-
-      const ul = document.createElement('ul');
-      docs.forEach(d => {
-        const li = document.createElement('li');
-        li.textContent = d.name;
-        // Over-inclusion: the button opened it but you didn't download it.
-        if (dlCount > 0 && !d.downloaded) li.classList.add('dt-notdl');
-        else if (dlCount > 0 && d.downloaded) li.classList.add('dt-dl');
-        // Under-inclusion: you opened it yourself; the button never did.
-        if (d.manual && !d.button) li.classList.add('dt-manual');
-
-        const tag = document.createElement('span');
-        tag.className = 'dt-src';
-        tag.textContent = d.button && d.manual ? ' [button + manual]'
-          : d.button ? ' [button]'
-          : ' [manual]';
-        li.appendChild(tag);
-
-        ul.appendChild(li);
+    view.querySelectorAll('th[data-sort]').forEach(th => {
+      th.addEventListener('click', () => {
+        const k = th.getAttribute('data-sort');
+        if (dtSortKey === k) dtSortDir = -dtSortDir;
+        else { dtSortKey = k; dtSortDir = 1; }
+        renderDocTracking();
       });
-      wrap.appendChild(ul);
-      view.appendChild(wrap);
     });
   });
 }
 
-function docTrackingAsText(cb) {
-  loadDocTrackingGrouped(byCase => {
-    const lines = [];
-    Object.keys(byCase).forEach(cn => {
-      const docs = byCase[cn].slice().sort((a, b) => b.at - a.at);
-      const dlCount = docs.filter(d => d.downloaded).length;
-      const manualOnly = docs.filter(d => d.manual && !d.button).length;
-      lines.push(cn + '  (' + docs.length + ' opened' +
-        (dlCount > 0 ? (', ' + (docs.length - dlCount) + ' not downloaded') : ', no downloads recorded') +
-        (manualOnly > 0 ? (', ' + manualOnly + ' button missed') : '') + ')');
-      docs.forEach(d => {
-        const mark = dlCount > 0 ? (d.downloaded ? '[downloaded] ' : '[NOT downloaded] ') : '';
-        const src = d.button && d.manual ? '[button+manual] '
-          : d.button ? '[button] '
-          : '[manual] ';
-        lines.push('  ' + mark + src + d.name);
+// One row per document, sorted by case then newest-first, quoted for CSV.
+function dtCsvCell(s) {
+  s = String(s == null ? '' : s);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function docTrackingCsv(cb) {
+  loadDocTrackingRows(rows => {
+    const header = ['Case', 'Document', 'Source', 'Downloaded', 'ButtonMissed', 'OpenedAt'];
+    const lines = [header.map(dtCsvCell).join(',')];
+    rows.slice()
+      .sort((a, b) => (a.caseNumber < b.caseNumber ? -1 : a.caseNumber > b.caseNumber ? 1 : b.at - a.at))
+      .forEach(r => {
+        const dl = !r.dlKnown ? 'unknown' : (r.downloaded ? 'yes' : 'no');
+        lines.push([
+          r.caseNumber, r.name, r.source, dl, r.buttonMissed ? 'yes' : '', dtWhen(r.at),
+        ].map(dtCsvCell).join(','));
       });
-      lines.push('');
-    });
-    cb(lines.join('\n').trim() || '(no data)');
+    cb(lines.join('\r\n'));
   });
 }
 
@@ -337,19 +363,37 @@ function docTrackingStatus(msg) {
 
 (function initDocTracking() {
   const refresh = document.getElementById('docTrackingRefresh');
+  const downloadBtn = document.getElementById('docTrackingDownload');
   const copyBtn = document.getElementById('docTrackingCopy');
   const clearBtn = document.getElementById('docTrackingClear');
   if (!refresh) return; // card not present
 
   refresh.addEventListener('click', () => { renderDocTracking(); docTrackingStatus('✓ Refreshed'); });
+
+  downloadBtn.addEventListener('click', () => {
+    docTrackingCsv(csv => {
+      const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'documents-debug-tracking.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      docTrackingStatus('✓ CSV downloaded');
+    });
+  });
+
   copyBtn.addEventListener('click', () => {
-    docTrackingAsText(text => {
-      navigator.clipboard.writeText(text).then(
-        () => docTrackingStatus('✓ Copied'),
+    docTrackingCsv(csv => {
+      navigator.clipboard.writeText(csv).then(
+        () => docTrackingStatus('✓ CSV copied'),
         () => docTrackingStatus('Copy failed')
       );
     });
   });
+
   clearBtn.addEventListener('click', () => {
     if (!confirm('Clear all Documents-button tracking data?')) return;
     chrome.storage.local.remove('docTracking', () => { renderDocTracking(); docTrackingStatus('✓ Cleared'); });
