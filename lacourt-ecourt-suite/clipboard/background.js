@@ -181,46 +181,75 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 const DOC_TRACKING_CAP = 1000;
 
+// Serialize read-modify-write on docTracking. Each download fires its own
+// downloads event, so several updateDocTracking() calls can be in flight at
+// once; without a queue they each read the same snapshot and the last write
+// clobbers the others (so most "downloaded" marks were being lost). Chaining
+// the operations makes every mutation observe the previous write.
+let docTrackingQueue = Promise.resolve();
 function updateDocTracking(mutator) {
-  chrome.storage.local.get(['docTracking'], result => {
-    const t = (result && result.docTracking) || {};
-    if (!t.opened) t.opened = {};
-    if (!t.downloaded) t.downloaded = {};
-    try { mutator(t); } catch (_) {}
+  docTrackingQueue = docTrackingQueue.then(() => new Promise(resolve => {
+    try {
+      chrome.storage.local.get(['docTracking'], result => {
+        const t = (result && result.docTracking) || {};
+        if (!t.opened) t.opened = {};
+        if (!t.downloaded) t.downloaded = {};
+        try { mutator(t); } catch (_) {}
 
-    // Prune the oldest opened entries (and their download marks) if unbounded.
-    const ids = Object.keys(t.opened);
-    if (ids.length > DOC_TRACKING_CAP) {
-      ids.sort((a, b) => (t.opened[a].at || 0) - (t.opened[b].at || 0));
-      for (const id of ids.slice(0, ids.length - DOC_TRACKING_CAP)) {
-        delete t.opened[id];
-        delete t.downloaded[id];
-      }
-    }
-    chrome.storage.local.set({ docTracking: t });
-  });
+        // Prune the oldest opened entries (and their download marks) if unbounded.
+        const ids = Object.keys(t.opened);
+        if (ids.length > DOC_TRACKING_CAP) {
+          ids.sort((a, b) => (t.opened[a].at || 0) - (t.opened[b].at || 0));
+          for (const id of ids.slice(0, ids.length - DOC_TRACKING_CAP)) {
+            delete t.opened[id];
+            delete t.downloaded[id];
+          }
+        }
+        chrome.storage.local.set({ docTracking: t }, () => { void chrome.runtime.lastError; resolve(); });
+      });
+    } catch (_) { resolve(); }
+  }));
+  return docTrackingQueue;
 }
 
-// Pull an e-court docId out of a download's URLs (the PDF is served from
-// /ecourt/ecms/doc?docId=<n>&v=...). Returns null if none.
+// Pull an e-court docId out of a download. The PDF is served from
+// /ecourt/ecms/doc?docId=<n>&v=..., so the id usually rides one of the URL
+// fields; the filename is checked too as a last resort.
 function docIdFromDownload(item) {
-  const fields = [item && item.url, item && item.finalUrl, item && item.referrer];
+  const fields = [
+    item && item.url, item && item.finalUrl, item && item.referrer, item && item.filename,
+  ];
   for (const f of fields) {
     if (!f) continue;
-    const m = String(f).match(/[?&]docId=(\d+)/);
+    const m = String(f).match(/[?&]docId=(\d+)/) || String(f).match(/\bdocId=(\d+)/);
     if (m) return m[1];
   }
   return null;
 }
 
 // Mark a downloaded docId — but only if we opened it (so "not downloaded"
-// stays meaningful and the store stays bounded to tracked docs).
+// stays meaningful and the store stays bounded to tracked docs). We listen on
+// BOTH onCreated (fires early) and onChanged→complete (fires with fully
+// populated url/finalUrl/referrer/filename), then look the item up so late
+// fields are available. The serialized queue makes the double-fire idempotent.
+function markDownloaded(item) {
+  const docId = docIdFromDownload(item);
+  if (!docId) return;
+  updateDocTracking(t => {
+    if (t.opened[docId]) t.downloaded[docId] = { at: Date.now() };
+  });
+}
+
 if (chrome.downloads && chrome.downloads.onCreated) {
-  chrome.downloads.onCreated.addListener(item => {
-    const docId = docIdFromDownload(item);
-    if (!docId) return;
-    updateDocTracking(t => {
-      if (t.opened[docId]) t.downloaded[docId] = { at: Date.now() };
+  chrome.downloads.onCreated.addListener(markDownloaded);
+}
+if (chrome.downloads && chrome.downloads.onChanged) {
+  chrome.downloads.onChanged.addListener(delta => {
+    if (!delta || !delta.state || delta.state.current !== 'complete') return;
+    if (!chrome.downloads.search) return;
+    chrome.downloads.search({ id: delta.id }, items => {
+      void chrome.runtime.lastError;
+      if (items && items[0]) markDownloaded(items[0]);
     });
   });
 }
