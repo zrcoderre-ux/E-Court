@@ -2557,25 +2557,42 @@ function renderDocumentsButton() {
 // we scan the case's Documents for the operative notice-of-entry filing so the
 // calculator can seed the correct trigger date.
 const NOTICE_OF_ENTRY_RE = /notice of (entry|ruling)/i;
+const ENTRY_OF_JUDGMENT_RE = /\bjudgment\b/i;
 function isTriggerBasedMotion(motionType) {
   return /reconsideration|renewed?\s+motion|\b1008\b|new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/i.test(motionType || '');
 }
-async function detectNoticeOfEntry(hearingDateStr) {
+// The entry-of-judgment filing itself (for the § 659 180-day outer limit), as
+// opposed to notices/proposed/supporting papers that merely mention "judgment".
+function isEntryOfJudgmentDoc(name) {
+  return ENTRY_OF_JUDGMENT_RE.test(name) &&
+    !/notice|proposed|request|application|memorandum|points|declaration|stipulat|objection|opposition|\breply\b|\bmotion\b|abstract|assignment|renewal/i.test(name);
+}
+// Latest matching doc filed on or before the hearing (the challenged order/
+// judgment predates the motion); falls back to the latest overall.
+function latestDocOnOrBefore(matches, cutoff) {
+  let pool = cutoff ? matches.filter(d => d.when <= cutoff) : matches;
+  if (!pool.length) pool = matches;
+  if (!pool.length) return null;
+  pool.sort((a, b) => b.when - a.when);
+  return pool[0];
+}
+// One Documents fetch that finds both the notice-of-entry filing (the § 1008 /
+// § 659 15-day trigger) and the entry-of-judgment filing (the § 659 180-day
+// outer limit).
+async function detectTriggerDates(hearingDateStr) {
+  const out = { noticeOfEntryDate: '', noticeOfEntryDoc: '', entryOfJudgmentDate: '', entryOfJudgmentDoc: '' };
   try {
     const docsUrl = getDocumentsUrl();
-    if (!docsUrl) return null;
+    if (!docsUrl) return out;
     const docs = await fetchAllDocuments(docsUrl);
-    if (!docs || !docs.length) return null;
-    const matches = docs.filter(d => d.name && d.when && NOTICE_OF_ENTRY_RE.test(d.name));
-    if (!matches.length) return null;
-    // Prefer notices filed on or before the hearing (the order being challenged
-    // predates the motion); otherwise fall back to all matches. Latest wins.
+    if (!docs || !docs.length) return out;
     const cutoff = hearingDateStr ? parseHearingDateTime(hearingDateStr) : null;
-    let pool = cutoff ? matches.filter(d => d.when <= cutoff) : matches;
-    if (!pool.length) pool = matches;
-    pool.sort((a, b) => b.when - a.when);
-    return { date: pool[0].dateStr, name: pool[0].name };
-  } catch (_) { return null; }
+    const noe = latestDocOnOrBefore(docs.filter(d => d.name && d.when && NOTICE_OF_ENTRY_RE.test(d.name)), cutoff);
+    if (noe) { out.noticeOfEntryDate = noe.dateStr; out.noticeOfEntryDoc = noe.name; }
+    const eoj = latestDocOnOrBefore(docs.filter(d => d.name && d.when && isEntryOfJudgmentDoc(d.name)), cutoff);
+    if (eoj) { out.entryOfJudgmentDate = eoj.dateStr; out.entryOfJudgmentDoc = eoj.name; }
+    return out;
+  } catch (_) { return out; }
 }
 
 function renderDeadlineButton() {
@@ -2624,13 +2641,12 @@ function renderDeadlineButton() {
       const hearing = await resolveEffectiveHearing(document);
       const motionType = (hearing && hearing.motionType) || '';
 
-      // For trigger-based motions, try to detect the notice-of-entry date from
-      // the case documents (the statutory trigger). Skipped for ordinary
-      // motions so the common path stays fast.
-      let noticeOfEntryDate = '', noticeOfEntryDoc = '';
+      // For trigger-based motions, detect the statutory trigger dates (notice of
+      // entry, and entry of judgment for the new-trial 180-day cap) from the
+      // case documents. Skipped for ordinary motions so the common path is fast.
+      let trig = { noticeOfEntryDate: '', noticeOfEntryDoc: '', entryOfJudgmentDate: '', entryOfJudgmentDoc: '' };
       if (isTriggerBasedMotion(motionType)) {
-        const noe = await detectNoticeOfEntry(hearing && hearing.hearingDate);
-        if (noe) { noticeOfEntryDate = noe.date; noticeOfEntryDoc = noe.name; }
+        trig = await detectTriggerDates(hearing && hearing.hearingDate);
       }
 
       const payload = {
@@ -2638,8 +2654,10 @@ function renderDeadlineButton() {
         hearingDate: (hearing && hearing.hearingDate) || '',
         hearingType: (hearing && hearing.hearingType) || '',
         caseNumber: parseCaseNumber() || '',
-        noticeOfEntryDate,
-        noticeOfEntryDoc,
+        noticeOfEntryDate: trig.noticeOfEntryDate,
+        noticeOfEntryDoc: trig.noticeOfEntryDoc,
+        entryOfJudgmentDate: trig.entryOfJudgmentDate,
+        entryOfJudgmentDoc: trig.entryOfJudgmentDoc,
         createdAt: Date.now(),
       };
       await new Promise(res => {
