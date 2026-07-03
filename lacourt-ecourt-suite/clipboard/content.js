@@ -2797,6 +2797,61 @@ function scheduleButtonCollapse() {
 }
 window.addEventListener('resize', scheduleButtonCollapse);
 
+/* ------------------------------------------------------------------ */
+/* Inline Opposition / Reply (and Motion) deadlines on the "Next" header */
+/* ------------------------------------------------------------------ */
+//
+// For a briefable motion on calendar (a "Hearing on <motion>"), compute the
+// § 1005 / § 437c briefing deadlines from the hearing date and show them inline
+// next to the Next-event indicator. The moving-papers deadline assumes
+// electronic service. Any deadline already in the past is shown in red.
+
+function fmtShortDate(d) {
+  return (!d || isNaN(d)) ? '' : d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' });
+}
+function findNextHeaderSpan() {
+  const spans = document.querySelectorAll('span[title]');
+  for (const span of spans) {
+    const hay = ((span.getAttribute('title') || '') + ' ' + (span.textContent || '')).replace(/\s+/g, ' ');
+    if (/\bnext\b/i.test(hay) && /\d{1,2}\/\d{1,2}\/\d{4}/.test(hay)) return span;
+  }
+  return null;
+}
+function renderNextHeaderDeadlines() {
+  try {
+    const D = window.LACourtDeadlines;
+    if (!D) return;
+    const span = findNextHeaderSpan();
+    if (!span || !span.parentNode) return;
+    if (span.parentNode.querySelector('.__lacourt_next_dl__')) return; // already shown
+
+    // Only "Hearing on <motion>" events are §1005/§437c-briefed. Non-motion
+    // events (CMC, OSC, trial, status conference) have no "Hearing on" prefix.
+    const motionType = parseMotionType(document);
+    if (!motionType) return;
+    const cat = D.classifyMotion(motionType);
+    if (cat !== 'standard' && cat !== 'msj') return; // new trial / recon aren't hearing-based
+
+    const hearing = parseHearingDateTime(parseHearingDate(document));
+    if (!hearing) return;
+
+    const motion = cat === 'msj' ? D.msjMotion(hearing, 'electronic') : D.stdMotion(hearing, 'electronic');
+    const opp    = cat === 'msj' ? D.msjOpp(hearing) : D.stdOpp(hearing);
+    const reply  = cat === 'msj' ? D.msjReply(hearing) : D.stdReply(hearing);
+
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const late = d => d && !isNaN(d) && d < today;
+    const item = (label, d) => `<span style="color:${late(d) ? '#c0392b' : '#0a6e6e'}">${label} ${fmtShortDate(d)}</span>`;
+    const gap = '<span style="display:inline-block;width:20px"></span>';
+
+    const el = document.createElement('span');
+    el.className = '__lacourt_next_dl__';
+    el.setAttribute('style', 'margin-left:22px;font-weight:600;white-space:nowrap;font-family:inherit;');
+    el.innerHTML = item('Motion Due', motion) + gap + item('Opposition Due', opp) + gap + item('Reply Due', reply);
+    span.parentNode.insertBefore(el, span.nextSibling);
+  } catch (_) { /* best-effort UI */ }
+}
+
 function setupFillFormButton() {
   // The parties table loads after initial page render. Try once on DOMContentLoaded
   // and once on full load, then poll briefly until it appears (cap at ~10s).
@@ -2805,6 +2860,7 @@ function setupFillFormButton() {
     renderFillFormButton();
     renderDocumentsButton();
     renderDeadlineButton();
+    renderNextHeaderDeadlines();
     scheduleButtonCollapse();
   };
 

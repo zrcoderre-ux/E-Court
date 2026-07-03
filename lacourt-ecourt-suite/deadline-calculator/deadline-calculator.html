@@ -310,6 +310,12 @@
     color: #fff;
     font-weight: 600;
   }
+  .chip.chip-toggle {
+    border-style: dashed;
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+  .chip.chip-toggle:hover { color: var(--accent); border-color: var(--accent); }
   .mail-sub {
     margin-top: 8px;
     padding: 10px 14px;
@@ -431,6 +437,7 @@
   <div id="modeB" style="display:none"></div>
 </div>
 
+<script src="../lib/deadlines.js"></script>
 <script src="deadline-calculator.js"></script>
 </body>
 </html>
