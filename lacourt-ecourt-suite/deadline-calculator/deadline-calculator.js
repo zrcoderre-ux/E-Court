@@ -19,7 +19,8 @@ let state = {
   motionType: 'standard',
   service: 'electronic',
   mailRegion: 'ca',
-  detected: null, // { rawMotion, hearingDate, caseNumber, category }
+  entryDate: null, // entry-of-judgment date — new trial's 180-day outer limit
+  detected: null, // { rawMotion, hearingDate, caseNumber, category, ... }
 };
 
 // ── HOLIDAYS ───────────────────────────────────────────────────────────────
@@ -244,6 +245,11 @@ function renderDetectedBanner() {
     } else {
       extra = `<div class="det-rule">No notice of entry found in the case documents — set the date to the notice of entry of the order being challenged.</div>`;
     }
+    if (d.category === 'new_trial' && d.entryOfJudgmentDate) {
+      extra += `<div class="det-rule">Entry of judgment detected: <strong>${esc(d.entryOfJudgmentDate)}</strong>` +
+        (d.entryOfJudgmentDoc ? ` (${esc(d.entryOfJudgmentDoc)})` : '') +
+        ` — used for the 180-day outer limit.</div>`;
+    }
   }
   el.innerHTML =
     `<span class="det-tag">Detected</span> ${bits.join(' · ')}` +
@@ -277,7 +283,9 @@ function getSectionData(baseDate) {
     },
     {
       id: 'newtrial', label: 'New Trial / JNOV',
-      motionFn: () => newTrialDL(baseDate), motionRule: '15 days from notice (no svc. ext., § 659(b))',
+      // Table shows the 15-day-from-notice date; the 180-day-from-entry outer
+      // limit needs the entry-of-judgment date, so it lives in Step-by-Step.
+      motionFn: () => newTrialDL(baseDate), motionRule: '15 days from notice, or 180 from entry (§ 659(a)(2))',
       // § 659a briefing runs from filing/service of the notice of intention, not
       // from the notice-of-entry base — so these can't be dated from it alone.
       opp: null, oppNote: 'Opposition 10 days after service of moving brief (§ 659a)',
@@ -415,12 +423,30 @@ function renderInteractiveMode() {
       reply: msjReply(state.baseDate), replyNote: '11 calendar days before hearing',
     };
   } else if (mt === 'new_trial') {
-    const d = newTrialDL(state.baseDate);
+    // § 659(a)(2): notice of intention is due the EARLIEST of 15 days after
+    // service of notice of entry, or 180 days after entry of judgment.
+    const d15 = state.baseDate ? newTrialDL(state.baseDate) : null;
+    const d180 = state.entryDate ? nextCourtDay(addCAL(state.entryDate, 180)) : null;
+    let controlling = null, which = '';
+    if (d15 && d180) {
+      if (d15 <= d180) { controlling = d15; which = '15 days after service of notice of entry controls'; }
+      else { controlling = d180; which = '180 days after entry of judgment controls'; }
+    } else if (d15) {
+      controlling = d15; which = '15 days after service of notice of entry (add the entry-of-judgment date for the 180-day cap)';
+    } else if (d180) {
+      controlling = d180; which = '180 days after entry of judgment';
+    }
+    const parts = [];
+    if (d15) parts.push('15 days from notice of entry: ' + fmt(d15));
+    if (d180) parts.push('180 days from entry of judgment: ' + fmt(d180));
     res = {
-      motion: d, motionNote: '15 calendar days from notice of entry; not extended by service (§ 659(b)). Court’s power to rule expires 75 days after notice of entry (§ 660(c)).',
+      motion: controlling,
+      motionNote: 'Earliest of the § 659(a)(2) triggers — ' + which + '. ' +
+        (parts.length ? '(' + parts.join(' · ') + '.) ' : '') +
+        'Not extended by service (§ 659(b)). Power to rule expires 75 days after notice of entry (§ 660(c)).',
       opp: null, oppNote: 'Opposition 10 days after service of the moving brief (§ 659a)',
       reply: null, replyNote: 'Reply 5 days after opposition is served (§ 659a)',
-      warn: d < today ? '⚠ This deadline has passed. Check whether the motion could have been filed before entry of judgment.' : null,
+      warn: controlling && controlling < today ? '⚠ This deadline has passed. Check whether the motion could have been filed before entry of judgment.' : null,
     };
   } else {
     res = {
@@ -467,7 +493,12 @@ function renderInteractiveMode() {
       <span class="field-label">Service Method <span class="sub">&nbsp;(affects motion deadline only)</span></span>
       <div class="chips">${chipsSVC}</div>
       ${mailSub}
-    </div>` : `<div class="svc-note">Service method does not affect this deadline (§ 659(b)); it runs from the notice of entry. Set the date above to the notice of entry, not the hearing.</div>`}
+    </div>` : `
+    <div class="field-group">
+      <span class="field-label">Entry of Judgment Date <span class="sub">&nbsp;(for the 180-day outer limit, § 659(a)(2))</span></span>
+      <input type="date" id="entryDate" value="${state.entryDate ? toInputValue(state.entryDate) : ''}">
+      <div class="svc-note">Service method does not affect this deadline (§ 659(b)). The date above is the notice of entry (15-day trigger); add the entry-of-judgment date here for the 180-day cap. The earlier of the two controls.</div>
+    </div>`}
     <div class="result-cards">
       ${warnHtml}
       ${card('Motion — Serve &amp; File By', res.motion, res.motionNote, true)}
@@ -490,7 +521,13 @@ function applyDetected(data) {
     category,
     noticeOfEntryDate: data.noticeOfEntryDate || '',
     noticeOfEntryDoc: data.noticeOfEntryDoc || '',
+    entryOfJudgmentDate: data.entryOfJudgmentDate || '',
+    entryOfJudgmentDoc: data.entryOfJudgmentDoc || '',
   };
+  // Seed the new-trial 180-day outer limit from the detected entry-of-judgment.
+  if (category === 'new_trial' && data.entryOfJudgmentDate) {
+    state.entryDate = parseDate(data.entryOfJudgmentDate);
+  }
   // New trial and reconsideration run from the notice of entry, not the
   // hearing — prefer the notice-of-entry date the content script detected in
   // the case documents. Everything else keys off the hearing date.
@@ -538,6 +575,15 @@ document.addEventListener('click', e => {
 
 const baseInput = document.getElementById('baseDate');
 if (baseInput) baseInput.addEventListener('input', onDateChange);
+
+// The entry-of-judgment field is rendered inside Mode B (rebuilt each render),
+// so wire it by delegation rather than a direct listener.
+document.addEventListener('input', e => {
+  if (e.target && e.target.id === 'entryDate') {
+    state.entryDate = parseDate(e.target.value);
+    render();
+  }
+});
 
 loadDetected().then(data => {
   if (data) applyDetected(data);
