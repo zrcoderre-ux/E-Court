@@ -2836,6 +2836,61 @@ window.addEventListener('resize', scheduleButtonCollapse);
 // its due date has passed with no timely filing it shows RED (overdue); if it
 // isn't due yet it shows in the neutral colour.
 
+// California motion-deadline engine, inlined so the content script is
+// self-contained (no dependency on a separate file loading first).
+// KEEP IN SYNC with lib/deadlines.js, which the Deadline Calculator page uses.
+const DL = (function () {
+  const holidayCache = {};
+  function getHolidays(year) {
+    if (holidayCache[year]) return holidayCache[year];
+    const h = new Set();
+    const obs = d => { const day = d.getDay();
+      if (day === 6) { const f = new Date(d); f.setDate(f.getDate() - 1); return f; }
+      if (day === 0) { const m = new Date(d); m.setDate(m.getDate() + 1); return m; }
+      return d; };
+    const fixed = (mo, da) => obs(new Date(year, mo, da));
+    const nth = (mo, wd, n) => { let d = new Date(year, mo, 1), c = 0;
+      while (d.getMonth() === mo) { if (d.getDay() === wd && ++c === n) return d; d.setDate(d.getDate() + 1); } };
+    const last = (mo, wd) => { let d = new Date(year, mo + 1, 0); while (d.getDay() !== wd) d.setDate(d.getDate() - 1); return d; };
+    const key = d => d ? `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` : null;
+    const add = d => { if (d) h.add(key(d)); };
+    add(fixed(0, 1)); add(nth(0, 1, 3)); add(fixed(1, 12)); add(nth(1, 1, 3)); add(fixed(2, 31));
+    add(last(4, 1)); add(fixed(5, 19)); add(fixed(6, 4)); add(nth(8, 1, 1)); add(nth(8, 5, 4));
+    add(fixed(10, 11)); const tg = nth(10, 4, 4); add(tg);
+    if (tg) { const da = new Date(tg); da.setDate(da.getDate() + 1); add(da); }
+    add(fixed(11, 25));
+    const nyNext = obs(new Date(year + 1, 0, 1)); if (nyNext.getFullYear() === year) add(nyNext);
+    holidayCache[year] = h; return h;
+  }
+  function isCourtDay(d) { const dow = d.getDay(); if (dow === 0 || dow === 6) return false;
+    return !getHolidays(d.getFullYear()).has(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`); }
+  function nextCourtDay(d) { const r = new Date(d); while (!isCourtDay(r)) r.setDate(r.getDate() + 1); return r; }
+  function prevCourtDay(d) { const r = new Date(d); while (!isCourtDay(r)) r.setDate(r.getDate() - 1); return r; }
+  function addCD(d, n) { const r = new Date(d), step = n >= 0 ? 1 : -1; let rem = Math.abs(n);
+    while (rem > 0) { r.setDate(r.getDate() + step); if (isCourtDay(r)) rem--; } return r; }
+  function addCAL(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+  function stdMotion(hearing, svc) { let d = addCD(hearing, -16);
+    if (svc === 'electronic') d = addCD(d, -2); else if (svc === 'mail_ca') d = addCAL(d, -5);
+    else if (svc === 'mail_state') d = addCAL(d, -10); else if (svc === 'mail_conf') d = addCAL(d, -12);
+    else if (svc === 'mail_intl') d = addCAL(d, -20); else if (svc === 'fax') d = addCAL(d, -2);
+    return prevCourtDay(d); }
+  function msjMotion(hearing, svc) { let d = addCAL(hearing, -81);
+    if (svc === 'electronic') d = addCD(d, -2); else if (svc === 'mail_ca') d = addCAL(d, -5);
+    else if (svc === 'mail_state') d = addCAL(d, -10); else if (svc === 'mail_conf') d = addCAL(d, -5);
+    else if (svc === 'mail_intl') d = addCAL(d, -20); else if (svc === 'fax') d = addCD(d, -2);
+    return prevCourtDay(d); }
+  function stdOpp(h)   { return prevCourtDay(addCD(h, -9));  }
+  function msjOpp(h)   { return prevCourtDay(addCAL(h, -20)); }
+  function stdReply(h) { return prevCourtDay(addCD(h, -5));  }
+  function msjReply(h) { return prevCourtDay(addCAL(h, -11)); }
+  function classifyMotion(mt) { const s = (mt || '').toLowerCase();
+    if (/summary\s+judgment|summary\s+adjudication|\bmsj\b|\bmsa\b/.test(s)) return 'msj';
+    if (/new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/.test(s)) return 'new_trial';
+    if (/reconsideration|renewed?\s+motion|\bccp?\s*1008\b|\b1008\b/.test(s)) return 'recon';
+    return 'standard'; }
+  return { classifyMotion, stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply };
+})();
+
 const DL_DEBUG = true;
 function dlLog() { if (DL_DEBUG) { try { console.log.apply(console, ['[LACourt-DL]'].concat([].slice.call(arguments))); } catch (_) {} } }
 
@@ -2886,8 +2941,7 @@ let __nextDlFetchStarted = false;
 
 let __dlNoMotionLogged = 0;
 function computeDueDates() {
-  const D = window.LACourtDeadlines;
-  if (!D) return null;
+  const D = DL;
   // Only "Hearing on <motion>" events are §1005/§437c-briefed. Non-motion
   // events (CMC, OSC, trial, status conference) have no "Hearing on" prefix.
   const motionType = parseMotionType(document);
@@ -2977,13 +3031,8 @@ async function fetchNextDeadlineFilings() {
   injectNextDeadlines(); // recolour
 }
 
-let __dlLoggedMissingLib = false;
 function renderNextHeaderDeadlines() {
   try {
-    if (!window.LACourtDeadlines) {
-      if (!__dlLoggedMissingLib) { __dlLoggedMissingLib = true; dlLog('LACourtDeadlines not loaded (lib/deadlines.js missing?)'); }
-      return;
-    }
     if (!__nextDlComputed) {
       const c = computeDueDates();
       if (!c) return; // header not ready — a later poll/observer will retry
