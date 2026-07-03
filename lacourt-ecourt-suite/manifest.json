@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LA Court E-Court Suite",
-  "version": "3.17.1",
+  "version": "3.17.2",
   "description": "Combined e-court toolkit for civil.lacourt.org: case-page clipboard cleaning, Microsoft Form fill and in-extension Order Template Input popup with spreadsheet export and optional one-click Word mail-merge, agenda-page copy cleaning, rotating paste, and background-tab PDF opening with viewed-document checkmarks.",
   "permissions": [
     "clipboardRead",
@@ -35,7 +35,7 @@
   "content_scripts": [
     {
       "matches": ["https://civil.lacourt.org/ecourt/ecms/case*"],
-      "js": ["lib/deadlines.js", "clipboard/content.js"],
+      "js": ["clipboard/content.js"],
       "run_at": "document_start"
     },
     {
