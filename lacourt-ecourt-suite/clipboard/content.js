@@ -2157,8 +2157,23 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
     }
   }
 
+  // Proof-of-service documents are noise for most motions. Keep them only when
+  // the motion is one where service itself tends to be at issue.
+  const mtl = (motionType || '').toLowerCase();
+  const keepProofOfService = POS_KEEP_TERMS.some(t => mtl.indexOf(t) !== -1);
+  if (!keepProofOfService) {
+    for (const [id, d] of rel) if (/proof of service/i.test(d.name || '')) rel.delete(id);
+  }
+
   return Array.from(rel.values());
 }
+
+// Motion-type terms for which "Proof of Service" documents stay relevant.
+// For any other motion, proof-of-service filings are excluded.
+const POS_KEEP_TERMS = [
+  'paga', 'settlement', 'transfer', 'order to show cause re',
+  'default', 'quash', 'set aside', 'vacate',
+];
 
 function absoluteDocUrl(u) { try { return new URL(u, location.origin).href; } catch (_) { return u; } }
 
