@@ -2552,6 +2552,32 @@ function renderDocumentsButton() {
 // opposite display, like Export). Uses the same hearing detection as Export and
 // Documents to seed the calculator with the effective motion type + date.
 
+// Reconsideration (§ 1008) and new trial / JNOV / vacate judgment (§§ 659, 663a)
+// run from service of the notice of entry, not the upcoming hearing. For those
+// we scan the case's Documents for the operative notice-of-entry filing so the
+// calculator can seed the correct trigger date.
+const NOTICE_OF_ENTRY_RE = /notice of (entry|ruling)/i;
+function isTriggerBasedMotion(motionType) {
+  return /reconsideration|renewed?\s+motion|\b1008\b|new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/i.test(motionType || '');
+}
+async function detectNoticeOfEntry(hearingDateStr) {
+  try {
+    const docsUrl = getDocumentsUrl();
+    if (!docsUrl) return null;
+    const docs = await fetchAllDocuments(docsUrl);
+    if (!docs || !docs.length) return null;
+    const matches = docs.filter(d => d.name && d.when && NOTICE_OF_ENTRY_RE.test(d.name));
+    if (!matches.length) return null;
+    // Prefer notices filed on or before the hearing (the order being challenged
+    // predates the motion); otherwise fall back to all matches. Latest wins.
+    const cutoff = hearingDateStr ? parseHearingDateTime(hearingDateStr) : null;
+    let pool = cutoff ? matches.filter(d => d.when <= cutoff) : matches;
+    if (!pool.length) pool = matches;
+    pool.sort((a, b) => b.when - a.when);
+    return { date: pool[0].dateStr, name: pool[0].name };
+  } catch (_) { return null; }
+}
+
 function renderDeadlineButton() {
   if (document.getElementById('__lacourt_deadline_btn__')) return;
   const caseReady = document.querySelector('a[href*="/ecourt/ecms/case"]');
@@ -2596,11 +2622,24 @@ function renderDeadlineButton() {
     btn.style.opacity = '0.7';
     try {
       const hearing = await resolveEffectiveHearing(document);
+      const motionType = (hearing && hearing.motionType) || '';
+
+      // For trigger-based motions, try to detect the notice-of-entry date from
+      // the case documents (the statutory trigger). Skipped for ordinary
+      // motions so the common path stays fast.
+      let noticeOfEntryDate = '', noticeOfEntryDoc = '';
+      if (isTriggerBasedMotion(motionType)) {
+        const noe = await detectNoticeOfEntry(hearing && hearing.hearingDate);
+        if (noe) { noticeOfEntryDate = noe.date; noticeOfEntryDoc = noe.name; }
+      }
+
       const payload = {
-        motionType: (hearing && hearing.motionType) || '',
+        motionType,
         hearingDate: (hearing && hearing.hearingDate) || '',
         hearingType: (hearing && hearing.hearingType) || '',
         caseNumber: parseCaseNumber() || '',
+        noticeOfEntryDate,
+        noticeOfEntryDoc,
         createdAt: Date.now(),
       };
       await new Promise(res => {
