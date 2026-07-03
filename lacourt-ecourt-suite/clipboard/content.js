@@ -2836,14 +2836,42 @@ window.addEventListener('resize', scheduleButtonCollapse);
 // its due date has passed with no timely filing it shows RED (overdue); if it
 // isn't due yet it shows in the neutral colour.
 
+const DL_DEBUG = true;
+function dlLog() { if (DL_DEBUG) { try { console.log.apply(console, ['[LACourt-DL]'].concat([].slice.call(arguments))); } catch (_) {} } }
+
 function fmtShortDate(d) {
   return (!d || isNaN(d)) ? '' : d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' });
 }
+// Finds the element that visibly shows the "Next: <date> ... Hearing on ..."
+// indicator, to anchor the inline deadlines. Tries span[title] first (what the
+// parsers use), then falls back to scanning for the smallest visible element
+// whose own text starts with "Next" and contains a date.
+let __dlDumped = false;
 function findNextHeaderSpan() {
-  const spans = document.querySelectorAll('span[title]');
-  for (const span of spans) {
+  const hasNextDate = s => /\bnext\b/i.test(s) && /\d{1,2}\/\d{1,2}\/\d{4}/.test(s);
+
+  const titled = document.querySelectorAll('span[title]');
+  for (const span of titled) {
     const hay = ((span.getAttribute('title') || '') + ' ' + (span.textContent || '')).replace(/\s+/g, ' ');
-    if (/\bnext\b/i.test(hay) && /\d{1,2}\/\d{1,2}\/\d{4}/.test(hay)) return span;
+    if (hasNextDate(hay)) return span;
+  }
+
+  // Fallback: any smallish visible element whose text reads "Next: <date> …".
+  const all = document.querySelectorAll('span, div, td, p, a, b, strong, label, li');
+  let best = null;
+  for (const el of all) {
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (t.length > 300 || !/^next\b/i.test(t) || !/\d{1,2}\/\d{1,2}\/\d{4}/.test(t)) continue;
+    if (!el.getClientRects || !el.getClientRects().length) continue; // must be visible
+    // Prefer the deepest (smallest) matching element.
+    if (!best || (el.textContent || '').length < (best.textContent || '').length) best = el;
+  }
+  if (best) return best;
+
+  if (!__dlDumped) {
+    __dlDumped = true;
+    const titles = [].slice.call(titled).map(s => (s.getAttribute('title') || '').slice(0, 80)).filter(Boolean);
+    dlLog('no header found. span[title] count=', titled.length, 'titles=', titles.slice(0, 12));
   }
   return null;
 }
@@ -2856,17 +2884,21 @@ let __nextDlComputed = null;
 let __nextDlFiled = null;
 let __nextDlFetchStarted = false;
 
+let __dlNoMotionLogged = 0;
 function computeDueDates() {
   const D = window.LACourtDeadlines;
   if (!D) return null;
   // Only "Hearing on <motion>" events are §1005/§437c-briefed. Non-motion
   // events (CMC, OSC, trial, status conference) have no "Hearing on" prefix.
   const motionType = parseMotionType(document);
-  if (!motionType) return null; // header not rendered yet (or not a motion)
+  if (!motionType) {
+    if (__dlNoMotionLogged++ < 2) dlLog('parseMotionType empty (no "Hearing on <motion>" yet). hearingType=', parseHearingType(document));
+    return null; // header not rendered yet (or not a motion)
+  }
   const cat = D.classifyMotion(motionType);
-  if (cat !== 'standard' && cat !== 'msj') return { skip: true }; // new trial / recon aren't hearing-based
+  if (cat !== 'standard' && cat !== 'msj') return { skip: true, reason: cat }; // new trial / recon aren't hearing-based
   const hearing = parseHearingDateTime(parseHearingDate(document));
-  if (!hearing) return null;
+  if (!hearing) { dlLog('no hearing date parsed for motion:', motionType); return null; }
   return {
     skip: false, motionType, cat,
     motionDue: cat === 'msj' ? D.msjMotion(hearing, 'electronic') : D.stdMotion(hearing, 'electronic'),
@@ -2903,13 +2935,18 @@ function injectNextDeadlines() {
   if (!__nextDlComputed || __nextDlComputed.skip) return;
   const span = findNextHeaderSpan();
   if (!span || !span.parentNode) return;
-  let el = span.parentNode.querySelector('.__lacourt_next_dl__');
-  if (el) { el.innerHTML = nextDlHtml(); return; }
-  el = document.createElement('span');
+  const host = span.parentNode;
+  if (host.querySelector('.__lacourt_next_dl__') || (span.nextElementSibling && span.nextElementSibling.classList && span.nextElementSibling.classList.contains('__lacourt_next_dl__'))) {
+    const existing = host.querySelector('.__lacourt_next_dl__');
+    if (existing) existing.innerHTML = nextDlHtml();
+    return;
+  }
+  const el = document.createElement('span');
   el.className = '__lacourt_next_dl__';
-  el.setAttribute('style', 'margin-left:22px;font-weight:600;white-space:nowrap;font-family:inherit;');
+  el.setAttribute('style', 'margin-left:22px;font-weight:600;white-space:nowrap;font-family:inherit;display:inline-block;');
   el.innerHTML = nextDlHtml();
-  span.parentNode.insertBefore(el, span.nextSibling);
+  host.insertBefore(el, span.nextSibling);
+  dlLog('injected deadlines next to header:', (span.textContent || '').slice(0, 60));
 }
 
 // Fetch the case Documents once and recolour by whether each paper was filed on
@@ -2940,20 +2977,26 @@ async function fetchNextDeadlineFilings() {
   injectNextDeadlines(); // recolour
 }
 
+let __dlLoggedMissingLib = false;
 function renderNextHeaderDeadlines() {
   try {
-    if (!window.LACourtDeadlines) return;
+    if (!window.LACourtDeadlines) {
+      if (!__dlLoggedMissingLib) { __dlLoggedMissingLib = true; dlLog('LACourtDeadlines not loaded (lib/deadlines.js missing?)'); }
+      return;
+    }
     if (!__nextDlComputed) {
       const c = computeDueDates();
       if (!c) return; // header not ready — a later poll/observer will retry
       __nextDlComputed = c;
+      dlLog('computed:', c.skip ? 'skip (' + (c.reason || 'not hearing-based') + ')'
+        : { motionType: c.motionType, cat: c.cat, motionDue: fmtShortDate(c.motionDue), oppDue: fmtShortDate(c.oppDue), replyDue: fmtShortDate(c.replyDue) });
       if (c.skip) return;
       injectNextDeadlines();        // paint dates immediately (date-only colours)
       fetchNextDeadlineFilings();   // then refine with filing status
       return;
     }
     injectNextDeadlines(); // keep present + coloured across re-renders
-  } catch (_) { /* best-effort UI */ }
+  } catch (e) { dlLog('render error:', e && e.message || e); }
 }
 
 // Re-inject if e-court re-renders the header and strips our node (the render
