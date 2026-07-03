@@ -2336,7 +2336,21 @@ function renderFillFormButton() {
   const btn = document.createElement('button');
   btn.id = '__lacourt_fill_btn__';
   btn.type = 'button';
-  btn.textContent = '📤 Export';
+
+  // Export icon: a curved arrow rising and curving up-and-right out of a box.
+  const EXPORT_ICON =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" ' +
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" ' +
+    'stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px">' +
+    '<path d="M5 12v6a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-6"/>' +
+    '<path d="M12 14V8C12 5 14 4 19 4"/>' +
+    '<path d="M16 1.5 19 4l-3 2.5"/>' +
+    '</svg>';
+  const setLabel = (text) => {
+    btn.innerHTML = EXPORT_ICON +
+      '<span style="vertical-align:middle">' + text + '</span>';
+  };
+  setLabel('Export');
   Object.assign(btn.style, {
     position: 'fixed',
     top: '0px',
@@ -2359,16 +2373,16 @@ function renderFillFormButton() {
 
   btn.addEventListener('click', async () => {
     btn.disabled = true;
-    btn.textContent = '📤 Working...';
+    setLabel('Working...');
     btn.style.opacity = '0.7';
 
     try {
       const result = await getExportContext();
       if (!result) {
-        btn.textContent = '📤 No data found';
+        setLabel('No data found');
         setTimeout(() => {
           btn.disabled = false;
-          btn.textContent = '📤 Export';
+          setLabel('Export');
           btn.style.opacity = '1';
         }, 2000);
         return;
@@ -2384,27 +2398,27 @@ function renderFillFormButton() {
         triggerMailto(ctx.mailtoUrl);
       }
 
-      const openedLabel = ctx.isOrderTemplate ? '📤 Order Template Opened!' : '📤 Form Opened!';
+      const openedLabel = ctx.isOrderTemplate ? 'Order Template Opened!' : 'Form Opened!';
       const openWindow = () => {
         chrome.runtime.sendMessage(
           { type: 'openFormOnOppositeDisplay', url: ctx.openUrl },
           response => {
             if (chrome.runtime.lastError || !response || !response.ok) {
-              btn.textContent = '📤 Error opening';
+              setLabel('Error opening');
               setTimeout(() => {
                 btn.disabled = false;
-                btn.textContent = '📤 Export';
+                setLabel('Export');
                 btn.style.opacity = '1';
               }, 2000);
               return;
             }
 
             // Success — show confirmation and reset.
-            btn.textContent = openedLabel;
+            setLabel(openedLabel);
             btn.style.opacity = '1';
             setTimeout(() => {
               btn.disabled = false;
-              btn.textContent = '📤 Export';
+              setLabel('Export');
             }, 2000);
           }
         );
@@ -2423,10 +2437,10 @@ function renderFillFormButton() {
       }
     } catch (err) {
       console.error('[LACourt] fill button error:', err);
-      btn.textContent = '📤 Error';
+      setLabel('Error');
       setTimeout(() => {
         btn.disabled = false;
-        btn.textContent = '📤 Export';
+        setLabel('Export');
         btn.style.opacity = '1';
       }, 2000);
     }
