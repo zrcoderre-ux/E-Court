@@ -2284,6 +2284,17 @@ function findHearingDocBlob(hearingsDoc, motionType) {
   return '';
 }
 
+// Memoized fetch of ALL documents for this case page. Shared by the relevant-
+// documents computation and the inline Next-header deadline check so the page is
+// fetched at most once. Resolves to [] on failure (allowing graceful degrade).
+let __allDocsPromise = null;
+function getAllDocumentsCached() {
+  if (__allDocsPromise) return __allDocsPromise;
+  const docsUrl = getDocumentsUrl();
+  __allDocsPromise = (docsUrl ? fetchAllDocuments(docsUrl) : Promise.resolve([])).catch(() => []);
+  return __allDocsPromise;
+}
+
 // Orchestrates: resolve the motion, fetch all documents + hearings, compute the
 // relevant set. Resolves to { relevant, motionType, docCount, singleHearing }.
 async function getRelevantDocuments() {
@@ -2291,8 +2302,7 @@ async function getRelevantDocuments() {
   const motionType = hearing && hearing.motionType;
   if (!motionType) return { relevant: [], reason: 'no-motion' };
 
-  const docsUrl = getDocumentsUrl();
-  const docs = docsUrl ? await fetchAllDocuments(docsUrl) : [];
+  const docs = await getAllDocumentsCached();
   if (!docs.length) return { relevant: [], reason: 'no-documents' };
 
   const hearingsUrl = getHearingsUrl();
@@ -2305,6 +2315,15 @@ async function getRelevantDocuments() {
     motionType, docCount: docs.length, singleHearing, relevant: relevant.map(d => d.name),
   });
   return { relevant, motionType, docCount: docs.length, singleHearing };
+}
+
+// Memoized wrapper so the Documents button opens instantly: the fetch + relevance
+// computation runs once (prefetched on page load) and the result is reused. NO
+// tabs are opened here — the button decides when to open.
+let __relevantDocsPromise = null;
+function getRelevantDocumentsCached() {
+  if (!__relevantDocsPromise) __relevantDocsPromise = getRelevantDocuments();
+  return __relevantDocsPromise;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2526,8 +2545,16 @@ function renderDocumentsButton() {
     setDocLabel('Finding…');
     btn.style.opacity = '0.7';
     try {
-      const res = await getRelevantDocuments();
+      // Use the result prefetched on page load (instant if ready). If it came
+      // back empty — e.g. the prefetch ran before the page was ready — drop the
+      // cache and recompute once so a real result isn't missed.
+      let res = await getRelevantDocumentsCached();
       let opened = (res.relevant || []).filter(d => d.openUrl);
+      if (!opened.length) {
+        __relevantDocsPromise = null;
+        res = await getRelevantDocuments();
+        opened = (res.relevant || []).filter(d => d.openUrl);
+      }
       if (!opened.length) { reset('None found'); return; }
       let capped = false;
       if (opened.length > MAX_DOCS_TO_OPEN) { capped = true; opened = opened.slice(0, MAX_DOCS_TO_OPEN); }
@@ -2893,9 +2920,8 @@ async function fetchNextDeadlineFilings() {
   const c = __nextDlComputed;
   const filed = { filedKnown: false, motion: null, opp: null, reply: null };
   try {
-    const docsUrl = getDocumentsUrl();
-    if (docsUrl) {
-      const docs = await fetchAllDocuments(docsUrl);
+    {
+      const docs = await getAllDocumentsCached();
       if (docs && docs.length) {
         filed.filedKnown = true;
         const md = bestFilingMatch(c.motionType, docs);
@@ -2974,6 +3000,13 @@ function setupFillFormButton() {
     }
     tryRender();
   }, 500);
+
+  // Prefetch the relevant-documents set once the page has settled, so pressing
+  // the Documents button opens instantly. This only fetches/computes — it never
+  // opens tabs; the button does that.
+  const prefetchDocs = () => { try { getRelevantDocumentsCached(); } catch (_) {} };
+  if (document.readyState === 'complete') setTimeout(prefetchDocs, 1000);
+  else window.addEventListener('load', () => setTimeout(prefetchDocs, 1000), { once: true });
 }
 
 setupFillFormButton();
