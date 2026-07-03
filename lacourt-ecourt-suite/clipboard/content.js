@@ -2107,6 +2107,15 @@ function isCrossComplaintDoc(name) {
   if (/^amendment to /i.test(n)) return false;
   return /^(?:(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+)?(?:amended\s+)?cross-?complaint\b/i.test(n);
 }
+// A petition is another kind of initial pleading (probate, family, writ, etc.),
+// used as the operative pleading only when the case has no complaint. Word-
+// boundary match, so "Petitioner" in other filings doesn't count.
+function isPetitionDoc(name) {
+  const n = (name || '').trim();
+  if (/^amendment to /i.test(n)) return false;
+  if (/fictitious|incorrect\s+name/i.test(n)) return false;
+  return /\bpetition\b/i.test(n);
+}
 // Latest openable doc in a list (operative pleading).
 function latestDoc(list) {
   let best = null;
@@ -2121,8 +2130,11 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   const rel = new Map();
   const add = d => { if (d && d.docId && d.openUrl) rel.set(d.docId, d); };
 
-  // Operative complaint + cross-complaint.
-  add(latestDoc(docs.filter(d => isComplaintDoc(d.name))));
+  // Operative complaint + cross-complaint. When the case has no complaint at
+  // all, fall back to the operative petition (another initial pleading).
+  let initialPleading = latestDoc(docs.filter(d => isComplaintDoc(d.name)));
+  if (!initialPleading) initialPleading = latestDoc(docs.filter(d => isPetitionDoc(d.name)));
+  add(initialPleading);
   add(latestDoc(docs.filter(d => isCrossComplaintDoc(d.name))));
 
   const motionDoc = bestFilingMatch(motionType, docs);
