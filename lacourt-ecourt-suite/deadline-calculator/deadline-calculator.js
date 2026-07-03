@@ -63,6 +63,12 @@ function getHolidays(year) {
   if (tg) { const da = new Date(tg); da.setDate(da.getDate() + 1); add(da); } // Day after Thanksgiving
   add(fixed(11, 25));    // Christmas — Dec 25
 
+  // When next year's New Year's Day falls on a Saturday it is observed on the
+  // preceding Friday, Dec 31 of THIS year (CRC 1.11) — capture that closure in
+  // this year's set so December court-day counts see it.
+  const nyNext = obs(new Date(year + 1, 0, 1));
+  if (nyNext.getFullYear() === year) add(nyNext);
+
   holidayCache[year] = h;
   return h;
 }
@@ -107,9 +113,14 @@ function msjMotion(hearing, svc) {
   if (svc === 'electronic') d = addCD(d, -2);
   else if (svc === 'mail_ca') d = addCAL(d, -5);
   else if (svc === 'mail_state') d = addCAL(d, -10);
-  else if (svc === 'mail_conf') d = addCAL(d, -12);
+  // § 437c(a)(2) provides only 5/10/20-day mail tiers — no 12-day Safe at Home
+  // tier (unlike §§ 1005(b)/1013). A confidential address is still in-state
+  // mail, so it gets the +5 tier, not zero.
+  else if (svc === 'mail_conf') d = addCAL(d, -5);
   else if (svc === 'mail_intl') d = addCAL(d, -20);
-  else if (svc === 'fax') d = addCAL(d, -2);
+  // § 437c(a)(2): fax/express/overnight add 2 COURT days (unlike § 1005(b)'s
+  // 2 calendar days) — a deliberate statutory asymmetry.
+  else if (svc === 'fax') d = addCD(d, -2);
   return prevCourtDay(d);
 }
 function stdOpp(hearing)   { return prevCourtDay(addCD(hearing, -9));  } // § 1005(b)
@@ -117,7 +128,19 @@ function msjOpp(hearing)   { return prevCourtDay(addCAL(hearing, -20)); } // § 
 function stdReply(hearing) { return prevCourtDay(addCD(hearing, -5));  } // § 1005(b)
 function msjReply(hearing) { return prevCourtDay(addCAL(hearing, -11)); } // § 437c(b)(4)
 function newTrialDL(notice){ return nextCourtDay(addCAL(notice, 15));  } // § 659(a)(2)
-function reconDL(notice)   { return nextCourtDay(addCAL(notice, 10));  } // § 1008(a)
+// § 1008(a): 10 days after service of written notice of entry of the order.
+// This is a service-triggered period and is NOT among the enumerated exceptions
+// to §§ 1013 / 1010.6, so those service extensions apply (Table 3B).
+function reconDL(notice, svc) {
+  let d = addCAL(notice, 10);
+  if (svc === 'electronic') d = addCD(d, 2);          // § 1010.6(a)(3)(B): +2 court days
+  else if (svc === 'mail_ca') d = addCAL(d, 5);       // § 1013(a): +5 calendar
+  else if (svc === 'mail_state') d = addCAL(d, 10);   // +10 calendar
+  else if (svc === 'mail_conf') d = addCAL(d, 12);    // § 1013(a): +12 calendar (Safe at Home)
+  else if (svc === 'mail_intl') d = addCAL(d, 20);    // +20 calendar
+  else if (svc === 'fax') d = addCD(d, 2);            // § 1013(c),(e): +2 court days
+  return nextCourtDay(d);
+}
 
 // ── MOTION CLASSIFICATION ───────────────────────────────────────────────────
 // Map the e-court motion-type string to one of the calculator's rule buckets.
@@ -211,9 +234,20 @@ function renderDetectedBanner() {
   if (d.rawMotion) bits.push(esc(d.rawMotion));
   if (d.hearingDate) bits.push(`hearing ${esc(d.hearingDate)}`);
   const rule = CATEGORY_LABEL[d.category] || CATEGORY_LABEL.standard;
+  const triggerBased = d.category === 'new_trial' || d.category === 'recon';
+  let extra = '';
+  if (triggerBased) {
+    if (d.noticeOfEntryDate) {
+      extra = `<div class="det-rule">Base set to detected notice of entry: <strong>${esc(d.noticeOfEntryDate)}</strong>` +
+        (d.noticeOfEntryDoc ? ` (${esc(d.noticeOfEntryDoc)})` : '') +
+        `. Adjust if a different order controls.</div>`;
+    } else {
+      extra = `<div class="det-rule">No notice of entry found in the case documents — set the date to the notice of entry of the order being challenged.</div>`;
+    }
+  }
   el.innerHTML =
     `<span class="det-tag">Detected</span> ${bits.join(' · ')}` +
-    `<div class="det-rule">Applying: <strong>${esc(rule)}</strong></div>`;
+    `<div class="det-rule">Applying: <strong>${esc(rule)}</strong></div>` + extra;
 }
 
 // ── TABLE SECTION DATA ─────────────────────────────────────────────────────
@@ -243,16 +277,20 @@ function getSectionData(baseDate) {
     },
     {
       id: 'newtrial', label: 'New Trial / JNOV',
-      motionFn: () => newTrialDL(baseDate), motionRule: '15 cal. days from notice',
-      opp: stdOpp(baseDate), oppNote: '9 court days',
-      reply: null, replyNote: '5 days after opp. served',
+      motionFn: () => newTrialDL(baseDate), motionRule: '15 days from notice (no svc. ext., § 659(b))',
+      // § 659a briefing runs from filing/service of the notice of intention, not
+      // from the notice-of-entry base — so these can't be dated from it alone.
+      opp: null, oppNote: 'Opposition 10 days after service of moving brief (§ 659a)',
+      reply: null, replyNote: 'Reply 5 days after opposition served (§ 659a)',
       warn: newTrialDL(baseDate) < today ? '⚠ Deadline passed — check pre-judgment alternative' : null,
     },
     {
       id: 'recon', label: 'Reconsideration',
-      motionFn: () => reconDL(baseDate), motionRule: '10 cal. days from notice',
-      opp: stdOpp(baseDate), oppNote: '9 court days',
-      reply: stdReply(baseDate), replyNote: '5 court days', warn: null,
+      motionFn: (svc) => reconDL(baseDate, svc), motionRule: '10 days from notice + svc. ext.',
+      // Opp/reply run from the eventual hearing (§ 1005), which isn't the
+      // notice-of-entry base date, so they're stated as rules, not dated.
+      opp: null, oppNote: '9 court days before the eventual hearing (§ 1005(b))',
+      reply: null, replyNote: '5 court days before the eventual hearing', warn: null,
     },
   ];
   return { sections, svcs, SVC_LABELS };
@@ -319,8 +357,11 @@ function renderTableMode() {
   html += `</tbody></table></div>
   <div class="table-meta">
     * If a computed deadline falls on a non-court day, it moves to the preceding court day (motion / opp / reply)
-    or the next court day (New Trial, Reconsideration — triggered by notice of entry date).
-    Court days exclude weekends and California judicial holidays (CCP § 135; Columbus Day is not a court holiday).
+    or the next court day (New Trial, Reconsideration — triggered by the notice-of-entry date).
+    Court days exclude weekends and California judicial holidays (CCP § 135), including Lincoln's Birthday (Feb 12)
+    and Native American Day (4th Friday of Sept); Columbus Day is not a court holiday.
+    Reconsideration reflects the CCP §§ 1013 / 1010.6 service extensions. For MSJ, "Mail Confidential" uses the
+    5-day in-state mail tier because CCP § 437c(a)(2) has no 12-day Safe at Home tier.
   </div>`;
 
   el.innerHTML = html;
@@ -337,7 +378,9 @@ function renderInteractiveMode() {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const svc = effectiveSvc();
   const mt = state.motionType;
-  const triggerBased = mt === 'new_trial' || mt === 'recon';
+  // Only new trial is service-immune (§ 659(b)); reconsideration IS extended by
+  // service method (§§ 1013 / 1010.6), so it keeps the service chips.
+  const triggerBased = mt === 'new_trial';
 
   const MOTION_OPTS = [
     { v: 'standard', l: 'Standard Motion' },
@@ -374,16 +417,16 @@ function renderInteractiveMode() {
   } else if (mt === 'new_trial') {
     const d = newTrialDL(state.baseDate);
     res = {
-      motion: d, motionNote: '15 calendar days from notice of entry (no service extension)',
-      opp: stdOpp(state.baseDate), oppNote: 'briefing per CCP § 659a',
-      reply: null, replyNote: 'reply within 5 days after opposition is served',
+      motion: d, motionNote: '15 calendar days from notice of entry; not extended by service (§ 659(b)). Court’s power to rule expires 75 days after notice of entry (§ 660(c)).',
+      opp: null, oppNote: 'Opposition 10 days after service of the moving brief (§ 659a)',
+      reply: null, replyNote: 'Reply 5 days after opposition is served (§ 659a)',
       warn: d < today ? '⚠ This deadline has passed. Check whether the motion could have been filed before entry of judgment.' : null,
     };
   } else {
     res = {
-      motion: reconDL(state.baseDate), motionNote: '10 calendar days from service of notice of entry (service extensions apply)',
-      opp: stdOpp(state.baseDate), oppNote: '9 court days before hearing',
-      reply: stdReply(state.baseDate), replyNote: '5 court days before hearing',
+      motion: reconDL(state.baseDate, svc), motionNote: '10 calendar days from service of notice of entry, plus service extension (§§ 1008(a), 1013, 1010.6)',
+      opp: null, oppNote: '9 court days before the eventual hearing (§ 1005(b))',
+      reply: null, replyNote: '5 court days before the eventual hearing',
     };
   }
 
@@ -424,7 +467,7 @@ function renderInteractiveMode() {
       <span class="field-label">Service Method <span class="sub">&nbsp;(affects motion deadline only)</span></span>
       <div class="chips">${chipsSVC}</div>
       ${mailSub}
-    </div>` : `<div class="svc-note">Service method does not affect these deadlines — they run from the notice-of-entry date. Set the date above to the notice of entry, not the hearing.</div>`}
+    </div>` : `<div class="svc-note">Service method does not affect this deadline (§ 659(b)); it runs from the notice of entry. Set the date above to the notice of entry, not the hearing.</div>`}
     <div class="result-cards">
       ${warnHtml}
       ${card('Motion — Serve &amp; File By', res.motion, res.motionNote, true)}
@@ -439,19 +482,26 @@ function applyDetected(data) {
   if (!data) return;
   const rawMotion = data.motionType || '';
   const category = classifyMotion(rawMotion);
+  const triggerBased = category === 'new_trial' || category === 'recon';
   state.detected = {
     rawMotion,
     hearingDate: data.hearingDate || '',
     caseNumber: data.caseNumber || '',
     category,
+    noticeOfEntryDate: data.noticeOfEntryDate || '',
+    noticeOfEntryDoc: data.noticeOfEntryDoc || '',
   };
-  const hd = parseDate(data.hearingDate);
-  if (hd) {
-    state.baseDate = hd;
+  // New trial and reconsideration run from the notice of entry, not the
+  // hearing — prefer the notice-of-entry date the content script detected in
+  // the case documents. Everything else keys off the hearing date.
+  const baseStr = (triggerBased && data.noticeOfEntryDate) ? data.noticeOfEntryDate : data.hearingDate;
+  const bd = parseDate(baseStr);
+  if (bd) {
+    state.baseDate = bd;
     const input = document.getElementById('baseDate');
-    if (input) input.value = toInputValue(hd);
+    if (input) input.value = toInputValue(bd);
     const fd = document.getElementById('dateFriendly');
-    if (fd) fd.textContent = fmtFull(hd);
+    if (fd) fd.textContent = fmtFull(bd);
   }
   // Pre-select the matching rule and open the step-by-step view on it.
   state.motionType = category;
