@@ -502,18 +502,26 @@ function setLastExportAt(ts) {
   } catch (_) { /* non-critical */ }
 }
 
-function isPdfDownload(item) {
-  if (item.mime && item.mime.toLowerCase() === 'application/pdf') return true;
-  if (item.filename && /\.pdf$/i.test(item.filename)) return true;
-  const u = item.finalUrl || item.url || '';
-  return /\.pdf(?:[?#]|$)/i.test(u);
-}
+// Recognises a completed download as a "court PDF". Court documents are served
+// from /ecourt/ecms/doc?docId=... and are ALWAYS PDFs, so a download that
+// touches that endpoint counts on its own — even if Chrome recorded no .pdf
+// extension, an empty mime, or (for CDN/blob-served files) a stripped referrer.
+// Otherwise we fall back to a PDF signal combined with the court domain. Being
+// generous here is the point: the guard must not nag after the user genuinely
+// pulled case PDFs.
+function isCourtPdfDownload(item) {
+  const urls = [item.url, item.finalUrl, item.referrer].filter(Boolean).map(String);
 
-function isFromCourt(item) {
-  // blob: downloads keep the origin in the URL, so this catches those too.
-  return COURT_DOMAIN_RE.test(item.url || '')
-      || COURT_DOMAIN_RE.test(item.finalUrl || '')
-      || COURT_DOMAIN_RE.test(item.referrer || '');
+  const fromDocEndpoint = urls.some(u =>
+    /\/ecourt\/ecms\/doc\b/i.test(u) || /[?&]docId=\d+/i.test(u));
+  if (fromDocEndpoint) return true;
+
+  const fromCourt = urls.some(u => COURT_DOMAIN_RE.test(u));
+  const looksPdf =
+    (item.mime && item.mime.toLowerCase() === 'application/pdf') ||
+    (item.filename && /\.pdf$/i.test(item.filename)) ||
+    urls.some(u => /\.pdf(?:[?#]|$)/i.test(u));
+  return fromCourt && looksPdf;
 }
 
 // Resolves true if a court PDF was downloaded within the window, OR if we
@@ -538,7 +546,7 @@ async function hasRecentCourtPdf() {
     }
   });
 
-  return items.some(it => isPdfDownload(it) && isFromCourt(it));
+  return items.some(isCourtPdfDownload);
 }
 
 // -------------------------------------------------------------------------
