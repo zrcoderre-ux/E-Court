@@ -42,6 +42,11 @@ const FIELDS = [
   { key: 'crossComplainants', label: 'Cross-Complainants', header: 'CrossComplainants', multiline: true },
   { key: 'crossDefendants',   label: 'Cross-Defendants',   header: 'CrossDefendants', multiline: true },
   { key: 'movant',            label: 'Movant',             header: 'Movant',          multiline: false },
+  // Trailing column for the pseudonym generator: every non-party name found on
+  // the Parties page (attorneys, law firms, "Non-Party" entities), separated by
+  // "; ". Appended LAST and not referenced by the Word template, so the mail
+  // merge is unaffected. `header` becomes the "Other_Names" merge field (unused).
+  { key: 'otherNames',        label: 'Other Names (attorneys / firms / non-parties)', header: 'Other Names', multiline: true },
 ];
 
 // Leading metadata columns from the Microsoft Forms export. Written blank.

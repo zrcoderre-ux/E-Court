@@ -356,6 +356,17 @@ function buildRotationData(root, hearingOverride) {
     labeled.crossDefendants = combined;
   }
 
+  // Every non-party name (attorneys, firms, "Non-Party" entities) for the
+  // pseudonym generator, minus anyone already in the caption. Goes in `labeled`
+  // only (never the Ctrl+A rotation sequence) so it lands in a trailing
+  // spreadsheet column that the mail merge ignores.
+  const captionNames = new Set(
+    [...primaryClaimants, ...primaryRespondents, ...crossClaimants, ...crossRespondents]
+      .map(p => movantNormName(p.name))
+  );
+  const otherNames = parseNonPartyNames(root).filter(n => !captionNames.has(movantNormName(n)));
+  if (otherNames.length) labeled.otherNames = otherNames.join('; ');
+
   console.log('[LACourt] rotation sequence:', sequence);
   console.log('[LACourt] labeled:', labeled);
 
@@ -1325,6 +1336,71 @@ function parsePartiesTable(root) {
   }
 
   return parties;
+}
+
+/**
+ * Collects every NON-party name on the Parties page — attorneys, law firms, and
+ * "Non-Party" type entities (e.g. receivers) — for the pseudonym generator.
+ * Column positions are found by HEADER TEXT (so layout order doesn't matter):
+ * an Attorney/Counsel column and, for Non-Party detection, the Party Type +
+ * Name columns. Names are split on ';'/newlines, stripped of bar numbers /
+ * "Esq." / "in pro per" noise and parentheticals, and de-duplicated. Caller
+ * removes any that coincide with caption parties.
+ */
+function parseNonPartyNames(root) {
+  root = root || document;
+  const anchors = root.querySelectorAll('a[title="UPDATE PARTY"]');
+  if (!anchors.length) return [];
+  const firstRow = anchors[0].closest('tr');
+  const table = firstRow && firstRow.closest('table');
+  if (!table) return [];
+  const allRows = Array.from(table.querySelectorAll('tr'));
+
+  // Locate columns by header text (skip party rows; headers have no anchor).
+  let nameIdx = -1, typeIdx = -1, attyIdx = -1;
+  for (const r of allRows) {
+    if (r.querySelector('a[title="UPDATE PARTY"]')) continue;
+    const cells = Array.from(r.children);
+    if (cells.length < 3) continue;
+    const texts = cells.map(c => (c.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase());
+    const ai = texts.findIndex(t => t.length < 40 && /attorney|counsel|represent/.test(t));
+    const ni = texts.findIndex(t => t.length < 30 && /\bname\b/.test(t));
+    const ti = texts.findIndex(t => t.length < 30 && /party\s*type|^type$/.test(t));
+    if (ai !== -1 || (ni !== -1 && ti !== -1)) { attyIdx = ai; nameIdx = ni; typeIdx = ti; break; }
+  }
+  try { console.log('[LACourt] non-party columns:', { nameIdx, typeIdx, attyIdx }); } catch (_) {}
+  if (attyIdx === -1 && typeIdx === -1) return [];
+
+  const out = [], seen = new Set();
+  const add = raw => {
+    const s = (raw || '').replace(/\s+/g, ' ').trim();
+    if (!s) return;
+    for (let part of s.split(/\s*;\s*|\n+/)) {
+      part = part
+        .replace(/\([^)]*\)/g, ' ')                                   // "(SBN 12345)" etc.
+        .replace(/\b(state\s*)?bar\s*(no\.?|#)?\s*\d+/ig, ' ')          // bar numbers
+        .replace(/\besq\.?/ig, ' ')                                     // "Esq." / "Esq"
+        .replace(/\b(in\s+)?pro\s+per\b|\bpro\s+se\b|\bself[-\s]?represented\b/ig, ' ')
+        .replace(/[,\s]+$/, '').replace(/^[,\s]+/, '').replace(/\s+/g, ' ').trim();
+      if (part.length >= 2 && /[a-z]/i.test(part)) {
+        const key = part.toLowerCase();
+        if (!seen.has(key)) { seen.add(key); out.push(part); }
+      }
+    }
+  };
+
+  for (const r of allRows) {
+    if (!r.querySelector('a[title="UPDATE PARTY"]')) continue;
+    const cells = Array.from(r.children);
+    if (attyIdx !== -1 && cells[attyIdx]) add(cells[attyIdx].textContent);
+    if (typeIdx !== -1 && cells[typeIdx]) {
+      const type = (cells[typeIdx].textContent || '').toLowerCase();
+      if (/non-?party/.test(type) && nameIdx !== -1 && cells[nameIdx]) {
+        add((cells[nameIdx].textContent || '').replace(/\([^)]*\)/g, ' '));
+      }
+    }
+  }
+  return out;
 }
 
 // Matches both LA Superior Court case-number formats:
