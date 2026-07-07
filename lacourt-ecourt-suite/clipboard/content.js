@@ -1294,6 +1294,17 @@ function parsePartiesTable(root) {
     const DISMISSED_RE = /\bdismissed\b/i;
     const dismissed = cells.some(c => DISMISSED_RE.test(c));
 
+    // Detect an entered default and its date from the status column, e.g.
+    // "Default 05/12/2026" / "Default Entered 05/12/2026". Used by the OSC
+    // Re: Failure to Prosecute Default Judgment status indicator.
+    let defaultDate = null;
+    for (const c of cells) {
+      if (!/\bdefault\b/i.test(c)) continue;
+      const dm = c.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+      defaultDate = dm ? parseHearingDateTime(dm[1]) : new Date(0); // date if present, else epoch sentinel
+      break;
+    }
+
     // Identify the role cell (one of the cells starts with a known role keyword).
     // Note: cross-* alternatives are listed first so the regex engine matches
     // them as a single token rather than letting "Defendant" match the start
@@ -1331,7 +1342,7 @@ function parsePartiesTable(root) {
     }
 
     if (name) {
-      parties.push({ name, role, dismissed });
+      parties.push({ name, role, dismissed, defaultDate });
     }
   }
 
@@ -3012,15 +3023,20 @@ function findNextHeaderSpan() {
 function dayMs(d) { return (d && !isNaN(d)) ? new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() : null; }
 
 const NEXT_DL_GAP = '<span style="display:inline-block;width:20px"></span>';
-// Computed once per page: { skip } or { motionType, cat, motionDue, oppDue, replyDue }.
+// Computed once per page: { osc } or { skip } or { motionType, cat, motionDue, oppDue, replyDue }.
 let __nextDlComputed = null;
 // Filing status once the Documents fetch resolves: { filedKnown, motion, opp, reply }.
 let __nextDlFiled = null;
 let __nextDlFetchStarted = false;
+// OSC Re: Failure to Prosecute Default Judgment status: { text, color } or null.
+let __oscStatus = null;
 
 let __dlNoMotionLogged = 0;
 function computeDueDates() {
   const D = DL;
+  // An OSC Re: Failure to Prosecute Default Judgment gets a default/dismissal
+  // status indicator instead of briefing deadlines.
+  if (isOscDefaultJudgment(parseHearingType(document))) return { osc: true };
   // Only "Hearing on <motion>" events are §1005/§437c-briefed. Non-motion
   // events (CMC, OSC, trial, status conference) have no "Hearing on" prefix.
   const motionType = parseMotionType(document);
@@ -3054,6 +3070,11 @@ function nextDlColor(due, filed) {
 
 function nextDlHtml() {
   const c = __nextDlComputed;
+  if (c.osc) {
+    const st = __oscStatus;
+    if (!st) return '<span style="color:#0a6e6e">Checking defaults…</span>';
+    return '<span style="color:' + st.color + '">' + st.text + '</span>';
+  }
   const f = __nextDlFiled || {};
   const item = (label, key, due) =>
     `<span style="color:${nextDlColor(due, f[key])}">${label} ${fmtShortDate(due)}</span>`;
@@ -3076,7 +3097,9 @@ function injectNextDeadlines() {
   }
   const el = document.createElement('span');
   el.className = '__lacourt_next_dl__';
-  el.setAttribute('style', 'margin-left:22px;font-weight:600;white-space:nowrap;font-family:inherit;display:inline-block;');
+  // OSC status can be a longer sentence, so let it wrap; deadlines stay on one line.
+  const ws = __nextDlComputed.osc ? 'white-space:normal' : 'white-space:nowrap';
+  el.setAttribute('style', 'margin-left:22px;font-weight:600;' + ws + ';font-family:inherit;display:inline-block;');
   el.innerHTML = nextDlHtml();
   host.insertBefore(el, span.nextSibling);
   dlLog('injected deadlines next to header:', (span.textContent || '').slice(0, 60));
@@ -3110,12 +3133,81 @@ async function fetchNextDeadlineFilings() {
   injectNextDeadlines(); // recolour
 }
 
+function dlEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+// For an OSC Re: Failure to Prosecute Default Judgment, report whether every
+// (non-cross) defendant is either in default or dismissed. A default counts
+// only if it was entered on/after the operative (latest) complaint — an earlier
+// default was superseded by the amended complaint and must be re-taken.
+async function computeOscDefaultStatus() {
+  try {
+    const parties = parsePartiesTable(document);
+    const defendants = parties.filter(p => {
+      const r = p.role || '';
+      return !/cross[-\s]?defendant/i.test(r) && /^\s*(defendant|respondent)\b/i.test(r);
+    });
+    if (!defendants.length) return { text: 'No defendants found on the Parties tab', color: '#0a6e6e' };
+
+    const docs = await getAllDocumentsCached();
+    // Operative pleading = latest complaint, falling back to the latest petition
+    // when the case has no complaint (mirrors computeRelevantDocuments).
+    let op = latestDoc((docs || []).filter(d => isComplaintDoc(d.name)));
+    if (!op) op = latestDoc((docs || []).filter(d => isPetitionDoc(d.name)));
+    const opWhen = op ? op.when : null;
+
+    const notAccounted = [];
+    let dismissed = 0, defaulted = 0, stale = 0;
+    for (const d of defendants) {
+      if (d.dismissed) { dismissed++; continue; }
+      const dd = d.defaultDate;
+      if (dd && opWhen && dd >= opWhen) { defaulted++; continue; }
+      if (dd && opWhen && dd < opWhen) stale++;
+      notAccounted.push(d.name);
+    }
+    const N = defendants.length, plural = N === 1 ? '' : 's';
+    dlLog('OSC default status:', {
+      N, defaulted, dismissed, stale, opWhen: opWhen && fmtShortDate(opWhen), notAccounted,
+      defendants: defendants.map(d => ({ name: d.name, dismissed: d.dismissed, defaultDate: d.defaultDate && fmtShortDate(d.defaultDate) })),
+    });
+
+    if (!notAccounted.length) {
+      return {
+        text: '✓ All ' + N + ' defendant' + plural + ' in default or dismissed (' + defaulted + ' default, ' + dismissed + ' dismissed)',
+        color: '#1a6b3a',
+      };
+    }
+    let caveat = '';
+    if (!opWhen) caveat = ' — operative complaint not found, cannot verify default dates';
+    else if (stale) caveat = ' (' + stale + ' default' + (stale === 1 ? '' : 's') + ' predate the operative complaint of ' + fmtShortDate(opWhen) + ')';
+    return {
+      text: '⚠ ' + notAccounted.length + ' of ' + N + ' defendant' + plural + ' not in default/dismissed: ' + notAccounted.map(dlEsc).join(', ') + caveat,
+      color: '#c0392b',
+    };
+  } catch (e) {
+    dlLog('OSC status error:', e && e.message || e);
+    return { text: 'Default status unavailable', color: '#0a6e6e' };
+  }
+}
+
+async function fetchOscStatus() {
+  if (__nextDlFetchStarted || !__nextDlComputed || !__nextDlComputed.osc) return;
+  __nextDlFetchStarted = true;
+  __oscStatus = await computeOscDefaultStatus();
+  injectNextDeadlines();
+}
+
 function renderNextHeaderDeadlines() {
   try {
     if (!__nextDlComputed) {
       const c = computeDueDates();
       if (!c) return; // header not ready — a later poll/observer will retry
       __nextDlComputed = c;
+      if (c.osc) {
+        dlLog('OSC re failure to prosecute default judgment detected');
+        injectNextDeadlines();  // "Checking defaults…"
+        fetchOscStatus();       // then fill in the default/dismissal status
+        return;
+      }
       dlLog('computed:', c.skip ? 'skip (' + (c.reason || 'not hearing-based') + ')'
         : { motionType: c.motionType, cat: c.cat, motionDue: fmtShortDate(c.motionDue), oppDue: fmtShortDate(c.oppDue), replyDue: fmtShortDate(c.replyDue) });
       if (c.skip) return;
