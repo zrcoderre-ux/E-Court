@@ -1391,9 +1391,11 @@ function parseNonPartyNames(root) {
         .replace(/\([^)]*\)/g, ' ')                                   // "(SBN 12345)" etc.
         .replace(/\b(state\s*)?bar\s*(no\.?|#)?\s*\d+/ig, ' ')          // bar numbers
         .replace(/\besq\.?/ig, ' ')                                     // "Esq." / "Esq"
-        .replace(/\b(in\s+)?pro\s+per\b|\bpro\s+se\b|\bself[-\s]?represented\b/ig, ' ')
+        .replace(/\b(in\s+)?pro\s+per\b|\bpro\s+se\b|\bself[-\s]?represented(?:\s+litigant)?\b/ig, ' ')
         .replace(/[,\s]+$/, '').replace(/^[,\s]+/, '').replace(/\s+/g, ' ').trim();
-      if (part.length >= 2 && /[a-z]/i.test(part)) {
+      // "Self-represented Litigant" is a representation status, not a person —
+      // drop it (and the bare "Litigant" residue) rather than treat it as a name.
+      if (part.length >= 2 && /[a-z]/i.test(part) && !/^litigant$/i.test(part)) {
         const key = part.toLowerCase();
         if (!seen.has(key)) { seen.add(key); out.push(part); }
       }
