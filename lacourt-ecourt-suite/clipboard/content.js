@@ -2269,8 +2269,17 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
     for (const [id, d] of rel) if (/proof of service/i.test(d.name || '')) rel.delete(id);
   }
 
+  // A fee-waiver request (and its "additional fees" variant) is an
+  // administrative filing that is never relevant to a motion — always drop it.
+  for (const [id, d] of rel) if (ALWAYS_IRRELEVANT_RE.test(d.name || '')) rel.delete(id);
+
   return Array.from(rel.values());
 }
+
+// Documents that are never relevant to any motion, regardless of motion type.
+// "Request to Waive Court Fees" / "Request to Waive Additional Court Fees" are
+// administrative fee-waiver filings, not substantive to any hearing.
+const ALWAYS_IRRELEVANT_RE = /request to waive (additional )?court fees/i;
 
 // Motion-type terms for which "Proof of Service" documents stay relevant.
 // For any other motion, proof-of-service filings are excluded.
