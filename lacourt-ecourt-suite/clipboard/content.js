@@ -3207,11 +3207,42 @@ async function computeOscDefaultStatus() {
   }
 }
 
+// Session-scoped cache for the OSC status, keyed by case number, so it is
+// computed once per browser session instead of re-fetched on every tab change.
+// (Requires the service worker to widen storage.session access to content
+// scripts; falls back to recomputing if that isn't available.)
+function oscCacheKey() {
+  const cn = parseCaseNumber(document) || '';
+  return cn ? 'oscStatus:' + cn : null;
+}
+function oscCacheGet(key) {
+  return new Promise(resolve => {
+    try {
+      chrome.storage.session.get([key], r => {
+        if (chrome.runtime.lastError) { resolve(null); return; }
+        resolve((r && r[key]) || null);
+      });
+    } catch (_) { resolve(null); }
+  });
+}
+function oscCacheSet(key, val) {
+  try { chrome.storage.session.set({ [key]: val }, () => { void chrome.runtime.lastError; }); } catch (_) {}
+}
+
 async function fetchOscStatus() {
   if (__nextDlFetchStarted || !__nextDlComputed || !__nextDlComputed.osc) return;
   __nextDlFetchStarted = true;
+  const key = oscCacheKey();
+  if (key) {
+    const cached = await oscCacheGet(key);
+    if (cached && cached.text) { __oscStatus = cached; injectNextDeadlines(); return; }
+  }
   __oscStatus = await computeOscDefaultStatus();
   injectNextDeadlines();
+  // Cache real answers only — not transient failures, which should retry.
+  if (key && __oscStatus && __oscStatus.text && __oscStatus.text !== 'Default status unavailable') {
+    oscCacheSet(key, __oscStatus);
+  }
 }
 
 function renderNextHeaderDeadlines() {
