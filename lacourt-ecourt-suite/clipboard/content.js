@@ -1680,7 +1680,7 @@ function movantMatchScore(motionType, docName) {
 function isMovingPaper(name) {
   if (!name) return false;
   const n = name.trim();
-  if (/^(Opposition|Reply|Response|Declaration|Proof of Service|Order\b|Minute Order|Notice\b|Brief|Request\b|Certificate|Summons|Appeal\b|Case Management|Ex Parte Proposed Order|Points and Authorities|Memorandum|Stipulation|Objection|Separate Statement)/i.test(n)) {
+  if (/^(Opposition|Reply|Response|Declaration|Proof of (Personal )?Service|Order\b|Minute Order|Notice\b|Brief|Request\b|Certificate|Summons|Appeal\b|Case Management|Ex Parte Proposed Order|Points and Authorities|Memorandum|Stipulation|Objection|Separate Statement)/i.test(n)) {
     return false;
   }
   return /^(Motion|Demurrer|Petition|Application|Ex Parte Application|Anti-SLAPP|Special Motion|Amended Motion|Renewed Motion|Cross-?Motion)/i.test(n);
@@ -2266,7 +2266,7 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   const mtl = (motionType || '').toLowerCase();
   const keepProofOfService = POS_KEEP_TERMS.some(t => mtl.indexOf(t) !== -1);
   if (!keepProofOfService) {
-    for (const [id, d] of rel) if (/proof of service/i.test(d.name || '')) rel.delete(id);
+    for (const [id, d] of rel) if (/proof of (personal )?service/i.test(d.name || '')) rel.delete(id);
   }
 
   // A fee-waiver request (and its "additional fees" variant) is an
