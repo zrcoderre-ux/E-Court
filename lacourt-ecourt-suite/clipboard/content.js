@@ -1376,7 +1376,7 @@ function parseNonPartyNames(root) {
     const texts = cells.map(c => (c.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase());
     const ai = texts.findIndex(t => t.length < 40 && /attorney|counsel|represent/.test(t));
     const ni = texts.findIndex(t => t.length < 30 && /\bname\b/.test(t));
-    const ti = texts.findIndex(t => t.length < 30 && /party\s*type|^type$/.test(t));
+    const ti = texts.findIndex(t => t.length < 30 && /party[\s-]*type|^type$/.test(t));
     if (ai !== -1 || (ni !== -1 && ti !== -1)) { attyIdx = ai; nameIdx = ni; typeIdx = ti; break; }
   }
   try { console.log('[LACourt] non-party columns:', { nameIdx, typeIdx, attyIdx }); } catch (_) {}
@@ -1411,6 +1411,28 @@ function parseNonPartyNames(root) {
       if (/non-?party/.test(type) && nameIdx !== -1 && cells[nameIdx]) {
         add((cells[nameIdx].textContent || '').replace(/\([^)]*\)/g, ' '));
       }
+    }
+  }
+
+  // The parties table's Representation column lists attorney names but not their
+  // firms. Firm names live in a separate REPRESENTATION table whose header has a
+  // "Firm Name" column — pull the attorney Name and Firm Name from each row.
+  for (const t of root.querySelectorAll('table')) {
+    let firmIdx = -1, repNameIdx = -1, headerSeen = false;
+    for (const r of t.querySelectorAll('tr')) {
+      const cells = Array.from(r.children);
+      if (cells.length < 2) continue;
+      const lower = cells.map(c => (c.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase());
+      if (!headerSeen) {
+        const fi = lower.findIndex(s => s.length < 30 && /firm\s*name/.test(s));
+        if (fi === -1) continue;
+        firmIdx = fi;
+        repNameIdx = lower.findIndex(s => s.length < 30 && /\bname\b/.test(s) && !/firm/.test(s));
+        headerSeen = true;
+        continue;
+      }
+      if (firmIdx !== -1 && cells[firmIdx]) add(cells[firmIdx].textContent);
+      if (repNameIdx !== -1 && cells[repNameIdx]) add(cells[repNameIdx].textContent);
     }
   }
   return out;
