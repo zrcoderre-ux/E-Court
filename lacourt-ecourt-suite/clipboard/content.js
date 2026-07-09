@@ -2251,6 +2251,16 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   add(initialPleading);
   add(latestDoc(docs.filter(d => isCrossComplaintDoc(d.name))));
 
+  // Documents the Hearings tab lists for this motion (substring containment).
+  // The Hearings tab is authoritative, so this runs regardless of whether we
+  // can independently identify the moving paper below — otherwise a motion
+  // whose filing name doesn't match (bestFilingMatch returns null) would leave
+  // only the operative pleading.
+  if (hearingDocBlob) {
+    const blob = movantNormName(hearingDocBlob);
+    for (const d of docs) { const nn = movantNormName(d.name); if (nn && nn.length >= 6 && blob.indexOf(nn) !== -1) add(d); }
+  }
+
   const motionDoc = bestFilingMatch(motionType, docs);
   if (motionDoc) {
     add(motionDoc);
@@ -2258,12 +2268,6 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
 
     // Same-day filings by the moving party (incl. just before the motion).
     for (const d of docs) if (sameCalendarDay(d.when, mw) && docSharesParty(docPartyNames(d.filedBy), mov)) add(d);
-
-    // Documents the Hearings tab lists for this motion (substring containment).
-    if (hearingDocBlob) {
-      const blob = movantNormName(hearingDocBlob);
-      for (const d of docs) { const nn = movantNormName(d.name); if (nn && nn.length >= 6 && blob.indexOf(nn) !== -1) add(d); }
-    }
 
     if (singleHearing) {
       // One upcoming hearing: everything after the motion is fair game.
