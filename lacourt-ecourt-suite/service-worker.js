@@ -21,3 +21,13 @@ importScripts(
   'clipboard/background.js',
   'pdf-focus/background.js'
 );
+
+// Let content scripts read/write chrome.storage.session (used to cache the OSC
+// default-judgment status per case, so it is computed once per browser session
+// rather than re-fetched on every tab navigation). Default access is
+// trusted-contexts-only; widen it to include content scripts.
+try {
+  if (chrome.storage.session && chrome.storage.session.setAccessLevel) {
+    chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' });
+  }
+} catch (_) {}
