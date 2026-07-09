@@ -484,10 +484,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const COURT_DOMAIN_RE = /lacourt\.org/i;
 
-function startOfTodayISO() {
+function startOfTodayMs() {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
-  return d.toISOString();
+  return d.getTime();
 }
 
 function getLastExportAt() {
@@ -529,14 +529,39 @@ function isCourtPdfDownload(item) {
   return fromCourt && looksPdf;
 }
 
-// Resolves true if a court PDF was downloaded within the window, OR if we
-// simply can't tell (no downloads API) — we never block on uncertainty.
+// The extension's own record of court docs opened/downloaded since `sinceMs`.
+// This is the authoritative signal for docs pulled THROUGH the extension: the
+// background worker stamps docTracking whenever it opens a court doc or sees a
+// completed download for one. Court PDFs frequently open inline in Chrome's
+// viewer and never create a chrome.downloads entry, so relying on the downloads
+// API alone made this guard nag even after the user had pulled every PDF.
+function hasTrackedCourtPdfSince(sinceMs) {
+  return new Promise(resolve => {
+    try {
+      chrome.storage.local.get(['docTracking'], r => {
+        if (chrome.runtime.lastError) { resolve(false); return; }
+        const t = (r && r.docTracking) || {};
+        const recent = obj => !!obj && Object.keys(obj).some(id => ((obj[id] && obj[id].at) || 0) >= sinceMs);
+        resolve(recent(t.downloaded) || recent(t.opened));
+      });
+    } catch (_) { resolve(false); }
+  });
+}
+
+// Resolves true if a court PDF was pulled within the window, OR if we simply
+// can't tell — we never block on uncertainty.
 async function hasRecentCourtPdf() {
+  const last = await getLastExportAt();
+  const sinceMs = last ? new Date(last).getTime() : startOfTodayMs();
+
+  // Primary: the extension's own tracking of court docs it opened/downloaded.
+  if (await hasTrackedCourtPdfSince(sinceMs)) return true;
+
+  // Fallback: Chrome's own download history, covering PDFs saved outside the
+  // extension's tracked opens. If the API is unavailable, don't block.
   if (!chrome.downloads || !chrome.downloads.search) return true;
 
-  const last = await getLastExportAt();
-  const sinceISO = last ? new Date(last).toISOString() : startOfTodayISO();
-
+  const sinceISO = new Date(sinceMs).toISOString();
   const items = await new Promise(resolve => {
     try {
       chrome.downloads.search(
