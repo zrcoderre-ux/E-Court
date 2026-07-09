@@ -3152,12 +3152,19 @@ function dlEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').rep
 // default was superseded by the amended complaint and must be re-taken.
 async function computeOscDefaultStatus() {
   try {
-    const parties = parsePartiesTable(document);
+    // Read the roster from the live page when it has the parties table, else
+    // background-fetch the Parties page so the status shows on any tab.
+    let partiesRoot = document;
+    if (!document.querySelector('a[title="UPDATE PARTY"]')) {
+      const url = getPartiesUrl();
+      if (url) { const doc = await fetchCaseDoc(url); if (doc) partiesRoot = doc; }
+    }
+    const parties = parsePartiesTable(partiesRoot);
     const defendants = parties.filter(p => {
       const r = p.role || '';
       return !/cross[-\s]?defendant/i.test(r) && /^\s*(defendant|respondent)\b/i.test(r);
     });
-    if (!defendants.length) return { text: 'No defendants found on the Parties tab', color: '#0a6e6e' };
+    if (!defendants.length) return { text: 'No defendants found', color: '#0a6e6e' };
 
     const docs = await getAllDocumentsCached();
     // Operative pleading = latest complaint, falling back to the latest petition
