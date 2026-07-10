@@ -1684,6 +1684,18 @@ function movantSigTokens(s) {
     .split(' ').filter(t => t.length > 1 && !MOVANT_STOPWORDS.has(t));
 }
 
+// eCourt document names carry standardized qualifiers that describe what a paper
+// does NOT include and inject tokens absent from the hearing description, e.g.
+// "Motion to Strike (not anti-SLAPP) - without Demurrer" or "Demurrer - without
+// Motion to Strike". Strip parentheticals and any trailing dash-prefixed
+// "with/without …" clause so matching keys on the core motion phrase.
+function stripMotionQualifiers(s) {
+  return (s || '')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\s[-–—]\s*(?:with|without)\b.*$/i, ' ')
+    .replace(/\s+/g, ' ').trim();
+}
+
 function movantTokenHit(a, b) {
   if (a === b) return true;
   if (a.length >= 4 && b.length >= 4 && (b.startsWith(a) || a.startsWith(b))) return true;
@@ -1691,8 +1703,8 @@ function movantTokenHit(a, b) {
 }
 
 function movantMatchScore(motionType, docName) {
-  const mt = [...new Set(movantSigTokens(motionType))];
-  const dn = [...new Set(movantSigTokens(docName))];
+  const mt = [...new Set(movantSigTokens(stripMotionQualifiers(motionType)))];
+  const dn = [...new Set(movantSigTokens(stripMotionQualifiers(docName)))];
   if (!mt.length || !dn.length) return 0;
   let mtHit = 0;
   for (const t of mt) if (dn.some(d => movantTokenHit(t, d))) mtHit++;
