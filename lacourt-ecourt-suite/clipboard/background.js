@@ -142,10 +142,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return false;
   }
 
-  // Download every court PDF currently open in a tab of the requesting window
-  // (used by the Export button). chrome.downloads.download saves the resource
-  // regardless of the server's inline/attachment disposition, so viewing a PDF
-  // in a tab is enough.
+  // Download every court PDF currently open in a tab of the requesting window,
+  // then close those tabs (used by the Export button). chrome.downloads.download
+  // saves the resource regardless of the server's inline/attachment disposition,
+  // so viewing a PDF in a tab is enough, and it hands the request to the browser's
+  // download manager — closing the tab afterward does not interrupt it.
   if (msg.type === 'downloadOpenPdfs') {
     const tab = _sender && _sender.tab;
     const windowId = tab && tab.windowId;
@@ -155,24 +156,32 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
     chrome.tabs.query({ windowId }, tabs => {
       if (chrome.runtime.lastError) { sendResponse({ ok: false, count: 0 }); return; }
-      const seen = new Set();
-      const jobs = [];
+      // Map each resolvable PDF URL to the tab(s) showing it, keeping the name the
+      // companion viewer gave the document (it lives in the tab title as
+      // "<name> — PDF Viewer"; Chrome otherwise names the file from the URL).
+      const byUrl = new Map();
       for (const t of (tabs || [])) {
         const url = resolveOpenPdfUrl(t.url || t.pendingUrl || '');
-        if (url && !seen.has(url)) {
-          seen.add(url);
-          // Preserve the name the companion viewer gave the document (it lives
-          // in the tab title as "<name> — PDF Viewer"). Chrome otherwise names
-          // the file from the URL/headers, losing that name.
-          jobs.push({ url, filename: pdfFilenameFromTitle(t.title) });
-        }
+        if (!url) continue;
+        let e = byUrl.get(url);
+        if (!e) { e = { filename: pdfFilenameFromTitle(t.title), tabIds: [] }; byUrl.set(url, e); }
+        if (t.id != null) e.tabIds.push(t.id);
       }
-      for (const job of jobs) {
-        const opts = { url: job.url };
-        if (job.filename) opts.filename = job.filename;
-        try { chrome.downloads.download(opts, () => { void chrome.runtime.lastError; }); } catch (_) {}
+      for (const [url, e] of byUrl) {
+        const opts = { url };
+        if (e.filename) opts.filename = e.filename;
+        try {
+          chrome.downloads.download(opts, downloadId => {
+            void chrome.runtime.lastError;
+            // Close the tab(s) only once the download actually started, so a
+            // failed download never loses the still-open PDF.
+            if (downloadId != null && e.tabIds.length) {
+              try { chrome.tabs.remove(e.tabIds, () => { void chrome.runtime.lastError; }); } catch (_) {}
+            }
+          });
+        } catch (_) {}
       }
-      sendResponse({ ok: true, count: jobs.length });
+      sendResponse({ ok: true, count: byUrl.size });
     });
     return true; // async: keep the channel open for chrome.tabs.query
   }
