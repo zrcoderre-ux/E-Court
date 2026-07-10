@@ -156,15 +156,23 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     chrome.tabs.query({ windowId }, tabs => {
       if (chrome.runtime.lastError) { sendResponse({ ok: false, count: 0 }); return; }
       const seen = new Set();
-      const urls = [];
+      const jobs = [];
       for (const t of (tabs || [])) {
         const url = resolveOpenPdfUrl(t.url || t.pendingUrl || '');
-        if (url && !seen.has(url)) { seen.add(url); urls.push(url); }
+        if (url && !seen.has(url)) {
+          seen.add(url);
+          // Preserve the name the companion viewer gave the document (it lives
+          // in the tab title as "<name> — PDF Viewer"). Chrome otherwise names
+          // the file from the URL/headers, losing that name.
+          jobs.push({ url, filename: pdfFilenameFromTitle(t.title) });
+        }
       }
-      for (const url of urls) {
-        try { chrome.downloads.download({ url }, () => { void chrome.runtime.lastError; }); } catch (_) {}
+      for (const job of jobs) {
+        const opts = { url: job.url };
+        if (job.filename) opts.filename = job.filename;
+        try { chrome.downloads.download(opts, () => { void chrome.runtime.lastError; }); } catch (_) {}
       }
-      sendResponse({ ok: true, count: urls.length });
+      sendResponse({ ok: true, count: jobs.length });
     });
     return true; // async: keep the channel open for chrome.tabs.query
   }
@@ -221,6 +229,19 @@ function resolveOpenPdfUrl(rawUrl) {
 function isCourtPdfUrl(u) {
   return typeof u === 'string' && /^https?:/i.test(u) &&
     (/\/ecourt\/ecms\/doc\b/i.test(u) || /[?&]docId=\d+/i.test(u) || /\.pdf(?:[?#]|$)/i.test(u));
+}
+
+// The companion viewer sets the tab title to "<document name> — PDF Viewer".
+// Recover that name and turn it into a safe .pdf download filename, or '' if the
+// title carries no usable name (so the caller lets Chrome name the file).
+function pdfFilenameFromTitle(title) {
+  if (typeof title !== 'string') return '';
+  let name = title.replace(/\s*[—–|-]\s*PDF Viewer\s*$/i, '').trim();
+  // Strip a trailing ".pdf" so we can re-add exactly one, then sanitize away
+  // characters that are illegal in filenames.
+  name = name.replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!name || /^PDF Viewer$/i.test(name)) return '';
+  return name + '.pdf';
 }
 
 /* ------------------------------------------------------------------ */
