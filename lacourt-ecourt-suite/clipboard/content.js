@@ -2333,10 +2333,12 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   return Array.from(rel.values());
 }
 
-// Documents that are never relevant to any motion, regardless of motion type.
-// "Request to Waive Court Fees" / "Request to Waive Additional Court Fees" are
-// administrative fee-waiver filings, not substantive to any hearing.
-const ALWAYS_IRRELEVANT_RE = /request to waive (additional )?court fees/i;
+// Documents that are never relevant to any motion, regardless of motion type:
+//   - "Request to Waive Court Fees" / "...Additional Court Fees": administrative
+//     fee-waiver filings, not substantive to any hearing.
+//   - "Proposed Order" / "[Proposed] Order": a lodged draft order, not a paper
+//     that briefs or supports the motion.
+const ALWAYS_IRRELEVANT_RE = /request to waive (additional )?court fees|\[?\s*proposed\s*\]?\s+order\b/i;
 
 // Motion-type terms for which "Proof of Service" documents stay relevant.
 // For any other motion, proof-of-service filings are excluded.
