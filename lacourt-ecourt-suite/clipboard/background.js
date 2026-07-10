@@ -143,9 +143,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   // Download every court PDF currently open in a tab of the requesting window
-  // (used by the Export button). A court PDF tab is the e-court doc endpoint or
-  // any .pdf URL. chrome.downloads.download saves the resource regardless of the
-  // server's inline/attachment disposition, so viewing a PDF in a tab is enough.
+  // (used by the Export button). chrome.downloads.download saves the resource
+  // regardless of the server's inline/attachment disposition, so viewing a PDF
+  // in a tab is enough.
   if (msg.type === 'downloadOpenPdfs') {
     const tab = _sender && _sender.tab;
     const windowId = tab && tab.windowId;
@@ -153,15 +153,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({ ok: false, count: 0 });
       return false;
     }
-    const isPdfUrl = u => typeof u === 'string' &&
-      (/\/ecourt\/ecms\/doc\b/i.test(u) || /[?&]docId=\d+/i.test(u) || /\.pdf(?:[?#]|$)/i.test(u));
     chrome.tabs.query({ windowId }, tabs => {
       if (chrome.runtime.lastError) { sendResponse({ ok: false, count: 0 }); return; }
       const seen = new Set();
       const urls = [];
       for (const t of (tabs || [])) {
-        const u = t.url || t.pendingUrl || '';
-        if (isPdfUrl(u) && !seen.has(u)) { seen.add(u); urls.push(u); }
+        const url = resolveOpenPdfUrl(t.url || t.pendingUrl || '');
+        if (url && !seen.has(url)) { seen.add(url); urls.push(url); }
       }
       for (const url of urls) {
         try { chrome.downloads.download({ url }, () => { void chrome.runtime.lastError; }); } catch (_) {}
@@ -196,6 +194,34 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   return false;
 });
+
+// Given an open tab's URL, return the URL to actually download for a court PDF,
+// or null if the tab isn't a PDF. Court docs frequently open in a companion PDF
+// viewer whose tab URL is chrome-extension://<id>/viewer/viewer.html?file=<orig>
+// — downloading THAT saves the viewer's HTML shell (the "Viewer.html" failure),
+// so we unwrap the embedded original URL from the "file" parameter. Direct doc-
+// endpoint and .pdf tabs are downloaded as-is.
+function resolveOpenPdfUrl(rawUrl) {
+  if (typeof rawUrl !== 'string' || !rawUrl) return null;
+
+  // Companion PDF-viewer tab: the original URL is carried after "file=" (raw for
+  // the .pdf redirect rule, percent-encoded for the file:// path). It is the
+  // last thing in the URL, so take everything after "file=".
+  const fi = rawUrl.indexOf('file=');
+  if (fi !== -1 && (/viewer\.html/i.test(rawUrl) || /^chrome-extension:\/\//i.test(rawUrl))) {
+    let cand = rawUrl.slice(fi + 5);
+    try { const dec = decodeURIComponent(cand); if (/^https?:/i.test(dec)) cand = dec; } catch (_) {}
+    return isCourtPdfUrl(cand) ? cand : null;
+  }
+
+  // Direct court doc endpoint or .pdf tab.
+  return isCourtPdfUrl(rawUrl) ? rawUrl : null;
+}
+
+function isCourtPdfUrl(u) {
+  return typeof u === 'string' && /^https?:/i.test(u) &&
+    (/\/ecourt\/ecms\/doc\b/i.test(u) || /[?&]docId=\d+/i.test(u) || /\.pdf(?:[?#]|$)/i.test(u));
+}
 
 /* ------------------------------------------------------------------ */
 /* Documents-button debug tracking store                               */
