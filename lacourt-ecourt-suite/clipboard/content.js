@@ -1674,7 +1674,10 @@ function movantNormName(s) {
   return (s || '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-const MOVANT_STOPWORDS = new Set(['the', 'of', 'for', 'and', 'to', 'a', 'an', 'on', 'in', 're', 'with', 'by']);
+// "motion"/"hearing" appear in nearly every motion type and doc name, so they
+// carry no signal for matching a hearing to its moving paper — treat them as
+// stopwords so the discriminating terms (demurrer, compel, strike, …) decide.
+const MOVANT_STOPWORDS = new Set(['the', 'of', 'for', 'and', 'to', 'a', 'an', 'on', 'in', 're', 'with', 'by', 'motion', 'hearing']);
 
 function movantSigTokens(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
@@ -1688,13 +1691,17 @@ function movantTokenHit(a, b) {
 }
 
 function movantMatchScore(motionType, docName) {
-  const mt = movantSigTokens(motionType);
-  const dn = movantSigTokens(docName);
+  const mt = [...new Set(movantSigTokens(motionType))];
+  const dn = [...new Set(movantSigTokens(docName))];
   if (!mt.length || !dn.length) return 0;
-  const uniq = new Set(mt);
-  let hit = 0;
-  for (const t of uniq) if (dn.some(d => movantTokenHit(t, d))) hit++;
-  return hit / uniq.size;
+  let mtHit = 0;
+  for (const t of mt) if (dn.some(d => movantTokenHit(t, d))) mtHit++;
+  let dnHit = 0;
+  for (const d of dn) if (mt.some(t => movantTokenHit(t, d))) dnHit++;
+  // Bidirectional: a concise doc name that fully matches the motion type's key
+  // terms scores high even when the motion type carries extra descriptors
+  // (e.g. "Demurrer - without Motion to Strike" vs a doc named "Demurrer").
+  return Math.max(mtHit / mt.length, dnHit / dn.length);
 }
 
 // Is this document Name an actual moving paper (motion/demurrer/etc.), not a
@@ -2128,14 +2135,26 @@ async function fetchCaseDoc(url) {
 async function computeMovant(motionType, partiesRoot) {
   try {
     if (!motionType) return '';
+
+    // Primary: the Documents page's first view (dedicated header-aware parser).
+    let best = null;
     const url = getDocumentsUrl();
-    if (!url) return '';
-    const doc = await fetchCaseDoc(url);
-    if (!doc) return '';
-    const filings = parseDocumentsFilingsFrom(doc);
-    if (!filings.length) return '';
-    const best = bestFilingMatch(motionType, filings);
+    if (url) {
+      const doc = await fetchCaseDoc(url);
+      if (doc) best = bestFilingMatch(motionType, parseDocumentsFilingsFrom(doc));
+    }
+
+    // Fallback: the full paginated document cache, so a moving paper filed
+    // beyond the first Documents page is still found (busy cases).
+    if (!best) {
+      const all = await getAllDocumentsCached();
+      const filings = (all || [])
+        .filter(d => d && d.name && d.filedBy && isMovingPaper(d.name))
+        .map(d => ({ name: d.name, filedBy: d.filedBy }));
+      best = bestFilingMatch(motionType, filings);
+    }
     if (!best) return '';
+
     const { parties, truncated } = parseFiledByParties(best.filedBy);
     if (!parties.length) return '';
     const roster = buildMovantRoster(partiesRoot || document);
