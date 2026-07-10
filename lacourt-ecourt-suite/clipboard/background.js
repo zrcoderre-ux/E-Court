@@ -142,6 +142,35 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return false;
   }
 
+  // Download every court PDF currently open in a tab of the requesting window
+  // (used by the Export button). A court PDF tab is the e-court doc endpoint or
+  // any .pdf URL. chrome.downloads.download saves the resource regardless of the
+  // server's inline/attachment disposition, so viewing a PDF in a tab is enough.
+  if (msg.type === 'downloadOpenPdfs') {
+    const tab = _sender && _sender.tab;
+    const windowId = tab && tab.windowId;
+    if (windowId == null || !chrome.tabs || !chrome.downloads || !chrome.downloads.download) {
+      sendResponse({ ok: false, count: 0 });
+      return false;
+    }
+    const isPdfUrl = u => typeof u === 'string' &&
+      (/\/ecourt\/ecms\/doc\b/i.test(u) || /[?&]docId=\d+/i.test(u) || /\.pdf(?:[?#]|$)/i.test(u));
+    chrome.tabs.query({ windowId }, tabs => {
+      if (chrome.runtime.lastError) { sendResponse({ ok: false, count: 0 }); return; }
+      const seen = new Set();
+      const urls = [];
+      for (const t of (tabs || [])) {
+        const u = t.url || t.pendingUrl || '';
+        if (isPdfUrl(u) && !seen.has(u)) { seen.add(u); urls.push(u); }
+      }
+      for (const url of urls) {
+        try { chrome.downloads.download({ url }, () => { void chrome.runtime.lastError; }); } catch (_) {}
+      }
+      sendResponse({ ok: true, count: urls.length });
+    });
+    return true; // async: keep the channel open for chrome.tabs.query
+  }
+
   // Debug tracking: record documents that were opened, either by the Documents
   // button (source 'button') or manually by the user (source 'manual').
   if (msg.type === 'recordOpenedDocs' && Array.isArray(msg.docs)) {

@@ -2550,6 +2550,14 @@ function renderFillFormButton() {
     setLabel('Working...');
     btn.style.opacity = '0.7';
 
+    // Fire-and-forget: download any court PDFs the user has open in this window.
+    try {
+      chrome.runtime.sendMessage({ type: 'downloadOpenPdfs' }, res => {
+        void chrome.runtime.lastError;
+        if (res && res.count) console.log('[LACourt] downloaded ' + res.count + ' open PDF(s)');
+      });
+    } catch (_) {}
+
     try {
       const result = await getExportContext();
       if (!result) {
