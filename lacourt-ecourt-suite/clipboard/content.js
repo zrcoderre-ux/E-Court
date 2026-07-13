@@ -1295,11 +1295,13 @@ function parsePartiesTable(root) {
     const dismissed = cells.some(c => DISMISSED_RE.test(c));
 
     // Detect an entered default and its date from the status column, e.g.
-    // "Default 05/12/2026" / "Default Entered 05/12/2026". Used by the OSC
-    // Re: Failure to Prosecute Default Judgment status indicator.
+    // "Defaulted 01/29/2025" / "Default 05/12/2026" / "Default Entered 05/12/2026".
+    // Match "default" or "defaulted" (the plain \bdefault\b boundary fails on the
+    // "-ed" form eCourt actually uses). Used by the OSC Re: Failure to Prosecute
+    // Default Judgment status indicator.
     let defaultDate = null;
     for (const c of cells) {
-      if (!/\bdefault\b/i.test(c)) continue;
+      if (!/\bdefault(?:ed)?\b/i.test(c)) continue;
       const dm = c.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
       defaultDate = dm ? parseHearingDateTime(dm[1]) : new Date(0); // date if present, else epoch sentinel
       break;
