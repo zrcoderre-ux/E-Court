@@ -2459,8 +2459,16 @@ function getAllDocumentsCached() {
 // relevant set. Resolves to { relevant, motionType, docCount, singleHearing }.
 async function getRelevantDocuments() {
   const hearing = await resolveEffectiveHearing(document);
-  const motionType = hearing && hearing.motionType;
-  if (!motionType) return { relevant: [], reason: 'no-motion' };
+  // The type used to match the Hearings-tab row and any moving paper. Normally
+  // the motion type; for an OSC Re: Failure to Prosecute Default Judgment (which
+  // isn't a "Hearing on <motion>" event, so has no motion type) fall back to the
+  // OSC hearing type — the operative complaint and the Hearings-tab documents are
+  // still the relevant set.
+  let matchType = hearing && hearing.motionType;
+  if (!matchType && hearing && isOscDefaultJudgment(hearing.hearingType)) {
+    matchType = hearing.hearingType;
+  }
+  if (!matchType) return { relevant: [], reason: 'no-motion' };
 
   const docs = await getAllDocumentsCached();
   if (!docs.length) return { relevant: [], reason: 'no-documents' };
@@ -2468,13 +2476,13 @@ async function getRelevantDocuments() {
   const hearingsUrl = getHearingsUrl();
   const hearingsDoc = hearingsUrl ? await fetchCaseDoc(hearingsUrl) : null;
   const singleHearing = hearingsDoc ? parseFutureHearings(hearingsDoc).length <= 1 : true;
-  const hearingDocBlob = hearingsDoc ? findHearingDocBlob(hearingsDoc, motionType) : '';
+  const hearingDocBlob = hearingsDoc ? findHearingDocBlob(hearingsDoc, matchType) : '';
 
-  const relevant = computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearing);
+  const relevant = computeRelevantDocuments(docs, matchType, hearingDocBlob, singleHearing);
   console.log('[LACourt] relevant documents:', {
-    motionType, docCount: docs.length, singleHearing, relevant: relevant.map(d => d.name),
+    motionType: matchType, docCount: docs.length, singleHearing, relevant: relevant.map(d => d.name),
   });
-  return { relevant, motionType, docCount: docs.length, singleHearing };
+  return { relevant, motionType: matchType, docCount: docs.length, singleHearing };
 }
 
 // Memoized wrapper so the Documents button opens instantly: the fetch + relevance
