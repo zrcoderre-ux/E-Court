@@ -1337,10 +1337,20 @@ function parsePartiesTable(root) {
 
     // Strip parenthetical content from name.
     if (name) {
+      // For a defendant / cross-defendant, preserve a "(Doe N)" / "(Does 1-10)"
+      // designation — it identifies which fictitious defendant the party was
+      // named as — even though the role and entity-type parentheticals are
+      // stripped.
+      let doe = '';
+      if (/\b(?:cross[-\s]?defendant|defendant)\b/i.test(role)) {
+        const dm = name.match(/\(\s*does?\b[^)]*\)/i);
+        if (dm) doe = dm[0].replace(/\s+/g, ' ').trim();
+      }
       const parenIdx = name.indexOf('(');
       if (parenIdx !== -1) name = name.substring(0, parenIdx).trim();
       // Also strip trailing "Update Party" if it leaked in.
       name = name.replace(/\s*update\s*party\s*$/i, '').trim();
+      if (doe) name = (name + ' ' + doe).trim();
     }
 
     if (name) {
