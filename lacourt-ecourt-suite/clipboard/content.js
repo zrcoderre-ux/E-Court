@@ -1516,6 +1516,17 @@ function stripEventId(desc) {
 }
 
 /**
+ * Drops a trailing parenthesised number from a motion type, e.g.
+ * "Motion to Compel Discovery (12345)" / "Demurrer (2)" -> the paren is
+ * removed. Only purely numeric parentheticals (digits + separators) are
+ * stripped; alphanumeric ones such as "(CCP 437c)" or "(Set One)" are kept.
+ */
+function stripTrailingParenNumber(s) {
+  if (!s) return s;
+  return s.replace(/\s*\(\s*\d[\d\s.,\-]*\)\s*$/, '').trim();
+}
+
+/**
  * Finds the motion type from the "Next Event" indicator. Returns the text
  * following "Hearing on" up to (but not including) " in Department ...".
  * Returns '' if no Hearing-on event is shown.
@@ -1533,12 +1544,12 @@ function parseMotionType(root) {
     const title = (span.getAttribute('title') || '').trim();
     if (title) {
       const m = title.match(re);
-      if (m) return stripEventId(m[1]);
+      if (m) return stripTrailingParenNumber(stripEventId(m[1]));
     }
     const text = (span.textContent || '').trim().replace(/\s+/g, ' ');
     if (text) {
       const m = text.match(re);
-      if (m) return stripEventId(m[1]);
+      if (m) return stripTrailingParenNumber(stripEventId(m[1]));
     }
   }
   return '';
@@ -1574,12 +1585,12 @@ function parseHearingType(root) {
     const title = (span.getAttribute('title') || '').trim();
     if (title) {
       const m = title.match(re);
-      if (m) return stripEventId(m[1]);
+      if (m) return stripTrailingParenNumber(stripEventId(m[1]));
     }
     const text = (span.textContent || '').trim().replace(/\s+/g, ' ');
     if (text) {
       const m = text.match(re);
-      if (m) return stripEventId(m[1]);
+      if (m) return stripTrailingParenNumber(stripEventId(m[1]));
     }
   }
   return '';
