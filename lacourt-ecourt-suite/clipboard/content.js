@@ -276,7 +276,7 @@ function buildRotationData(root, hearingOverride) {
 
   // Primary side. Petitioners share form labels with plaintiffs.
   // Resolve short names for all plaintiffs on this side at once so
-  // colliding parties (e.g. two "Marriott" entities) get widened.
+  // colliding parties (e.g. two "Globex" entities) get widened.
   const plaintiffShortNames = resolveShortNames(primaryClaimants.map(p => p.name));
   let titlePlaintiffShortName = null;
   if (primaryClaimants.length >= 1) {
@@ -747,7 +747,7 @@ function sliceShortName(words, n) {
  *     party is referenced as the title party from formatOthers().
  *   - shortName: the FIRST `wordCount` words of the core name (default 2),
  *     extended by one if the slice would end on a stop-word (so "Bank of
- *     America Corp" yields "Bank of America" not "Bank of"). Trailing
+ *     Commerce Corp" yields "Bank of Commerce" not "Bank of"). Trailing
  *     punctuation on the core (e.g. "Monsters," from "Monsters, Inc.") is
  *     stripped before extraction. Callers may pass a larger `wordCount`
  *     to disambiguate parties whose first 2 words collide.
@@ -759,12 +759,12 @@ function sliceShortName(words, n) {
  *   "MONSTERS, INC."
  *     → formatted: "Monsters, Inc."
  *       shortName: "Monsters"          (only 1 word in core)
- *   "WALMART STORES INC A DELAWARE CORPORATION"
- *     → formatted: "Walmart Stores Inc a Delaware Corporation"
- *       shortName: "Walmart Stores"
- *   "BANK OF AMERICA CORP"
- *     → formatted: "Bank of America Corp"
- *       shortName: "Bank of America"   (extended past stop-word "of")
+ *   "GLOBEX STORES INC A DELAWARE CORPORATION"
+ *     → formatted: "Globex Stores Inc a Delaware Corporation"
+ *       shortName: "Globex Stores"
+ *   "BANK OF COMMERCE CORP"
+ *     → formatted: "Bank of Commerce Corp"
+ *       shortName: "Bank of Commerce"   (extended past stop-word "of")
  */
 function formatBusinessEntityWithShortName(coreName, entityRendered, locationPhrase, wordCount) {
   // Strip trailing punctuation (commas, semicolons, etc.) from the core name
@@ -777,7 +777,7 @@ function formatBusinessEntityWithShortName(coreName, entityRendered, locationPhr
   // name (typically 2). buildRotationData() may pass a larger value to
   // disambiguate parties on the same side that would otherwise collide.
   // If the slice would end on a stop-word like "of"/"and"/"the"/"for"/"&"
-  // (e.g. "Bank of America" → "Bank of"), extend by one more word so the
+  // (e.g. "Bank of Commerce" → "Bank of"), extend by one more word so the
   // short name doesn't dangle on a connective.
   const n = wordCount || 2;
   const words = coreForShortName.split(/\s+/).filter(Boolean);
@@ -1452,7 +1452,7 @@ function parseNonPartyNames(root) {
 
 // Matches both LA Superior Court case-number formats:
 //   - Current year-first: 2 digits + location/type letters + sequence digits,
-//     e.g. "25STCV32877", "21STCR00001".
+//     e.g. "25STCV12345", "21STCR00001".
 //   - Legacy district-prefix: a district letter + a case-type letter
 //     (C civil, D family, F paternity, P probate, Q DV, S special, T adoption)
 //     + a six-digit sequence, e.g. "BC654321", "SC123456". Unlimited civil in
@@ -1476,7 +1476,7 @@ function parseCaseNumber(root) {
     if (q && /^[0-9A-Z]{5,20}$/i.test(q)) return q;
   } catch (_) {}
 
-  // 2) The page title leads with the case number, e.g. "BC717394: DOCUMENTS ...".
+  // 2) The page title leads with the case number, e.g. "BC123456: DOCUMENTS ...".
   const titleM = (root.title || '').match(CASE_NUMBER_RE);
   if (titleM) return titleM[0];
 
@@ -1601,7 +1601,7 @@ function parseHearingType(root) {
  * rendered alongside the case number in an element matched by
  * [class*="case"]. Observed textContent format:
  *
- *   "25STCV36868 THE FOUNTAIN GROUP, LP, et al. vs POK SUK KWON ReactDOM.render(...)"
+ *   "25STCV12345 ACME HOLDINGS, LP, et al. vs JORDAN RIVERA ReactDOM.render(...)"
  *
  * The case number prefix and the trailing ReactDOM.render(…) noise both
  * leak into textContent because of how the page is built. We strip both.
@@ -1857,7 +1857,7 @@ function buildMovantRoster(root) {
     }
 
     // Name: first cell that isn't a role/type/action/index cell; strip any
-    // trailing parenthetical (e.g. "Kevin Singer (Non-Party)" -> "Kevin Singer").
+    // trailing parenthetical (e.g. "Sam Carter (Non-Party)" -> "Sam Carter").
     let name = '';
     for (const c of cells) {
       if (/^(update\s*party|edit|delete|view|action)$/i.test(c)) continue;
