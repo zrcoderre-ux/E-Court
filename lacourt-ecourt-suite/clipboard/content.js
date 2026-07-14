@@ -2408,12 +2408,25 @@ async function fetchAllDocuments(docsUrl) {
   if (pgEl) { pageData = pgEl.getAttribute('data-ec-pagedata'); try { count = (JSON.parse(pageData) || {}).count || 0; } catch (_) {} }
 
   if (pageData && count > rows.length) {
+    // Known total: fetch every remaining page in parallel.
     const offsets = [];
     for (let o = 50; o < count && o <= 2000; o += 50) offsets.push(o);
     const results = await Promise.all(offsets.map(o => postPanelPage(o, pageData)));
     for (const frag of results) {
       if (!frag) continue;
       for (const r of parseDocRows(frag)) if (!seen.has(r.docId)) { seen.add(r.docId); rows.push(r); }
+    }
+  } else if (pageData && count < 0 && rows.length > 0) {
+    // Unknown total: eCourt returns count: -1 for lazily-counted lists, so the
+    // "count > rows.length" test above never fires and older filings (e.g. the
+    // original complaint) on later pages are missed. Page forward sequentially
+    // until a page adds nothing new, with a safety cap.
+    for (let o = 50; o <= 2000; o += 50) {
+      const frag = await postPanelPage(o, pageData);
+      if (!frag) break;
+      let added = 0;
+      for (const r of parseDocRows(frag)) if (!seen.has(r.docId)) { seen.add(r.docId); rows.push(r); added++; }
+      if (!added) break; // reached the end (or the pager stopped advancing)
     }
   }
   return rows;
