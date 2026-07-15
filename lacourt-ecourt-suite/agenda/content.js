@@ -203,6 +203,109 @@ function filterExcluded(text) {
 }
 
 /* -------------------------------------------------
+   FULL HEARING NAME EXPANSION
+
+   The agenda truncates long hearing names in the day-table (server-side, e.g.
+   "Demurrer - without Motion..."). Each hearing <b> is wrapped in a per-hearing
+   event link (/ecourt/ecms/agenda/event?dispatch=eventPage&id=NNNN). For the
+   motion types that actually get copied (i.e. NOT on the exclusion list), we
+   fetch that event page, recover the full name, and drop it back into the <b>
+   in place — so both the on-page display and the copy output carry the full
+   name. Fetches are cached by event id; excluded rows are never fetched.
+------------------------------------------------- */
+
+const EVENT_NAME_CACHE = new Map(); // eventId -> full name (''=none) or in-flight Promise
+const EXPANDED_ATTR = 'data-lac-expanded';
+
+function isTruncatedName(text) { return /(?:\.\.\.|…)\s*$/.test(text); }
+function truncatedPrefix(text) { return text.replace(/\s*(?:\.\.\.|…)\s*$/, '').trim(); }
+
+function eventIdFromAnchor(a) {
+  const href = (a && (a.getAttribute('href') || a.href)) || '';
+  const m = href.match(/[?&]id=(\d+)/);
+  return m ? m[1] : null;
+}
+
+// Pull the full hearing name out of a fetched event page: entries render as
+// "MM/DD/YYYY <name>" in label/td/span cells; return the one that starts with
+// the truncated prefix (so we pick the right hearing, not a related deadline).
+function fullNameFromEventDoc(doc, prefix) {
+  const p = prefix.toLowerCase();
+  const seen = new Set();
+  for (const el of doc.querySelectorAll('label, td, span')) {
+    let t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!t) continue;
+    t = t.replace(/^\d{1,2}\/\d{1,2}\/\d{4}\s+/, '').trim();
+    if (!t || seen.has(t)) continue;
+    seen.add(t);
+    if (t.length > prefix.length && t.toLowerCase().startsWith(p)) return t;
+  }
+  return '';
+}
+
+async function fetchEventFullName(eventId, prefix) {
+  try {
+    const res = await fetch('/ecourt/ecms/agenda/event?dispatch=eventPage&id=' + eventId, { credentials: 'include' });
+    if (!res || !res.ok) return '';
+    const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+    return fullNameFromEventDoc(doc, prefix);
+  } catch (_) { return ''; }
+}
+
+async function expandTruncatedHearings() {
+  const table = document.getElementById('day-table');
+  if (!table) return;
+  const anchors = table.querySelectorAll('tr.js-row a[href*="/ecourt/ecms/agenda/event"]');
+  for (const a of anchors) {
+    const b = a.querySelector('b');
+    if (!b || b.getAttribute(EXPANDED_ATTR) === '1') continue;
+    const text = (b.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!isTruncatedName(text)) continue;
+    // Only the motion types that get copied — skip excluded ones entirely.
+    if (isExcluded(text)) continue;
+    const eventId = eventIdFromAnchor(a);
+    if (!eventId) continue;
+    const prefix = truncatedPrefix(text);
+
+    let full = EVENT_NAME_CACHE.get(eventId);
+    if (full === undefined) {
+      const promise = fetchEventFullName(eventId, prefix);
+      EVENT_NAME_CACHE.set(eventId, promise);
+      full = await promise;
+      EVENT_NAME_CACHE.set(eventId, full || '');
+    } else if (full && typeof full.then === 'function') {
+      full = await full;
+    }
+    if (full) {
+      b.textContent = full;
+      b.setAttribute(EXPANDED_ATTR, '1');
+      try { console.log('[LACourt-Agenda] expanded:', prefix + '…', '->', full); } catch (_) {}
+    }
+  }
+}
+
+(function initHearingExpansion() {
+  let pending = false;
+  const run = () => {
+    if (pending) return;
+    pending = true;
+    requestAnimationFrame(() => { pending = false; expandTruncatedHearings(); });
+  };
+  const start = () => {
+    run();
+    // Re-run when the day-table re-renders or paginates. Our own text swaps
+    // no-op on the next pass (already-expanded / no longer truncated).
+    const target = document.getElementById('day-table') || document.body;
+    try { new MutationObserver(run).observe(target, { childList: true, subtree: true }); } catch (_) {}
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();
+
+/* -------------------------------------------------
    UTILITIES
 ------------------------------------------------- */
 
