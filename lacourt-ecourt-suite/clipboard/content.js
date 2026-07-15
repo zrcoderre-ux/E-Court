@@ -3105,6 +3105,71 @@ function lacRegionHasText(left, right, top, bottom, btns) {
   return hit;
 }
 
+// Find the site's fixed blue header bar by probing what is actually rendered at
+// the top of the viewport (elementsFromPoint at a few x positions), then taking
+// the TALLEST fixed/sticky, near-full-width element pinned to the top. Mirrors
+// agenda/content.js findTopBar() so the case-page buttons match the agenda
+// Copy All button's full-bar sizing.
+let __caseTopBarEl = null;
+const __LAC_BTN_IDS = ['__lacourt_fill_btn__', '__lacourt_docs_btn__', '__lacourt_deadline_btn__'];
+function findCaseTopBar() {
+  try {
+    if (__caseTopBarEl && document.contains(__caseTopBarEl)) {
+      const r = __caseTopBarEl.getBoundingClientRect();
+      if (r.top <= 2 && r.height >= 20 && r.height <= 140) return __caseTopBarEl;
+      __caseTopBarEl = null;
+    }
+    const w = window.innerWidth;
+    let best = null, bestH = 0;
+    for (const x of [w * 0.3, w * 0.5, w * 0.7]) {
+      for (const el of document.elementsFromPoint(x, 8)) {
+        if (el === document.documentElement || el === document.body) continue;
+        if (__LAC_BTN_IDS.indexOf(el.id) !== -1) continue;
+        const pos = getComputedStyle(el).position;
+        if (pos !== 'fixed' && pos !== 'sticky') continue;
+        const r = el.getBoundingClientRect();
+        if (r.top > 2 || r.height < 20 || r.height > 140) continue;
+        if (r.width < w * 0.6) continue;
+        if (r.height > bestH) { best = el; bestH = r.height; }
+      }
+    }
+    __caseTopBarEl = best;
+    return best;
+  } catch (_) { return null; }
+}
+
+// Size the floating buttons to the full height of the top bar (flush, no bottom
+// radius) so they fill the blue header like the agenda Copy All button. Falls
+// back to the compact default (rounded tab hanging from top:0) when no bar is
+// found. Uses !important so site CSS can't shrink them.
+let __caseBarLoggedEl = null;
+function sizeButtonsToBar(btns) {
+  const bar = findCaseTopBar();
+  btns.forEach(btn => {
+    const set = (p, v) => { try { btn.style.setProperty(p, v, 'important'); } catch (_) { btn.style[p] = v; } };
+    const clear = (p) => { try { btn.style.removeProperty(p); } catch (_) {} };
+    if (bar) {
+      const r = bar.getBoundingClientRect();
+      const h = Math.round(r.height);
+      set('top', Math.max(0, Math.round(r.top)) + 'px');
+      set('height', h + 'px');
+      set('line-height', h + 'px');
+      set('padding-top', '0');
+      set('padding-bottom', '0');
+      set('font-size', Math.max(13, Math.min(18, Math.round(h * 0.4))) + 'px');
+      set('border-radius', '0 0 0 0');
+      set('box-sizing', 'border-box');
+    } else {
+      ['top', 'height', 'line-height', 'padding-top', 'padding-bottom', 'font-size', 'border-radius', 'box-sizing']
+        .forEach(clear);
+    }
+  });
+  if (bar && __caseBarLoggedEl !== bar) {
+    __caseBarLoggedEl = bar;
+    try { console.log('[LACourt] top bar:', bar.tagName + '.' + (bar.className || ''), 'height=' + Math.round(bar.getBoundingClientRect().height)); } catch (_) {}
+  }
+}
+
 // Docks the buttons in a row from the right edge inward (rightmost first) and
 // returns the left edge of the leftmost button.
 function dockButtonsRow(btns) {
@@ -3127,6 +3192,10 @@ function updateButtonCollapse() {
   const ids = ['__lacourt_fill_btn__', '__lacourt_docs_btn__', '__lacourt_deadline_btn__'];
   const btns = ids.map(id => document.getElementById(id)).filter(Boolean);
   if (!btns.length) return;
+
+  // Size to the blue header bar first so width/height measurements below reflect
+  // the final rendered buttons.
+  sizeButtonsToBar(btns);
 
   // Force expanded and dock across the row to measure the full footprint.
   btns.forEach(b => b.removeAttribute('data-collapsed'));
@@ -3562,7 +3631,12 @@ function observeNextHeader() {
   const obs = new MutationObserver(() => {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(() => { pending = false; try { renderNextHeaderDeadlines(); } catch (_) {} });
+    requestAnimationFrame(() => {
+      pending = false;
+      try { renderNextHeaderDeadlines(); } catch (_) {}
+      // Keep the floating buttons sized to the blue bar if the SPA re-rendered it.
+      try { scheduleButtonCollapse(); } catch (_) {}
+    });
   });
   try { obs.observe(document.body, { childList: true, subtree: true }); __nextDlObserver = obs; } catch (_) {}
 }
