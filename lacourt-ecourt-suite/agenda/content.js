@@ -304,82 +304,122 @@ function filterExcluded(text) {
    FULL HEARING NAME EXPANSION
 
    The agenda truncates long hearing names in the day-table (server-side, e.g.
-   "Demurrer - without Motion..."). Each hearing <b> is wrapped in a per-hearing
-   event link (/ecourt/ecms/agenda/event?dispatch=eventPage&id=NNNN). We fetch
-   that event page for every truncated hearing, recover the full name, and drop
-   it back into the <b> in place — so both the on-page display and the copy
-   output carry the full name, and the exclusion check always runs against the
-   full name rather than a truncated prefix. Fetches are cached by event id.
+   "Demurrer - without Motion..."). The per-hearing event page is an AJAX shell
+   that doesn't contain the hearing name, so we recover the full name from the
+   case's Hearings tab (case?id=<caseId>&formId=395), which lists every hearing
+   as "<name> <MM/DD/YYYY HH:MM AM/PM> <status>". We match the Scheduled hearing
+   on the agenda's day whose name (minus a leading "Hearing on ") starts with
+   the truncated text, and drop the full name back into the <b> in place — so
+   both the on-page display and the copy output carry it, and the exclusion
+   check runs against the full name. Case fetches are cached by case id.
 ------------------------------------------------- */
 
-const EVENT_NAME_CACHE = new Map(); // eventId -> full name (''=none) or in-flight Promise
+const CASE_HEARINGS_CACHE = new Map(); // caseId -> hearings array or in-flight Promise
 const EXPANDED_ATTR = 'data-lac-expanded';
 
 function isTruncatedName(text) { return /(?:\.\.\.|…)\s*$/.test(text); }
 function truncatedPrefix(text) { return text.replace(/\s*(?:\.\.\.|…)\s*$/, '').trim(); }
+function normDate(s) { const m = (s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) : ''; }
+function stripHearingOn(s) { return (s || '').replace(/^\s*hearing on\s+/i, '').trim(); }
 
-function eventIdFromAnchor(a) {
-  const href = (a && (a.getAttribute('href') || a.href)) || '';
-  const m = href.match(/[?&]id=(\d+)/);
-  return m ? m[1] : null;
+// The agenda day (single-day view) from the URL's ?day= param, normalized.
+function agendaDay() {
+  try { return normDate(new URLSearchParams(location.search).get('day') || ''); } catch (_) { return ''; }
 }
 
-// Pull the full hearing name out of a fetched event page: entries render as
-// "MM/DD/YYYY <name>" in label/td/span cells; return the one that starts with
-// the truncated prefix (so we pick the right hearing, not a related deadline).
-function fullNameFromEventDoc(doc, prefix) {
-  const p = prefix.toLowerCase();
-  const seen = new Set();
-  for (const el of doc.querySelectorAll('label, td, span')) {
-    let t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-    if (!t) continue;
-    t = t.replace(/^\d{1,2}\/\d{1,2}\/\d{4}\s+/, '').trim();
-    if (!t || seen.has(t)) continue;
-    seen.add(t);
-    if (t.length > prefix.length && t.toLowerCase().startsWith(p)) return t;
+function fetchWithTimeout(url, ms) {
+  return Promise.race([
+    fetch(url, { credentials: 'include' }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
+  ]);
+}
+
+// Parse a fetched case Hearings-tab document into [{ name, dateTime, status }].
+// Scans every row for a "MM/DD/YYYY HH:MM AM/PM" cell; the cell before it is the
+// hearing name, the cell after is the status. This tolerates the tree-table /
+// wrapper markup without depending on exact column positions.
+function parseCaseHearings(doc) {
+  const out = [];
+  for (const tr of doc.querySelectorAll('tr')) {
+    const cells = Array.from(tr.children).map(c => (c.textContent || '').replace(/\s+/g, ' ').trim());
+    const dtIdx = cells.findIndex(c => /^\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s*(AM|PM)\b/i.test(c));
+    if (dtIdx < 1) continue;
+    const name = cells[dtIdx - 1];
+    if (!name || name.length > 200 || !/[a-z]/i.test(name)) continue;
+    out.push({ name, dateTime: cells[dtIdx], status: cells[dtIdx + 1] || '' });
   }
-  return '';
+  return out;
 }
 
-async function fetchEventFullName(eventId, prefix) {
+async function fetchCaseHearings(caseId) {
   try {
-    const res = await fetch('/ecourt/ecms/agenda/event?dispatch=eventPage&id=' + eventId, { credentials: 'include' });
-    if (!res || !res.ok) return '';
-    const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
-    return fullNameFromEventDoc(doc, prefix);
-  } catch (_) { return ''; }
+    const res = await fetchWithTimeout('/ecourt/ecms/case?id=' + caseId + '&formId=395', 8000);
+    if (!res || !res.ok) return [];
+    return parseCaseHearings(new DOMParser().parseFromString(await res.text(), 'text/html'));
+  } catch (_) { return []; }
+}
+
+function getCaseHearings(caseId) {
+  let v = CASE_HEARINGS_CACHE.get(caseId);
+  if (v === undefined) {
+    v = fetchCaseHearings(caseId);
+    CASE_HEARINGS_CACHE.set(caseId, v);
+    v.then(r => CASE_HEARINGS_CACHE.set(caseId, r), () => CASE_HEARINGS_CACHE.set(caseId, []));
+  }
+  return Promise.resolve(v);
+}
+
+// Full agenda name = a Scheduled hearing (preferably on the agenda's day) whose
+// "Hearing on"-stripped name starts with the truncated prefix.
+function fullNameForHearing(hearings, day, prefix) {
+  const p = prefix.toLowerCase();
+  const scheduled = hearings.filter(h => /scheduled/i.test(h.status));
+  const find = (list, requireDay) => {
+    for (const h of list) {
+      if (requireDay && day && normDate(h.dateTime) !== day) continue;
+      const clean = stripHearingOn(h.name);
+      if (clean.length > prefix.length && clean.toLowerCase().startsWith(p)) return clean;
+    }
+    return '';
+  };
+  return find(scheduled, true) || find(scheduled, false) || find(hearings, true) || '';
+}
+
+// Run async worker over items with limited concurrency (the case cache dedups
+// repeat fetches, so same-case jobs still share one request).
+function runWithConcurrency(items, limit, worker) {
+  let i = 0;
+  const next = async () => { while (i < items.length) { const idx = i++; try { await worker(items[idx]); } catch (_) {} } };
+  return Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, next));
 }
 
 async function expandTruncatedHearings() {
   const table = document.getElementById('day-table');
   if (!table) return;
-  const anchors = table.querySelectorAll('tr.js-row a[href*="/ecourt/ecms/agenda/event"]');
-  for (const a of anchors) {
-    const b = a.querySelector('b');
+  const day = agendaDay();
+
+  const jobs = [];
+  for (const row of table.querySelectorAll('tr.js-row')) {
+    const b = row.querySelector('a[href*="/ecourt/ecms/agenda/event"] b');
     if (!b || b.getAttribute(EXPANDED_ATTR) === '1') continue;
     const text = (b.textContent || '').replace(/\s+/g, ' ').trim();
     if (!isTruncatedName(text)) continue;
-    // Expand every truncated hearing so the exclusion check (during copy) always
-    // runs against the full name, not the truncated prefix.
-    const eventId = eventIdFromAnchor(a);
-    if (!eventId) continue;
-    const prefix = truncatedPrefix(text);
-
-    let full = EVENT_NAME_CACHE.get(eventId);
-    if (full === undefined) {
-      const promise = fetchEventFullName(eventId, prefix);
-      EVENT_NAME_CACHE.set(eventId, promise);
-      full = await promise;
-      EVENT_NAME_CACHE.set(eventId, full || '');
-    } else if (full && typeof full.then === 'function') {
-      full = await full;
-    }
-    if (full) {
-      b.textContent = full;
-      b.setAttribute(EXPANDED_ATTR, '1');
-      try { console.log('[LACourt-Agenda] expanded:', prefix + '…', '->', full); } catch (_) {}
-    }
+    const caseA = row.querySelector('td a[href*="/ecourt/ecms/case"]');
+    const idm = (caseA ? (caseA.getAttribute('href') || caseA.href || '') : '').match(/[?&]id=(\d+)/);
+    if (!idm) continue;
+    jobs.push({ b, caseId: idm[1], prefix: truncatedPrefix(text) });
   }
+  if (!jobs.length) return;
+
+  await runWithConcurrency(jobs, 4, async job => {
+    const hearings = await getCaseHearings(job.caseId);
+    const full = fullNameForHearing(hearings, day, job.prefix);
+    if (full && job.b.getAttribute(EXPANDED_ATTR) !== '1') {
+      job.b.textContent = full;
+      job.b.setAttribute(EXPANDED_ATTR, '1');
+      try { console.log('[LACourt-Agenda] expanded:', job.prefix + '…', '->', full); } catch (_) {}
+    }
+  });
 }
 
 (function initHearingExpansion() {
