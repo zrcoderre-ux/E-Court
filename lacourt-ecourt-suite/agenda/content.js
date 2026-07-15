@@ -335,18 +335,22 @@ function fetchWithTimeout(url, ms) {
 }
 
 // Parse a fetched case Hearings-tab document into [{ name, dateTime, status }].
-// Scans every row for a "MM/DD/YYYY HH:MM AM/PM" cell; the cell before it is the
-// hearing name, the cell after is the status. This tolerates the tree-table /
-// wrapper markup without depending on exact column positions.
+// Scans every row for a "MM/DD/YYYY HH:MM AM/PM" cell. Rows interleave EMPTY
+// cells (observed live: ["", <name>, "", <date/time>, <status>, …]), so the
+// hearing name is the nearest NON-EMPTY cell before the date, and the status is
+// the first non-empty cell after it. Doesn't depend on exact column positions.
 function parseCaseHearings(doc) {
   const out = [];
   for (const tr of doc.querySelectorAll('tr')) {
     const cells = Array.from(tr.children).map(c => (c.textContent || '').replace(/\s+/g, ' ').trim());
     const dtIdx = cells.findIndex(c => /^\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s*(AM|PM)\b/i.test(c));
     if (dtIdx < 1) continue;
-    const name = cells[dtIdx - 1];
+    let name = '';
+    for (let i = dtIdx - 1; i >= 0; i--) { if (cells[i]) { name = cells[i]; break; } }
     if (!name || name.length > 200 || !/[a-z]/i.test(name)) continue;
-    out.push({ name, dateTime: cells[dtIdx], status: cells[dtIdx + 1] || '' });
+    let status = '';
+    for (let i = dtIdx + 1; i < cells.length; i++) { if (cells[i]) { status = cells[i]; break; } }
+    out.push({ name, dateTime: cells[dtIdx], status });
   }
   return out;
 }
