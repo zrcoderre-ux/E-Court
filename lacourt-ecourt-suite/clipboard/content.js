@@ -365,6 +365,19 @@ function buildRotationData(root, hearingOverride) {
       .map(p => movantNormName(p.name))
   );
   const otherNames = parseNonPartyNames(root).filter(n => !captionNames.has(movantNormName(n)));
+  // Dismissed parties dropped by the motion-type exclusion still belong in the
+  // pseudonym pool — add them to Other Names (deduped) since they no longer
+  // appear in any party field.
+  if (dropDismissed) {
+    const seen = new Set(otherNames.map(n => movantNormName(n)));
+    for (const p of parties) {
+      if (!p.dismissed || !p.name) continue;
+      const key = movantNormName(p.name);
+      if (captionNames.has(key) || seen.has(key)) continue;
+      seen.add(key);
+      otherNames.push(p.name);
+    }
+  }
   if (otherNames.length) labeled.otherNames = otherNames.join('; ');
 
   console.log('[LACourt] rotation sequence:', sequence);
