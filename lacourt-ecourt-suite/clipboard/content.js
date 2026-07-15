@@ -2315,6 +2315,21 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
     for (const d of docs) { const nn = movantNormName(d.name); if (nn && nn.length >= 6 && blob.indexOf(nn) !== -1) add(d); }
   }
 
+  // For an OSC Re: Failure to Prosecute Default Judgment, the prove-up packet is
+  // the request for default judgment (the second Request for Entry of Default,
+  // filed after the one that entered the default) plus everything the plaintiff
+  // filed on or after it.
+  if (isOscDefaultJudgment(motionType)) {
+    const pu = findDefaultProveUp(docs);
+    if (pu && pu.proveUp) {
+      add(pu.proveUp);
+      const pw = pu.proveUp.when;
+      for (const d of docs) {
+        if (d.when && pw && d.when >= pw && /\bplaintiff\b/i.test(d.filedBy || '')) add(d);
+      }
+    }
+  }
+
   const motionDoc = bestFilingMatch(motionType, docs);
   if (motionDoc) {
     add(motionDoc);
@@ -2373,7 +2388,10 @@ const POS_KEEP_TERMS = [
 function absoluteDocUrl(u) { try { return new URL(u, location.origin).href; } catch (_) { return u; } }
 
 // Parses openable document rows from a Documents-tab document or paged fragment:
-// each openInNewWindow anchor yields { docId, openUrl, name, dateStr, when, filedBy }.
+// each openInNewWindow anchor yields
+// { docId, openUrl, name, dateStr, when, filedBy, status, result }.
+// Columns (by header order): Filed/Status Date(1) Name(2) Status(3) Result(4)
+// Result Date(5) Filed By(6). The default prove-up check reads Result.
 function parseDocRows(root) {
   const rows = [], seen = new Set();
   const anchors = root.querySelectorAll('a[onclick*="openInNewWindow"]');
@@ -2389,11 +2407,44 @@ function parseDocRows(root) {
     const tm = title.match(/^[^:]*:\s*([\s\S]*?)\s+on\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*$/);
     const name = tm ? tm[1].trim() : title;
     const dateStr = tm ? tm[2] : '';
-    let filedBy = ''; const tr = a.closest('tr');
-    if (tr) { const cells = Array.from(tr.children); if (cells.length > 6) filedBy = (cells[6].textContent || '').replace(/\s+/g, ' ').trim(); }
-    rows.push({ docId, openUrl: absoluteDocUrl(url), name, dateStr, when: dateStr ? parseHearingDateTime(dateStr) : null, filedBy });
+    let filedBy = '', status = '', result = ''; const tr = a.closest('tr');
+    if (tr) {
+      const cells = Array.from(tr.children);
+      const cellText = i => (cells[i] ? (cells[i].textContent || '').replace(/\s+/g, ' ').trim() : '');
+      if (cells.length > 6) filedBy = cellText(6);
+      status = cellText(3);
+      result = cellText(4);
+    }
+    rows.push({ docId, openUrl: absoluteDocUrl(url), name, dateStr, when: dateStr ? parseHearingDateTime(dateStr) : null, filedBy, status, result });
   }
   return rows;
+}
+
+// The default prove-up packet for an OSC Re: Failure to Prosecute Default
+// Judgment. eCourt files two "Request for Entry of Default / Judgment" papers:
+// the first (Result = "Entered") is the request that entered the default; a
+// second one filed afterward is the request for default JUDGMENT (the prove-up).
+// Returns { base, proveUp } — base is the most recent entered request, proveUp
+// is the earliest later request (or null if the judgment request isn't filed
+// yet). Returns null when no entered default request exists at all.
+const DEFAULT_REQUEST_RE = /request for entry of default/i;
+function findDefaultProveUp(docs) {
+  const reqs = (docs || []).filter(d => d && DEFAULT_REQUEST_RE.test(d.name || ''));
+  if (!reqs.length) return null;
+  // base = most recent request whose Result column reads "Entered".
+  let base = null;
+  for (const d of reqs) {
+    if (!d.when || !/\bentered\b/i.test(d.result || '')) continue;
+    if (!base || (base.when && d.when > base.when)) base = d;
+  }
+  if (!base) return null;
+  // proveUp = earliest Request for Entry of Default filed after the entered one.
+  let proveUp = null;
+  for (const d of reqs) {
+    if (!d.when || !d.openUrl || d.docId === base.docId) continue;
+    if (d.when > base.when && (!proveUp || d.when < proveUp.when)) proveUp = d;
+  }
+  return { base, proveUp };
 }
 
 // POSTs the eCourt tree-table pager to fetch a page of documents at `offset`,
@@ -3195,7 +3246,11 @@ function nextDlHtml() {
   if (c.osc) {
     const st = __oscStatus;
     if (!st) return '<span style="color:#0a6e6e">Checking defaults…</span>';
-    return '<span style="color:' + st.color + '">' + st.text + '</span>';
+    let html = '<span style="color:' + st.color + '">' + st.text + '</span>';
+    if (st.packetText) {
+      html += NEXT_DL_GAP + '<span style="color:' + st.packetColor + '">' + st.packetText + '</span>';
+    }
+    return html;
   }
   const f = __nextDlFiled || {};
   const item = (label, key, due) =>
@@ -3284,6 +3339,20 @@ async function computeOscDefaultStatus() {
     if (!op) op = latestDoc((docs || []).filter(d => isPetitionDoc(d.name)));
     const opWhen = op ? op.when : null;
 
+    // Default prove-up packet: a request for default judgment (second Request
+    // for Entry of Default, filed after the one that entered the default).
+    const pu = findDefaultProveUp(docs);
+    const hasPacket = !!(pu && pu.proveUp);
+    const packet = {
+      packetText: hasPacket ? '✓ Default Packet' : '⚠ No Default Packet',
+      packetColor: hasPacket ? '#1a6b3a' : '#c0392b',
+    };
+    dlLog('OSC default packet:', {
+      hasPacket,
+      base: pu && pu.base && { name: pu.base.name, when: fmtShortDate(pu.base.when), result: pu.base.result },
+      proveUp: pu && pu.proveUp && { name: pu.proveUp.name, when: fmtShortDate(pu.proveUp.when) },
+    });
+
     const notAccounted = [];
     let dismissed = 0, defaulted = 0, stale = 0;
     for (const d of defendants) {
@@ -3303,6 +3372,7 @@ async function computeOscDefaultStatus() {
       return {
         text: '✓ All ' + N + ' defendant' + plural + ' in default or dismissed (' + defaulted + ' default, ' + dismissed + ' dismissed)',
         color: '#1a6b3a',
+        ...packet,
       };
     }
     let caveat = '';
@@ -3311,6 +3381,7 @@ async function computeOscDefaultStatus() {
     return {
       text: '⚠ ' + notAccounted.length + ' of ' + N + ' defendant' + plural + ' not in default/dismissed: ' + notAccounted.map(dlEsc).join(', ') + caveat,
       color: '#c0392b',
+      ...packet,
     };
   } catch (e) {
     dlLog('OSC status error:', e && e.message || e);
