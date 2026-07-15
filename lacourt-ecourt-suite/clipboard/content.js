@@ -3406,11 +3406,30 @@ function nextDlHtml() {
     return html;
   }
   const f = __nextDlFiled || {};
+  const RED = '#c0392b';
   const item = (label, key, due) =>
     `<span style="color:${nextDlColor(due, f[key])}">${label} ${fmtShortDate(due)}</span>`;
-  return prefix + item('Motion Due', 'motion', c.motionDue) + NEXT_DL_GAP +
-    item('Opposition Due', 'opp', c.oppDue) + NEXT_DL_GAP +
-    item('Reply Due', 'reply', c.replyDue);
+  // A paper is "absent" (never filed) — as opposed to filed-but-late — only when
+  // the Documents fetch succeeded (filedKnown), found no matching filing, and the
+  // due date has already passed. A late filing keeps its "Due <date>" in red.
+  const absent = (due, filedDate) => {
+    if (!f.filedKnown || filedDate != null) return false;
+    const dd = dayMs(due);
+    return dd != null && dd < dayMs(new Date());
+  };
+  const oppAbsent = absent(c.oppDue, f.opp);
+
+  const parts = [item('Motion Due', 'motion', c.motionDue)];
+  parts.push(oppAbsent
+    ? `<span style="color:${RED}">No Opposition</span>`
+    : item('Opposition Due', 'opp', c.oppDue));
+  // With no opposition on file, the reply deadline is irrelevant — drop it.
+  if (!oppAbsent) {
+    parts.push(absent(c.replyDue, f.reply)
+      ? `<span style="color:${RED}">No Reply</span>`
+      : item('Reply Due', 'reply', c.replyDue));
+  }
+  return prefix + parts.join(NEXT_DL_GAP);
 }
 
 // Idempotent: injects the widget if missing, else refreshes its colours. Re-finds
