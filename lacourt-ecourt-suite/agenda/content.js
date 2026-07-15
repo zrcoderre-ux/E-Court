@@ -37,15 +37,13 @@ chrome.storage.sync.get(['excludedTerms'], result => {
   if (result.excludedTerms && Array.isArray(result.excludedTerms)) {
     EXCLUDED_TERMS = result.excludedTerms;
   }
-  try { colorizeAgendaRows(); } catch (_) {}
-  try { floatGreenRowsToTop(); } catch (_) {}
+  try { applyAgendaChanges([]); } catch (_) {}
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'sync' && changes.excludedTerms) {
     EXCLUDED_TERMS = changes.excludedTerms.newValue || [...DEFAULT_EXCLUDED_TERMS];
-    try { colorizeAgendaRows(); } catch (_) {}
-    try { floatGreenRowsToTop(); } catch (_) {}
+    try { applyAgendaChanges([]); } catch (_) {}
   }
 });
 
@@ -244,7 +242,7 @@ async function copyAllAgenda(btn) {
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'Copying…'; }
   // Make sure truncated hearing names are expanded first so the copy is complete.
-  try { if (typeof expandTruncatedHearings === 'function') await expandTruncatedHearings(); } catch (_) {}
+  try { applyHearingNameSwaps(await fetchHearingNameSwaps()); } catch (_) {}
 
   const rows = Array.from(table.querySelectorAll('tr.js-row')).filter(r => r.style.display !== 'none');
   const outputRows = buildAgendaOutputRows(rows);
@@ -559,9 +557,13 @@ function runWithConcurrency(items, limit, worker) {
   return Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, next));
 }
 
-async function expandTruncatedHearings() {
+// Fetch full names for truncated hearings WITHOUT mutating the DOM. Returns an
+// array of { b, full } swaps to apply, so the caller can batch the renames with
+// the sort/colorize/float in a single reflow instead of swapping each name as
+// its fetch resolves (which made the page jump repeatedly).
+async function fetchHearingNameSwaps() {
   const table = document.getElementById('day-table');
-  if (!table) return;
+  if (!table) return [];
   const day = agendaDay();
 
   const jobs = [];
@@ -578,37 +580,62 @@ async function expandTruncatedHearings() {
       jobs.push({ b, caseId: idm[1], prefix: truncatedPrefix(text) });
     }
   }
-  if (!jobs.length) return;
+  if (!jobs.length) return [];
 
+  const swaps = [];
   await runWithConcurrency(jobs, 4, async job => {
     const hearings = await getCaseHearings(job.caseId);
     const full = stripTrailingParenNumber(fullNameForHearing(hearings, day, job.prefix));
-    if (full && job.b.getAttribute(EXPANDED_ATTR) !== '1') {
-      job.b.textContent = full;
-      job.b.setAttribute(EXPANDED_ATTR, '1');
-      try { console.log('[LACourt-Agenda] expanded:', job.prefix + '…', '->', full); } catch (_) {}
-    }
+    if (full && job.b.getAttribute(EXPANDED_ATTR) !== '1') swaps.push({ b: job.b, full, prefix: job.prefix });
   });
+  return swaps;
+}
+
+// Apply the collected name swaps to the DOM (idempotent).
+function applyHearingNameSwaps(swaps) {
+  for (const s of swaps || []) {
+    if (s.b.getAttribute(EXPANDED_ATTR) === '1') continue;
+    s.b.textContent = s.full;
+    s.b.setAttribute(EXPANDED_ATTR, '1');
+    try { console.log('[LACourt-Agenda] expanded:', s.prefix + '…', '->', s.full); } catch (_) {}
+  }
+}
+
+// True while we're applying our own batch of DOM changes, so the MutationObserver
+// ignores the mutations we cause (renames, sort, reorder) and doesn't re-enter.
+let __agendaBatching = false;
+
+// Apply renames + native sort + colorize + green-float as ONE guarded batch, so
+// the page reflows a single time to the final version instead of jumping once
+// per async name expansion.
+function applyAgendaChanges(swaps) {
+  __agendaBatching = true;
+  try {
+    applyHearingNameSwaps(swaps);
+    try { applyHearingDocsSort(); } catch (_) {}
+    try { colorizeAgendaRows(); } catch (_) {}
+    try { floatGreenRowsToTop(); } catch (_) {}
+  } finally {
+    // Release on the next frame: the observer callbacks queued by the mutations
+    // above run as microtasks (before this rAF), so they see the guard still set
+    // and skip; genuine later mutations resume normally.
+    requestAnimationFrame(() => { __agendaBatching = false; });
+  }
 }
 
 (function initHearingExpansion() {
   let pending = false;
   const run = () => {
-    if (pending) return;
+    if (__agendaBatching || pending) return;
     pending = true;
     requestAnimationFrame(() => {
       pending = false;
-      // Apply the site's Hearing/Documents sort (once), colorize immediately
-      // (untruncated rows), and float green rows to the top. Re-run the colorize
-      // + float once truncated names are expanded (expansion can change a row's
-      // exclusion status, and therefore whether it belongs in the green group).
-      try { applyHearingDocsSort(); } catch (_) {}
-      try { colorizeAgendaRows(); } catch (_) {}
-      try { floatGreenRowsToTop(); } catch (_) {}
-      Promise.resolve(expandTruncatedHearings()).then(() => {
-        try { colorizeAgendaRows(); } catch (_) {}
-        try { floatGreenRowsToTop(); } catch (_) {}
-      });
+      // Fetch full names for any truncated hearings first (no DOM changes yet),
+      // then apply the renames, sort, colouring, and green-float together in one
+      // batch so the agenda jumps just once to its final state.
+      Promise.resolve(fetchHearingNameSwaps())
+        .then(swaps => applyAgendaChanges(swaps))
+        .catch(() => applyAgendaChanges([]));
     });
   };
   const start = () => {
