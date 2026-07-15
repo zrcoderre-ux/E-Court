@@ -2069,9 +2069,26 @@ function parseFutureHearings(doc) {
     .sort((a, b) => a.when - b.when);
 }
 
-// Resolves the effective hearing for Export: the Next event unless it's
-// excluded, in which case the soonest future scheduled non-excluded hearing
-// from the Hearings tab. Returns { motionType, hearingDate, hearingType }.
+// A hearing we "work up": a motion (a "Hearing on <motion>" event, minus the
+// few excluded types like ex parte) or an OSC Re: Failure to Prosecute Default
+// Judgment. Case management conferences, trials, status conferences, reviews,
+// and other OSCs are NOT worked up, so anything keyed on the Next event should
+// skip past them to the next workable hearing.
+// A motion we work up, named either as the "Next:" banner form ("Hearing on
+// <motion>") or as a Hearings-tab entry that names the motion directly
+// ("Motion …", "Demurrer …", "Anti-SLAPP …", "Petition …", "Application …").
+const MOTION_HEARING_RE = /\bhearing on\b|^(?:amended\s+|renewed\s+|cross-?\s*|special\s+)?motion\b|^demurrer\b|^anti-?slapp\b|^petition\b|^application\b/i;
+function isWorkableHearing(type) {
+  if (!type) return false;
+  if (isOscDefaultJudgment(type)) return true;
+  if (isHearingExcluded(type)) return false;
+  return MOTION_HEARING_RE.test(type);
+}
+
+// Resolves the effective hearing: the Next event when it's something we work up,
+// otherwise the soonest future scheduled hearing on the Hearings tab that IS a
+// motion we work up or a default judgment. Returns { motionType, hearingDate,
+// hearingType }.
 async function resolveEffectiveHearing(root) {
   root = root || document;
   const nextType = parseHearingType(root);
@@ -2082,30 +2099,31 @@ async function resolveEffectiveHearing(root) {
   };
   try {
     await loadExcludedTerms();
-    if (!nextType || !isHearingExcluded(nextType)) return base;
+    if (isWorkableHearing(nextType)) return base;
 
     const url = getHearingsUrl();
     if (!url) return base;
     const doc = await fetchCaseDoc(url);
     if (!doc) return base;
 
-    const hearings = parseFutureHearings(doc).filter(h => !isHearingExcluded(h.type));
+    const hearings = parseFutureHearings(doc).filter(h => isWorkableHearing(h.type));
     if (!hearings.length) return base;
 
-    // Take the soonest non-excluded hearing. When several fall on that same
-    // date, prefer a Demurrer (with Motion to Strike) over a standalone Motion
-    // to Strike — a demurrer + motion to strike is filed together but shows as
-    // two hearing entries, and the demurrer is the one we want.
+    // Take the soonest workable hearing. When several fall on that same date,
+    // prefer a Demurrer (with Motion to Strike) over a standalone Motion to
+    // Strike — a demurrer + motion to strike is filed together but shows as two
+    // hearing entries, and the demurrer is the one we want.
     const soonestDate = hearings[0].date;
     const sameDay = hearings.filter(h => h.date === soonestDate);
     const pick = sameDay.find(h => /demurrer/i.test(h.type)) || sameDay[0];
 
-    console.log('[LACourt] Next hearing excluded (' + nextType +
+    console.log('[LACourt] Next event not worked up (' + nextType +
       '); using Hearings-tab pick:', pick.type, pick.date);
     return {
       motionType: stripHearingOnPrefix(pick.type),
       hearingDate: pick.date,
       hearingType: pick.type,
+      lookedAhead: true,
     };
   } catch (err) {
     console.warn('[LACourt] hearing resolution failed:', err);
@@ -3220,28 +3238,35 @@ let __nextDlFetchStarted = false;
 let __oscStatus = null;
 
 let __dlNoMotionLogged = 0;
-function computeDueDates() {
+// `eff` is an optional resolved hearing { motionType, hearingType, hearingDate,
+// lookedAhead } from resolveEffectiveHearing; when omitted, reads the Next event
+// off the page. Returns { osc } / { skip } / { motionType, cat, dates }, with
+// `eff` attached when a looked-ahead hearing was used (so the widget can label
+// which hearing the deadlines belong to).
+function computeDueDates(eff) {
   const D = DL;
+  const hearingType = eff ? eff.hearingType : parseHearingType(document);
+  const tag = (eff && eff.lookedAhead) ? { eff } : {};
   // An OSC Re: Failure to Prosecute Default Judgment gets a default/dismissal
   // status indicator instead of briefing deadlines.
-  if (isOscDefaultJudgment(parseHearingType(document))) return { osc: true };
+  if (isOscDefaultJudgment(hearingType)) return Object.assign({ osc: true }, tag);
   // Only "Hearing on <motion>" events are §1005/§437c-briefed. Non-motion
   // events (CMC, OSC, trial, status conference) have no "Hearing on" prefix.
-  const motionType = parseMotionType(document);
+  const motionType = eff ? eff.motionType : parseMotionType(document);
   if (!motionType) {
-    if (__dlNoMotionLogged++ < 2) dlLog('parseMotionType empty (no "Hearing on <motion>" yet). hearingType=', parseHearingType(document));
+    if (!eff && __dlNoMotionLogged++ < 2) dlLog('parseMotionType empty (no "Hearing on <motion>" yet). hearingType=', hearingType);
     return null; // header not rendered yet (or not a motion)
   }
   const cat = D.classifyMotion(motionType);
-  if (cat !== 'standard' && cat !== 'msj') return { skip: true, reason: cat }; // new trial / recon aren't hearing-based
-  const hearing = parseHearingDateTime(parseHearingDate(document));
+  if (cat !== 'standard' && cat !== 'msj') return Object.assign({ skip: true, reason: cat }, tag); // new trial / recon aren't hearing-based
+  const hearing = parseHearingDateTime(eff ? eff.hearingDate : parseHearingDate(document));
   if (!hearing) { dlLog('no hearing date parsed for motion:', motionType); return null; }
-  return {
+  return Object.assign({
     skip: false, motionType, cat,
     motionDue: cat === 'msj' ? D.msjMotion(hearing, 'electronic') : D.stdMotion(hearing, 'electronic'),
     oppDue:    cat === 'msj' ? D.msjOpp(hearing) : D.stdOpp(hearing),
     replyDue:  cat === 'msj' ? D.msjReply(hearing) : D.stdReply(hearing),
-  };
+  }, tag);
 }
 
 // Colour: green = filed on time; red = overdue and not timely filed; neutral =
@@ -3256,12 +3281,25 @@ function nextDlColor(due, filed) {
   return dd < dayMs(new Date()) ? '#c0392b' : '#0a6e6e';
 }
 
+// When the deadlines/OSC belong to a later hearing (the Next event wasn't one we
+// work up), lead with that hearing's type + date so it's clear which hearing
+// these figures are for.
+function effHearingPrefix() {
+  const c = __nextDlComputed;
+  const eff = c && c.eff;
+  if (!eff) return '';
+  const when = eff.hearingDate ? parseHearingDateTime(eff.hearingDate) : null;
+  const label = stripHearingOnPrefix(eff.hearingType || '') + (when ? ' ' + fmtShortDate(when) : '');
+  return '<span style="color:#0a6e6e">▸ ' + dlEsc(label.trim()) + ':</span>' + NEXT_DL_GAP;
+}
+
 function nextDlHtml() {
   const c = __nextDlComputed;
+  const prefix = effHearingPrefix();
   if (c.osc) {
     const st = __oscStatus;
-    if (!st) return '<span style="color:#0a6e6e">Checking defaults…</span>';
-    let html = '<span style="color:' + st.color + '">' + st.text + '</span>';
+    if (!st) return prefix + '<span style="color:#0a6e6e">Checking defaults…</span>';
+    let html = prefix + '<span style="color:' + st.color + '">' + st.text + '</span>';
     if (st.packetText) {
       html += NEXT_DL_GAP + '<span style="color:' + st.packetColor + '">' + st.packetText + '</span>';
     }
@@ -3270,7 +3308,7 @@ function nextDlHtml() {
   const f = __nextDlFiled || {};
   const item = (label, key, due) =>
     `<span style="color:${nextDlColor(due, f[key])}">${label} ${fmtShortDate(due)}</span>`;
-  return item('Motion Due', 'motion', c.motionDue) + NEXT_DL_GAP +
+  return prefix + item('Motion Due', 'motion', c.motionDue) + NEXT_DL_GAP +
     item('Opposition Due', 'opp', c.oppDue) + NEXT_DL_GAP +
     item('Reply Due', 'reply', c.replyDue);
 }
@@ -3442,23 +3480,42 @@ async function fetchOscStatus() {
   }
 }
 
+// Commit a computed result and paint it (+ kick off the follow-up fetch).
+function applyNextDlComputed(c) {
+  if (!c) return;
+  __nextDlComputed = c;
+  if (c.osc) {
+    dlLog('OSC re failure to prosecute default judgment detected', c.eff ? '(looked ahead)' : '');
+    injectNextDeadlines();  // "Checking defaults…"
+    fetchOscStatus();       // then fill in the default/dismissal status
+    return;
+  }
+  dlLog('computed:', c.skip ? 'skip (' + (c.reason || 'not hearing-based') + ')'
+    : { motionType: c.motionType, cat: c.cat, lookedAhead: !!c.eff, motionDue: fmtShortDate(c.motionDue), oppDue: fmtShortDate(c.oppDue), replyDue: fmtShortDate(c.replyDue) });
+  if (c.skip) return;
+  injectNextDeadlines();        // paint dates immediately (date-only colours)
+  fetchNextDeadlineFilings();   // then refine with filing status
+}
+
+let __effLookaheadStarted = false;
 function renderNextHeaderDeadlines() {
   try {
     if (!__nextDlComputed) {
-      const c = computeDueDates();
-      if (!c) return; // header not ready — a later poll/observer will retry
-      __nextDlComputed = c;
-      if (c.osc) {
-        dlLog('OSC re failure to prosecute default judgment detected');
-        injectNextDeadlines();  // "Checking defaults…"
-        fetchOscStatus();       // then fill in the default/dismissal status
+      const nextType = parseHearingType(document);
+      // If the Next event is something we work up, use it directly (synchronous).
+      if (isWorkableHearing(nextType)) {
+        applyNextDlComputed(computeDueDates());
         return;
       }
-      dlLog('computed:', c.skip ? 'skip (' + (c.reason || 'not hearing-based') + ')'
-        : { motionType: c.motionType, cat: c.cat, motionDue: fmtShortDate(c.motionDue), oppDue: fmtShortDate(c.oppDue), replyDue: fmtShortDate(c.replyDue) });
-      if (c.skip) return;
-      injectNextDeadlines();        // paint dates immediately (date-only colours)
-      fetchNextDeadlineFilings();   // then refine with filing status
+      if (!nextType) return; // header not ready — a later poll/observer will retry
+      // The Next event isn't worked up (CMC, trial, status conf, other OSC…).
+      // Look ahead on the Hearings tab for the next motion / default judgment.
+      if (__effLookaheadStarted) return;
+      __effLookaheadStarted = true;
+      resolveEffectiveHearing(document).then(h => {
+        if (!h || !isWorkableHearing(h.hearingType)) { dlLog('no workable hearing to look ahead to for', nextType); return; }
+        applyNextDlComputed(computeDueDates(h));
+      }).catch(e => dlLog('lookahead failed:', e && e.message || e));
       return;
     }
     injectNextDeadlines(); // keep present + coloured across re-renders
