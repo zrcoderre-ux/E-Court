@@ -179,16 +179,27 @@ function findTopBar() {
   return null;
 }
 
-// Vertically center the button within the top bar (falls back to 8px from the
-// viewport top when no bar is found).
+// Size the button to the full height of the top bar and align it flush with
+// the bar (falls back to a default size 8px from the viewport top when no bar
+// is found).
 function positionCopyAllButton(btn) {
   const bar = findTopBar();
-  const h = btn.offsetHeight || 26;
   if (bar) {
     const r = bar.getBoundingClientRect();
-    btn.style.top = Math.max(2, Math.round(r.top + (r.height - h) / 2)) + 'px';
+    const h = Math.round(r.height);
+    btn.style.top = Math.max(0, Math.round(r.top)) + 'px';
+    btn.style.height = h + 'px';
+    btn.style.lineHeight = h + 'px';
+    btn.style.padding = '0 18px';
+    btn.style.fontSize = Math.max(13, Math.min(16, Math.round(h * 0.36))) + 'px';
+    btn.style.borderRadius = '0';
   } else {
     btn.style.top = '8px';
+    btn.style.height = '';
+    btn.style.lineHeight = '18px';
+    btn.style.padding = '4px 12px';
+    btn.style.fontSize = '12px';
+    btn.style.borderRadius = '5px';
   }
 }
 
