@@ -2077,7 +2077,7 @@ function parseFutureHearings(doc) {
       const when = parseHearingDateTime(dateTime);
       const dm = dateTime.match(/\d{1,2}\/\d{1,2}\/\d{4}/);
       if (!when || !dm) continue;
-      rows.push({ type: stripEventId(name), date: dm[0], when });
+      rows.push({ type: stripTrailingParenNumber(stripEventId(name)), date: dm[0], when });
     }
   }
 
