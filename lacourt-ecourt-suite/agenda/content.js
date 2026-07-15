@@ -46,71 +46,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 /* -------------------------------------------------
-   COPY HANDLER
+   COPY BEHAVIOR
+
+   Manual copying (Ctrl+C / Ctrl+A) is left completely untouched — the browser
+   copies exactly what's selected. The agenda cleaning (exclusion filtering,
+   two-column layout, Times New Roman formatting) happens ONLY through the
+   dedicated Copy All button below.
 ------------------------------------------------- */
 
-document.addEventListener('copy', function (e) {
-  const selection = window.getSelection();
-  if (!selection || selection.isCollapsed) return;
-  handleAgendaCopy(e, selection);
-});
-
 /* -------------------------------------------------
-   AGENDA HANDLER
-------------------------------------------------- */
-
-function handleAgendaCopy(e, selection) {
-  const table = document.getElementById('day-table');
-  if (!table) return;
-
-  // Single-cell selection: pass through unchanged
-  const range = selection.getRangeAt(0);
-  const frag = range.cloneContents();
-  const tmp = document.createElement('div');
-  tmp.appendChild(frag);
-  if (tmp.querySelectorAll('td, th').length <= 1) return;
-
-  // All visible data rows
-  const allDataRows = Array.from(table.querySelectorAll('tr.js-row'))
-    .filter(row => row.style.display !== 'none');
-  if (allDataRows.length === 0) return;
-
-  // Restrict to intersected rows for manual selections;
-  // fall back to all rows if intersection finds nothing (e.g. Ctrl+A)
-  // Restrict to rows that visually overlap the selection rectangle.
-  // This is more reliable than intersectsNode for partial table row selections.
-  let candidateRows = allDataRows;
-  try {
-    const selRect = range.getBoundingClientRect();
-    // Only filter if we got a real rect (non-zero area means a real selection)
-    if (selRect && selRect.width + selRect.height > 0) {
-      const intersected = allDataRows.filter(row => {
-        const rowRect = row.getBoundingClientRect();
-        return rowRect.bottom > selRect.top && rowRect.top < selRect.bottom;
-      });
-      if (intersected.length > 0) candidateRows = intersected;
-    }
-  } catch (err) {
-    // fall back to all rows
-  }
-
-  const outputRows = buildAgendaOutputRows(candidateRows);
-
-  if (outputRows.length === 0) {
-    e.clipboardData.setData('text/plain', '');
-    e.clipboardData.setData('text/html', '');
-    e.preventDefault();
-    return;
-  }
-
-  const { plainText, html } = buildAgendaPayload(outputRows);
-  e.clipboardData.setData('text/plain', plainText);
-  e.clipboardData.setData('text/html', html);
-  e.preventDefault();
-}
-
-/* -------------------------------------------------
-   OUTPUT BUILDERS (shared by the copy handler + Copy All button)
+   OUTPUT BUILDERS (used by the Copy All button)
 ------------------------------------------------- */
 
 // Turn day-table rows into cleaned output rows: { col5 hearing, col6 case, url }.
@@ -216,21 +161,55 @@ async function copyAllAgenda(btn) {
   restore();
 }
 
+// Find the site's fixed blue header bar: a fixed-position, (near-)full-width
+// element pinned to the top of the viewport with a plausible bar height.
+function findTopBar() {
+  const candidates = document.querySelectorAll(
+    '.navbar-fixed-top, .navbar.fixed-top, #topnav, nav.navbar, header, .navbar');
+  for (const el of candidates) {
+    try {
+      const r = el.getBoundingClientRect();
+      const pos = getComputedStyle(el).position;
+      if ((pos === 'fixed' || pos === 'sticky') && r.top <= 2 &&
+          r.height >= 28 && r.height <= 90 && r.width >= window.innerWidth * 0.8) {
+        return el;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+// Vertically center the button within the top bar (falls back to 8px from the
+// viewport top when no bar is found).
+function positionCopyAllButton(btn) {
+  const bar = findTopBar();
+  const h = btn.offsetHeight || 26;
+  if (bar) {
+    const r = bar.getBoundingClientRect();
+    btn.style.top = Math.max(2, Math.round(r.top + (r.height - h) / 2)) + 'px';
+  } else {
+    btn.style.top = '8px';
+  }
+}
+
 function renderCopyAllButton() {
-  if (document.getElementById(COPY_ALL_BTN_ID)) return;
+  const existing = document.getElementById(COPY_ALL_BTN_ID);
+  if (existing) { positionCopyAllButton(existing); return; }
   if (!document.getElementById('day-table') || !document.body) return;
   const btn = document.createElement('button');
   btn.id = COPY_ALL_BTN_ID;
   btn.type = 'button';
   btn.textContent = 'Copy All';
-  btn.style.cssText = 'position:fixed;top:14px;right:16px;z-index:2147483647;'
-    + 'padding:8px 16px;border:none;border-radius:6px;cursor:pointer;'
-    + 'background:#0a6e6e;color:#fff;font:600 13px system-ui,sans-serif;'
-    + 'box-shadow:0 2px 6px rgba(0,0,0,.3);';
+  // Compact enough to sit inside the site's top bar.
+  btn.style.cssText = 'position:fixed;top:8px;right:16px;z-index:2147483647;'
+    + 'padding:4px 12px;border:none;border-radius:5px;cursor:pointer;'
+    + 'background:#0a6e6e;color:#fff;font:600 12px system-ui,sans-serif;'
+    + 'line-height:18px;box-shadow:0 1px 4px rgba(0,0,0,.3);';
   btn.addEventListener('mouseenter', () => { btn.style.background = '#0d8f8f'; });
   btn.addEventListener('mouseleave', () => { btn.style.background = '#0a6e6e'; });
   btn.addEventListener('click', () => copyAllAgenda(btn));
   document.body.appendChild(btn);
+  positionCopyAllButton(btn);
 }
 
 (function initCopyAllButton() {
