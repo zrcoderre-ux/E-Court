@@ -87,6 +87,27 @@ function colorizeAgendaRows() {
   }
 }
 
+// Rewrite the VISIBLE hearing labels to drop a trailing event number like
+// " (4557)" so it doesn't show on the day-table (it was already stripped from
+// the copy output and exclusion checks, but the on-page text still showed it
+// for non-truncated names). Only writes when the text actually changes, so it's
+// idempotent and doesn't churn the observer.
+function stripHearingLabelNumbers() {
+  const table = document.getElementById('day-table');
+  if (!table) return;
+  for (const row of table.querySelectorAll('tr.js-row')) {
+    const cells = row.querySelectorAll('td');
+    if (cells.length < 7) continue;
+    for (const a of cells[5].querySelectorAll('a')) {
+      const b = a.querySelector('b');
+      const el = b || a;
+      const cur = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      const stripped = stripTrailingParenNumber(cur);
+      if (stripped && stripped !== cur) el.textContent = stripped;
+    }
+  }
+}
+
 /* -------------------------------------------------
    AUTO-SORT + GREEN-ROWS-TO-TOP
 
@@ -616,6 +637,7 @@ function applyAgendaChanges(swaps) {
   __agendaBatching = true;
   try {
     applyHearingNameSwaps(swaps);
+    try { stripHearingLabelNumbers(); } catch (_) {}
     try { applyHearingDocsSort(); } catch (_) {}
     try { colorizeAgendaRows(); } catch (_) {}
     try { floatGreenRowsToTop(); } catch (_) {}
