@@ -79,6 +79,13 @@ function colorizeAgendaRows() {
         if (b) b.style.removeProperty('color');
       }
     }
+    // Colour the case link green too when the row has a green (will-be-copied)
+    // hearing, so the case that corresponds to it matches.
+    const rowGreen = rowHasGreenHearing(row);
+    for (const a of cells[6].querySelectorAll('a')) {
+      if (rowGreen) a.style.setProperty('color', COPY_GREEN, 'important');
+      else a.style.removeProperty('color');
+    }
   }
 }
 
