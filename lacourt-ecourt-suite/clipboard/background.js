@@ -167,21 +167,43 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         if (!e) { e = { filename: pdfFilenameFromTitle(t.title), tabIds: [] }; byUrl.set(url, e); }
         if (t.id != null) e.tabIds.push(t.id);
       }
+
+      const count = byUrl.size;
+      if (!count) { sendResponse({ ok: true, count: 0 }); return; }
+
+      // Respond only once every download has settled, so the caller can keep the
+      // Export button greyed out while documents are still downloading. A safety
+      // timeout guarantees the caller is never left hanging.
+      let remaining = count, replied = false;
+      const reply = () => { if (!replied) { replied = true; sendResponse({ ok: true, count }); } };
+      const safety = setTimeout(reply, 60000);
+      const settle = () => { if (--remaining <= 0) { clearTimeout(safety); reply(); } };
+
       for (const [url, e] of byUrl) {
         const opts = { url };
         if (e.filename) opts.filename = e.filename;
         try {
           chrome.downloads.download(opts, downloadId => {
             void chrome.runtime.lastError;
-            // Close the tab(s) only once the download actually started, so a
-            // failed download never loses the still-open PDF.
-            if (downloadId != null && e.tabIds.length) {
+            if (downloadId == null) { settle(); return; } // failed to start
+            // Close the tab(s) once the download has started (the browser's
+            // download manager owns the transfer; closing won't interrupt it).
+            if (e.tabIds.length) {
               try { chrome.tabs.remove(e.tabIds, () => { void chrome.runtime.lastError; }); } catch (_) {}
             }
+            // Wait for this download to finish (or fail) before settling.
+            const onChanged = delta => {
+              if (!delta || delta.id !== downloadId || !delta.state) return;
+              const s = delta.state.current;
+              if (s === 'complete' || s === 'interrupted') {
+                chrome.downloads.onChanged.removeListener(onChanged);
+                settle();
+              }
+            };
+            chrome.downloads.onChanged.addListener(onChanged);
           });
-        } catch (_) {}
+        } catch (_) { settle(); }
       }
-      sendResponse({ ok: true, count: byUrl.size });
     });
     return true; // async: keep the channel open for chrome.tabs.query
   }
