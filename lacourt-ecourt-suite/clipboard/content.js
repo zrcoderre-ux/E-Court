@@ -3185,8 +3185,11 @@ function sizeButtonsToBar(btns) {
       set('font-size', Math.max(13, Math.min(18, Math.round(size.h * 0.4))) + 'px');
       set('border-radius', '0 0 0 0');
       set('box-sizing', 'border-box');
+      // No drop shadow when the button fills the header — it would fall onto the
+      // slim grey bar directly below the blue header.
+      set('box-shadow', 'none');
     } else {
-      ['top', 'height', 'line-height', 'padding-top', 'padding-bottom', 'font-size', 'border-radius', 'box-sizing']
+      ['top', 'height', 'line-height', 'padding-top', 'padding-bottom', 'font-size', 'border-radius', 'box-sizing', 'box-shadow']
         .forEach(clear);
     }
   });
