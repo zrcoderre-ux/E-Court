@@ -38,12 +38,14 @@ chrome.storage.sync.get(['excludedTerms'], result => {
     EXCLUDED_TERMS = result.excludedTerms;
   }
   try { colorizeAgendaRows(); } catch (_) {}
+  try { floatGreenRowsToTop(); } catch (_) {}
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'sync' && changes.excludedTerms) {
     EXCLUDED_TERMS = changes.excludedTerms.newValue || [...DEFAULT_EXCLUDED_TERMS];
     try { colorizeAgendaRows(); } catch (_) {}
+    try { floatGreenRowsToTop(); } catch (_) {}
   }
 });
 
@@ -78,6 +80,72 @@ function colorizeAgendaRows() {
       }
     }
   }
+}
+
+/* -------------------------------------------------
+   AUTO-SORT + GREEN-ROWS-TO-TOP
+
+   The agenda's "Hearing / Documents" column sort is eCourt's own client-side
+   tablesort, fired by the column header's inline onclick
+   (eCourt.DayView.Rows.sortByHeader(2, th)). We can't call eCourt.* from the
+   isolated content-script world, but clicking the <th> runs its handler in the
+   page world. We apply that sort once on load (unless the column is already the
+   active sort), then float the green (will-be-copied) hearings to the top while
+   preserving the site's sort order within each group.
+------------------------------------------------- */
+
+// A row is "green" (Copy All will take it) when any hearing link in the
+// Hearing/Documents cell is NOT excluded — mirrors colorizeAgendaRows().
+function rowHasGreenHearing(row) {
+  const cells = row.querySelectorAll('td');
+  if (cells.length < 7) return false;
+  for (const a of cells[5].querySelectorAll('a')) {
+    const b = a.querySelector('b');
+    const txt = ((b || a).textContent || '').replace(/\s+/g, ' ').trim();
+    if (txt && !isExcluded(txt)) return true;
+  }
+  return false;
+}
+
+// Apply the native "Hearing / Documents" sort once per page load. Only clicks
+// when that column isn't already the active sort, so we never toggle a sort the
+// user (or the page default) already set to ascending/descending.
+let __autoSortApplied = false;
+function applyHearingDocsSort() {
+  if (__autoSortApplied) return;
+  const table = document.getElementById('day-table');
+  if (!table) return;
+  const th = table.querySelector('th.js-row-header-2');
+  if (!th) return;
+  __autoSortApplied = true;
+  if (th.hasAttribute('aria-sort')) return; // already sorted by this column
+  try { th.click(); } catch (_) {}
+}
+
+// Move green rows to the top, keeping the site's current order within the green
+// and non-green groups (stable partition). No-ops when already ordered so it
+// doesn't feed its own MutationObserver into a loop.
+function floatGreenRowsToTop() {
+  const table = document.getElementById('day-table');
+  if (!table) return;
+  const rows = Array.from(table.querySelectorAll('tr.js-row'));
+  if (rows.length < 2) return;
+  const greens = [], others = [];
+  for (const r of rows) {
+    if (r.style.display !== 'none' && rowHasGreenHearing(r)) greens.push(r);
+    else others.push(r);
+  }
+  if (!greens.length) return;
+  const target = greens.concat(others);
+  let same = true;
+  for (let i = 0; i < rows.length; i++) { if (rows[i] !== target[i]) { same = false; break; } }
+  if (same) return; // already in the desired order — don't churn the DOM
+  const parent = rows[0].parentNode;
+  const anchor = rows[0].previousSibling; // node just before the row block (may be null)
+  const frag = document.createDocumentFragment();
+  target.forEach(r => frag.appendChild(r));
+  if (anchor && anchor.parentNode === parent) anchor.after(frag);
+  else parent.insertBefore(frag, parent.firstChild);
 }
 
 /* -------------------------------------------------
@@ -522,10 +590,17 @@ async function expandTruncatedHearings() {
     pending = true;
     requestAnimationFrame(() => {
       pending = false;
-      // Colorize immediately (untruncated rows), then again once truncated
-      // names have been expanded (expansion can change exclusion status).
+      // Apply the site's Hearing/Documents sort (once), colorize immediately
+      // (untruncated rows), and float green rows to the top. Re-run the colorize
+      // + float once truncated names are expanded (expansion can change a row's
+      // exclusion status, and therefore whether it belongs in the green group).
+      try { applyHearingDocsSort(); } catch (_) {}
       try { colorizeAgendaRows(); } catch (_) {}
-      Promise.resolve(expandTruncatedHearings()).then(() => { try { colorizeAgendaRows(); } catch (_) {} });
+      try { floatGreenRowsToTop(); } catch (_) {}
+      Promise.resolve(expandTruncatedHearings()).then(() => {
+        try { colorizeAgendaRows(); } catch (_) {}
+        try { floatGreenRowsToTop(); } catch (_) {}
+      });
     });
   };
   const start = () => {
