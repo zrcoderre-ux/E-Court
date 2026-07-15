@@ -321,6 +321,13 @@ function isTruncatedName(text) { return /(?:\.\.\.|…)\s*$/.test(text); }
 function truncatedPrefix(text) { return text.replace(/\s*(?:\.\.\.|…)\s*$/, '').trim(); }
 function normDate(s) { const m = (s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) : ''; }
 function stripHearingOn(s) { return (s || '').replace(/^\s*hearing on\s+/i, '').trim(); }
+// Drop a trailing purely-numeric parenthetical, e.g. "...defendant's aka (6861)"
+// -> "...defendant's aka". Alphanumeric ones like "(CCP 437c)" are kept.
+// KEEP IN SYNC with stripTrailingParenNumber in clipboard/content.js.
+function stripTrailingParenNumber(s) {
+  if (!s) return s;
+  return s.replace(/\s*\(\s*\d[\d\s.,\-]*\)\s*$/, '').trim();
+}
 
 // The agenda day (single-day view) from the URL's ?day= param, normalized.
 function agendaDay() {
@@ -404,20 +411,23 @@ async function expandTruncatedHearings() {
 
   const jobs = [];
   for (const row of table.querySelectorAll('tr.js-row')) {
-    const b = row.querySelector('a[href*="/ecourt/ecms/agenda/event"] b');
-    if (!b || b.getAttribute(EXPANDED_ATTR) === '1') continue;
-    const text = (b.textContent || '').replace(/\s+/g, ' ').trim();
-    if (!isTruncatedName(text)) continue;
     const caseA = row.querySelector('td a[href*="/ecourt/ecms/case"]');
     const idm = (caseA ? (caseA.getAttribute('href') || caseA.href || '') : '').match(/[?&]id=(\d+)/);
     if (!idm) continue;
-    jobs.push({ b, caseId: idm[1], prefix: truncatedPrefix(text) });
+    // A row can list several hearings (bulleted) — check every one, not just
+    // the first (e.g. "Jury Trial" + a truncated "Motion to Deem Request fo…").
+    for (const b of row.querySelectorAll('a[href*="/ecourt/ecms/agenda/event"] b')) {
+      if (b.getAttribute(EXPANDED_ATTR) === '1') continue;
+      const text = (b.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!isTruncatedName(text)) continue;
+      jobs.push({ b, caseId: idm[1], prefix: truncatedPrefix(text) });
+    }
   }
   if (!jobs.length) return;
 
   await runWithConcurrency(jobs, 4, async job => {
     const hearings = await getCaseHearings(job.caseId);
-    const full = fullNameForHearing(hearings, day, job.prefix);
+    const full = stripTrailingParenNumber(fullNameForHearing(hearings, day, job.prefix));
     if (full && job.b.getAttribute(EXPANDED_ATTR) !== '1') {
       job.b.textContent = full;
       job.b.setAttribute(EXPANDED_ATTR, '1');
