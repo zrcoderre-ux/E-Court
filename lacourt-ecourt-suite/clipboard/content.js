@@ -3514,6 +3514,7 @@ async function fetchNextDeadlineFilings() {
     }
   } catch (_) { /* keep date-only colours */ }
   __nextDlFiled = filed;
+  dlCacheWrite();        // persist so the next sub-tab load paints final colours
   injectNextDeadlines(); // recolour
 }
 
@@ -3634,6 +3635,57 @@ async function fetchOscStatus() {
   }
 }
 
+// Per-tab cache of the computed motion deadlines + filing status, keyed by case
+// number, in synchronous sessionStorage. A case sub-tab switch is a full page
+// reload, so without this the widget recomputes (and re-fetches Documents) on
+// every tab — making the dates/colours flash each time. Seeding from the cache
+// lets the first paint show the final answer; a background refresh still runs.
+// OSC status has its own (chrome.storage.session) cache and is skipped here.
+const __DL_CACHE_PREFIX = 'lacourt.dl.';
+function dlCacheKey() {
+  const cn = parseCaseNumber(document) || '';
+  return cn ? __DL_CACHE_PREFIX + cn : null;
+}
+function dlEpoch(d) { return (d && !isNaN(d)) ? d.getTime() : null; }
+function dlUnepoch(v) { return (typeof v === 'number') ? new Date(v) : null; }
+function dlSerComp(c) {
+  if (!c || c.osc || c.skip) return null; // nothing paintable worth caching
+  const e = c.eff;
+  return {
+    motionType: c.motionType || '', cat: c.cat || '',
+    motionDue: dlEpoch(c.motionDue), oppDue: dlEpoch(c.oppDue), replyDue: dlEpoch(c.replyDue),
+    eff: e ? { motionType: e.motionType || '', hearingDate: e.hearingDate || '', hearingType: e.hearingType || '', lookedAhead: !!e.lookedAhead } : null,
+  };
+}
+function dlDeserComp(s) {
+  return {
+    skip: false, motionType: s.motionType, cat: s.cat,
+    motionDue: dlUnepoch(s.motionDue), oppDue: dlUnepoch(s.oppDue), replyDue: dlUnepoch(s.replyDue),
+    eff: s.eff || null,
+  };
+}
+function dlSerFiled(f) {
+  return f ? { filedKnown: !!f.filedKnown, motion: dlEpoch(f.motion), opp: dlEpoch(f.opp), reply: dlEpoch(f.reply) } : null;
+}
+function dlDeserFiled(s) {
+  return { filedKnown: !!s.filedKnown, motion: dlUnepoch(s.motion), opp: dlUnepoch(s.opp), reply: dlUnepoch(s.reply) };
+}
+function dlCacheWrite() {
+  const key = dlCacheKey(); if (!key) return;
+  const comp = dlSerComp(__nextDlComputed); if (!comp) return;
+  try { sessionStorage.setItem(key, JSON.stringify({ comp, filed: dlSerFiled(__nextDlFiled) })); } catch (_) {}
+}
+// Seed the globals from the cache (once) so the first paint is the final answer.
+function seedDeadlinesFromCache() {
+  if (__nextDlComputed) return false;
+  const key = dlCacheKey(); if (!key) return false;
+  let raw; try { raw = JSON.parse(sessionStorage.getItem(key) || 'null'); } catch (_) { raw = null; }
+  if (!raw || !raw.comp) return false;
+  __nextDlComputed = dlDeserComp(raw.comp);
+  if (raw.filed) __nextDlFiled = dlDeserFiled(raw.filed);
+  return true;
+}
+
 // Commit a computed result and paint it (+ kick off the follow-up fetch).
 function applyNextDlComputed(c) {
   if (!c) return;
@@ -3647,32 +3699,37 @@ function applyNextDlComputed(c) {
   dlLog('computed:', c.skip ? 'skip (' + (c.reason || 'not hearing-based') + ')'
     : { motionType: c.motionType, cat: c.cat, lookedAhead: !!c.eff, motionDue: fmtShortDate(c.motionDue), oppDue: fmtShortDate(c.oppDue), replyDue: fmtShortDate(c.replyDue) });
   if (c.skip) return;
-  injectNextDeadlines();        // paint dates immediately (date-only colours)
+  dlCacheWrite();               // cache the dates (keeps any seeded filing status)
+  injectNextDeadlines();        // paint dates immediately (seeded/known colours)
   fetchNextDeadlineFilings();   // then refine with filing status
 }
 
-let __effLookaheadStarted = false;
+let __dlComputeStarted = false;
 function renderNextHeaderDeadlines() {
   try {
-    if (!__nextDlComputed) {
+    // On a sub-tab reload the module state is cold; paint instantly from the
+    // per-tab cache so the dates/colours don't visibly recompute.
+    if (!__nextDlComputed) seedDeadlinesFromCache();
+    if (__nextDlComputed) injectNextDeadlines();
+
+    // Compute fresh once (refreshes the cache + repaints if anything changed).
+    if (!__dlComputeStarted) {
       const nextType = parseHearingType(document);
       // If the Next event is something we work up, use it directly (synchronous).
       if (isWorkableHearing(nextType)) {
+        __dlComputeStarted = true;
         applyNextDlComputed(computeDueDates());
         return;
       }
       if (!nextType) return; // header not ready — a later poll/observer will retry
       // The Next event isn't worked up (CMC, trial, status conf, other OSC…).
       // Look ahead on the Hearings tab for the next motion / default judgment.
-      if (__effLookaheadStarted) return;
-      __effLookaheadStarted = true;
+      __dlComputeStarted = true;
       resolveEffectiveHearing(document).then(h => {
         if (!h || !isWorkableHearing(h.hearingType)) { dlLog('no workable hearing to look ahead to for', nextType); return; }
         applyNextDlComputed(computeDueDates(h));
       }).catch(e => dlLog('lookahead failed:', e && e.message || e));
-      return;
     }
-    injectNextDeadlines(); // keep present + coloured across re-renders
   } catch (e) { dlLog('render error:', e && e.message || e); }
 }
 
