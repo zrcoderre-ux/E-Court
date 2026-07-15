@@ -69,7 +69,7 @@ function colorizeAgendaRows() {
     if (cells.length < 7) continue;
     for (const a of cells[5].querySelectorAll('a')) {
       const b = a.querySelector('b');
-      const txt = ((b || a).textContent || '').replace(/\s+/g, ' ').trim();
+      const txt = stripTrailingParenNumber(((b || a).textContent || '').replace(/\s+/g, ' ').trim());
       if (!txt) continue;
       if (!isExcluded(txt)) {
         a.style.setProperty('color', COPY_GREEN, 'important');
@@ -108,7 +108,7 @@ function rowHasGreenHearing(row) {
   if (cells.length < 7) return false;
   for (const a of cells[5].querySelectorAll('a')) {
     const b = a.querySelector('b');
-    const txt = ((b || a).textContent || '').replace(/\s+/g, ' ').trim();
+    const txt = stripTrailingParenNumber(((b || a).textContent || '').replace(/\s+/g, ' ').trim());
     if (txt && !isExcluded(txt)) return true;
   }
   return false;
@@ -369,9 +369,10 @@ function renderCopyAllButton() {
 ------------------------------------------------- */
 
 function extractHearingText(cell) {
+  const clean = s => stripTrailingParenNumber(s.trim().replace(/\s+/g, ' '));
   const bTags = cell.querySelectorAll('b');
-  if (bTags.length === 0) return cell.textContent.trim().replace(/\s+/g, ' ');
-  return Array.from(bTags).map(b => b.textContent.trim().replace(/\s+/g, ' ')).join('\n');
+  if (bTags.length === 0) return clean(cell.textContent);
+  return Array.from(bTags).map(b => clean(b.textContent)).join('\n');
 }
 
 function extractCaseText(cell) {
