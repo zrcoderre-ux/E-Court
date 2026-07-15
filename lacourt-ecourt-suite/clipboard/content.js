@@ -1516,14 +1516,21 @@ function stripEventId(desc) {
 }
 
 /**
- * Drops a trailing parenthesised number from a motion type, e.g.
- * "Motion to Compel Discovery (12345)" / "Demurrer (2)" -> the paren is
- * removed. Only purely numeric parentheticals (digits + separators) are
- * stripped; alphanumeric ones such as "(CCP 437c)" or "(Set One)" are kept.
+ * Drops trailing number-only decorations from a motion type: a purely numeric
+ * parenthetical ("Motion to Compel Discovery (12345)", "Demurrer (2)") or a
+ * dash-number ("Motion to Compel - 3891"). Repeats so stacked forms
+ * ("X (123) - 456") fully strip. Alphanumeric parentheticals such as
+ * "(CCP 437c)" / "(Set One)" and worded dashes ("Demurrer - without Motion to
+ * Strike") are kept. KEEP IN SYNC with agenda/content.js.
  */
 function stripTrailingParenNumber(s) {
   if (!s) return s;
-  return s.replace(/\s*\(\s*\d[\d\s.,\-]*\)\s*$/, '').trim();
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/\s*(?:\(\s*\d[\d\s.,\-]*\)|[-–—]\s*\d[\d\s.,]*)\s*$/, '').trim();
+  } while (s !== prev);
+  return s;
 }
 
 /**

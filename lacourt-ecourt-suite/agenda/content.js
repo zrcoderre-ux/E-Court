@@ -181,25 +181,29 @@ function findTopBar() {
 
 // Size the button to the full height of the top bar and align it flush with
 // the bar (falls back to a default size 8px from the viewport top when no bar
-// is found).
+// is found). Uses !important so site CSS can't shrink it.
+let __barLogged = false;
 function positionCopyAllButton(btn) {
   const bar = findTopBar();
+  const set = (prop, val) => { try { btn.style.setProperty(prop, val, 'important'); } catch (_) { btn.style[prop] = val; } };
   if (bar) {
     const r = bar.getBoundingClientRect();
     const h = Math.round(r.height);
-    btn.style.top = Math.max(0, Math.round(r.top)) + 'px';
-    btn.style.height = h + 'px';
-    btn.style.lineHeight = h + 'px';
-    btn.style.padding = '0 18px';
-    btn.style.fontSize = Math.max(13, Math.min(16, Math.round(h * 0.36))) + 'px';
-    btn.style.borderRadius = '0';
+    if (!__barLogged) { __barLogged = true; try { console.log('[LACourt-Agenda] top bar:', bar.tagName + '.' + (bar.className || ''), 'height=' + h); } catch (_) {} }
+    set('top', Math.max(0, Math.round(r.top)) + 'px');
+    set('height', h + 'px');
+    set('line-height', h + 'px');
+    set('padding', '0 20px');
+    set('font-size', Math.max(14, Math.min(18, Math.round(h * 0.4))) + 'px');
+    set('border-radius', '0');
+    set('box-sizing', 'border-box');
   } else {
-    btn.style.top = '8px';
-    btn.style.height = '';
-    btn.style.lineHeight = '18px';
-    btn.style.padding = '4px 12px';
-    btn.style.fontSize = '12px';
-    btn.style.borderRadius = '5px';
+    set('top', '8px');
+    btn.style.removeProperty('height');
+    set('line-height', '18px');
+    set('padding', '4px 12px');
+    set('font-size', '12px');
+    set('border-radius', '5px');
   }
 }
 
@@ -311,12 +315,20 @@ function isTruncatedName(text) { return /(?:\.\.\.|…)\s*$/.test(text); }
 function truncatedPrefix(text) { return text.replace(/\s*(?:\.\.\.|…)\s*$/, '').trim(); }
 function normDate(s) { const m = (s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) : ''; }
 function stripHearingOn(s) { return (s || '').replace(/^\s*hearing on\s+/i, '').trim(); }
-// Drop a trailing purely-numeric parenthetical, e.g. "...defendant's aka (6861)"
-// -> "...defendant's aka". Alphanumeric ones like "(CCP 437c)" are kept.
+// Drop trailing number-only decorations: a purely-numeric parenthetical
+// ("...defendant's aka (6861)") or a dash-number ("Motion to Compel - 3891").
+// Repeats so stacked forms ("X (123) - 456") fully strip. Alphanumeric
+// parentheticals like "(CCP 437c)" and worded dashes ("Demurrer - without
+// Motion to Strike") are kept.
 // KEEP IN SYNC with stripTrailingParenNumber in clipboard/content.js.
 function stripTrailingParenNumber(s) {
   if (!s) return s;
-  return s.replace(/\s*\(\s*\d[\d\s.,\-]*\)\s*$/, '').trim();
+  let prev;
+  do {
+    prev = s;
+    s = s.replace(/\s*(?:\(\s*\d[\d\s.,\-]*\)|[-–—]\s*\d[\d\s.,]*)\s*$/, '').trim();
+  } while (s !== prev);
+  return s;
 }
 
 // The agenda day (single-day view) from the URL's ?day= param, normalized.
@@ -331,6 +343,23 @@ function fetchWithTimeout(url, ms) {
   ]);
 }
 
+// Cell text with spaces preserved across markup line breaks. A hearing name
+// that wraps in the Hearings tab renders as separate text nodes with NO
+// whitespace between them (e.g. "judgment<br>to reflect"), so plain
+// textContent glues words together ("judgmentto"). Join text nodes with a
+// space instead, then collapse.
+function cellTextSpaced(el) {
+  const parts = [];
+  const walk = n => {
+    for (const c of n.childNodes) {
+      if (c.nodeType === 3) { const t = c.nodeValue; if (t && t.trim()) parts.push(t.trim()); }
+      else if (c.nodeType === 1) walk(c);
+    }
+  };
+  walk(el);
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
 // Parse a fetched case Hearings-tab document into [{ name, dateTime, status }].
 // Scans every row for a "MM/DD/YYYY HH:MM AM/PM" cell. Rows interleave EMPTY
 // cells (observed live: ["", <name>, "", <date/time>, <status>, …]), so the
@@ -339,7 +368,7 @@ function fetchWithTimeout(url, ms) {
 function parseCaseHearings(doc) {
   const out = [];
   for (const tr of doc.querySelectorAll('tr')) {
-    const cells = Array.from(tr.children).map(c => (c.textContent || '').replace(/\s+/g, ' ').trim());
+    const cells = Array.from(tr.children).map(cellTextSpaced);
     const dtIdx = cells.findIndex(c => /^\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s*(AM|PM)\b/i.test(c));
     if (dtIdx < 1) continue;
     let name = '';
