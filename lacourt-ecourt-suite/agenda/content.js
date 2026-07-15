@@ -548,10 +548,32 @@ async function fetchCaseHearings(caseId) {
   } catch (_) { return []; }
 }
 
+// chrome.storage.session persists across the full page reload that navigating to
+// the next agenda day triggers (and is shared across tabs), so a case's hearings
+// fetched while prefetching the next day are still warm when that page loads.
+function sessGet(key) {
+  return new Promise(res => {
+    try { chrome.storage.session.get([key], r => { if (chrome.runtime.lastError) return res(null); res((r && r[key]) || null); }); }
+    catch (_) { res(null); }
+  });
+}
+function sessSet(key, val) {
+  try { chrome.storage.session.set({ [key]: val }, () => { void chrome.runtime.lastError; }); } catch (_) {}
+}
+
+async function loadCaseHearings(caseId) {
+  const key = 'caseHearings:' + caseId;
+  const cached = await sessGet(key);
+  if (Array.isArray(cached)) return cached; // warmed by a prefetch or an earlier page
+  const fetched = await fetchCaseHearings(caseId);
+  if (fetched && fetched.length) sessSet(key, fetched); // don't persist empties/failures
+  return fetched;
+}
+
 function getCaseHearings(caseId) {
   let v = CASE_HEARINGS_CACHE.get(caseId);
   if (v === undefined) {
-    v = fetchCaseHearings(caseId);
+    v = loadCaseHearings(caseId);
     CASE_HEARINGS_CACHE.set(caseId, v);
     v.then(r => CASE_HEARINGS_CACHE.set(caseId, r), () => CASE_HEARINGS_CACHE.set(caseId, []));
   }
@@ -580,6 +602,79 @@ function runWithConcurrency(items, limit, worker) {
   let i = 0;
   const next = async () => { while (i < items.length) { const idx = i++; try { await worker(items[idx]); } catch (_) {} } };
   return Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, next));
+}
+
+/* -------------------------------------------------
+   NEXT-PAGE PREFETCH
+
+   Users typically page forward day by day. Navigating to the next agenda day is
+   a full reload, which would re-fetch every case's Hearings tab for name
+   expansion. So while viewing the current day we prefetch the next day's agenda
+   in the background and warm the (persistent) case-hearings cache for its cases,
+   making the next page's expansion instant.
+------------------------------------------------- */
+
+function dayKeyNum(mdy) {
+  const m = (mdy || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  return m ? (+m[3]) * 10000 + (+m[1]) * 100 + (+m[2]) : 0;
+}
+function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+// The URL of the next agenda day: prefer the page's own next-day nav link (so
+// it respects the court's own day sequence), else +1 calendar day.
+function nextAgendaUrl() {
+  const curNum = dayKeyNum(agendaDay());
+  if (!curNum) return null;
+  let best = null, bestNum = Infinity;
+  for (const a of document.querySelectorAll('a[href*="day="]')) {
+    const href = a.getAttribute('href') || a.href || '';
+    const m = href.match(/[?&]day=(\d{1,2}\/\d{1,2}\/\d{4})/);
+    if (!m) continue;
+    const n = dayKeyNum(m[1]);
+    if (n > curNum && n < bestNum) { bestNum = n; best = a.href; } // a.href resolves to absolute
+  }
+  if (best) return best;
+  try {
+    const m = agendaDay().match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (!m) return null;
+    const d = new Date(+m[3], +m[1] - 1, +m[2] + 1);
+    const url = new URL(location.href);
+    url.searchParams.set('day', pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()) + '/' + d.getFullYear());
+    return url.toString();
+  } catch (_) { return null; }
+}
+
+let __prefetchStarted = false;
+async function prefetchNextAgenda() {
+  if (__prefetchStarted) return;
+  __prefetchStarted = true;
+  const url = nextAgendaUrl();
+  if (!url) return;
+  // Only prefetch a given next-day once per session (across re-renders / tabs).
+  const doneKey = 'agendaPrefetched:' + url;
+  if (await sessGet(doneKey)) return;
+  sessSet(doneKey, true);
+  try {
+    const res = await fetchWithTimeout(url, 10000);
+    if (!res || !res.ok) return;
+    const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+    const table = doc.getElementById('day-table');
+    if (!table) return;
+    // Warm only cases with a truncated hearing (the ones expansion will fetch).
+    const ids = new Set();
+    for (const row of table.querySelectorAll('tr.js-row')) {
+      let hasTrunc = false;
+      for (const b of row.querySelectorAll('a[href*="/ecourt/ecms/agenda/event"] b')) {
+        if (isTruncatedName((b.textContent || '').replace(/\s+/g, ' ').trim())) { hasTrunc = true; break; }
+      }
+      if (!hasTrunc) continue;
+      const caseA = row.querySelector('td a[href*="/ecourt/ecms/case"]');
+      const idm = (caseA ? (caseA.getAttribute('href') || caseA.href || '') : '').match(/[?&]id=(\d+)/);
+      if (idm) ids.add(idm[1]);
+    }
+    await runWithConcurrency(Array.from(ids), 4, id => getCaseHearings(id));
+    try { console.log('[LACourt-Agenda] prefetched next agenda', url, '—', ids.size, 'cases warmed'); } catch (_) {}
+  } catch (_) { /* best-effort */ }
 }
 
 // Fetch full names for truncated hearings WITHOUT mutating the DOM. Returns an
@@ -681,6 +776,9 @@ function applyAgendaChanges(swaps) {
     // no-op on the next pass (already-expanded / no longer truncated).
     const target = document.getElementById('day-table') || document.body;
     try { new MutationObserver(schedule).observe(target, { childList: true, subtree: true }); } catch (_) {}
+    // Once the current day has had a head start, prefetch the next day in the
+    // background so paging forward is instant.
+    setTimeout(() => { try { prefetchNextAgenda(); } catch (_) {} }, 3000);
   };
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start, { once: true });
