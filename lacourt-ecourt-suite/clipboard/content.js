@@ -3143,20 +3143,46 @@ function findCaseTopBar() {
 // back to the compact default (rounded tab hanging from top:0) when no bar is
 // found. Uses !important so site CSS can't shrink them.
 let __caseBarLoggedEl = null;
+// { top, h } of the last successful bar measurement. Seeded from sessionStorage
+// (per-tab, survives the full page reload that a case sub-tab switch triggers)
+// so the buttons paint at the right size immediately instead of flashing to the
+// compact default and only correcting once the live probe settles.
+const __CASE_BAR_SS_KEY = 'lacourt.caseBarSize';
+let __caseBarLastSize = (() => {
+  try { const v = JSON.parse(sessionStorage.getItem(__CASE_BAR_SS_KEY) || 'null');
+    return (v && typeof v.h === 'number' && typeof v.top === 'number') ? v : null; } catch (_) { return null; }
+})();
 function sizeButtonsToBar(btns) {
+  // While the tab is hidden, getBoundingClientRect()/elementsFromPoint report
+  // stale or zero layout, so a probe here would wrongly conclude "no bar" and
+  // revert the buttons. Leave the current sizing untouched; a visibilitychange
+  // listener re-sizes once the tab is visible again.
+  if (document.hidden) return;
+
   const bar = findCaseTopBar();
+  let size = null;
+  if (bar) {
+    const r = bar.getBoundingClientRect();
+    size = { top: Math.max(0, Math.round(r.top)), h: Math.round(r.height) };
+    if (!__caseBarLastSize || __caseBarLastSize.top !== size.top || __caseBarLastSize.h !== size.h) {
+      __caseBarLastSize = size;
+      try { sessionStorage.setItem(__CASE_BAR_SS_KEY, JSON.stringify(size)); } catch (_) {}
+    }
+  } else if (__caseBarLastSize) {
+    // Transient probe failure (mid-render, layout not settled): keep the last
+    // known good bar size rather than snapping back to the compact default.
+    size = __caseBarLastSize;
+  }
   btns.forEach(btn => {
     const set = (p, v) => { try { btn.style.setProperty(p, v, 'important'); } catch (_) { btn.style[p] = v; } };
     const clear = (p) => { try { btn.style.removeProperty(p); } catch (_) {} };
-    if (bar) {
-      const r = bar.getBoundingClientRect();
-      const h = Math.round(r.height);
-      set('top', Math.max(0, Math.round(r.top)) + 'px');
-      set('height', h + 'px');
-      set('line-height', h + 'px');
+    if (size) {
+      set('top', size.top + 'px');
+      set('height', size.h + 'px');
+      set('line-height', size.h + 'px');
       set('padding-top', '0');
       set('padding-bottom', '0');
-      set('font-size', Math.max(13, Math.min(18, Math.round(h * 0.4))) + 'px');
+      set('font-size', Math.max(13, Math.min(18, Math.round(size.h * 0.4))) + 'px');
       set('border-radius', '0 0 0 0');
       set('box-sizing', 'border-box');
     } else {
@@ -3219,6 +3245,12 @@ function scheduleButtonCollapse() {
   lacCollapseTimer = setTimeout(() => { try { updateButtonCollapse(); } catch (_) {} }, 120);
 }
 window.addEventListener('resize', scheduleButtonCollapse);
+// Returning to a background tab: layout is only live once the tab is visible
+// again, so re-measure the bar and re-size the buttons (they may have been left
+// at the wrong size if the page re-rendered while hidden).
+document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleButtonCollapse(); });
+window.addEventListener('focus', scheduleButtonCollapse);
+window.addEventListener('pageshow', scheduleButtonCollapse);
 
 /* ------------------------------------------------------------------ */
 /* Inline Opposition / Reply (and Motion) deadlines on the "Next" header */
@@ -3670,6 +3702,9 @@ function setupFillFormButton() {
     renderDeadlineButton();
     renderNextHeaderDeadlines();
     observeNextHeader();
+    // Size immediately from the remembered bar dimensions (no flash to default),
+    // then schedule the debounced pass that measures the live bar and re-docks.
+    try { updateButtonCollapse(); } catch (_) {}
     scheduleButtonCollapse();
   };
 
