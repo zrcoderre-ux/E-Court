@@ -37,13 +37,48 @@ chrome.storage.sync.get(['excludedTerms'], result => {
   if (result.excludedTerms && Array.isArray(result.excludedTerms)) {
     EXCLUDED_TERMS = result.excludedTerms;
   }
+  try { colorizeAgendaRows(); } catch (_) {}
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'sync' && changes.excludedTerms) {
     EXCLUDED_TERMS = changes.excludedTerms.newValue || [...DEFAULT_EXCLUDED_TERMS];
+    try { colorizeAgendaRows(); } catch (_) {}
   }
 });
+
+/* -------------------------------------------------
+   COLOR CODING
+
+   Hearings that Copy All WILL take (not on the exclusion list) render green
+   instead of the default blue link color; excluded ones are left as-is.
+   Idempotent — re-run after name expansion and whenever the exclusion list
+   changes.
+------------------------------------------------- */
+
+const COPY_GREEN = '#1a6b3a';
+
+function colorizeAgendaRows() {
+  const table = document.getElementById('day-table');
+  if (!table) return;
+  for (const row of table.querySelectorAll('tr.js-row')) {
+    if (row.style.display === 'none') continue;
+    const cells = row.querySelectorAll('td');
+    if (cells.length < 7) continue;
+    for (const a of cells[5].querySelectorAll('a')) {
+      const b = a.querySelector('b');
+      const txt = ((b || a).textContent || '').replace(/\s+/g, ' ').trim();
+      if (!txt) continue;
+      if (!isExcluded(txt)) {
+        a.style.setProperty('color', COPY_GREEN, 'important');
+        if (b) b.style.setProperty('color', COPY_GREEN, 'important');
+      } else {
+        a.style.removeProperty('color');
+        if (b) b.style.removeProperty('color');
+      }
+    }
+  }
+}
 
 /* -------------------------------------------------
    COPY BEHAVIOR
@@ -474,7 +509,13 @@ async function expandTruncatedHearings() {
   const run = () => {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(() => { pending = false; expandTruncatedHearings(); });
+    requestAnimationFrame(() => {
+      pending = false;
+      // Colorize immediately (untruncated rows), then again once truncated
+      // names have been expanded (expansion can change exclusion status).
+      try { colorizeAgendaRows(); } catch (_) {}
+      Promise.resolve(expandTruncatedHearings()).then(() => { try { colorizeAgendaRows(); } catch (_) {} });
+    });
   };
   const start = () => {
     run();
