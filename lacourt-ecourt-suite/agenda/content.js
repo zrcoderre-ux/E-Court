@@ -94,25 +94,7 @@ function handleAgendaCopy(e, selection) {
     // fall back to all rows
   }
 
-  const outputRows = [];
-
-  candidateRows.forEach(row => {
-    const cells = row.querySelectorAll('td');
-    if (cells.length < 7) return;
-
-    const hearingText = extractHearingText(cells[5]);
-    const caseInfo    = extractCaseText(cells[6]);
-
-    if (!hearingText && !caseInfo.text) return;
-
-    const hearingResult = filterExcluded(hearingText);
-    if (hearingResult === null) return;
-
-    // Ensure no newlines remain that could split cells in Excel
-    const hearingClean = hearingResult.replace(/\n/g, ' ').replace(/\s{2,}/g, ' ').trim();
-
-    outputRows.push({ col5: hearingClean, col6: caseInfo.text, url: caseInfo.url });
-  });
+  const outputRows = buildAgendaOutputRows(candidateRows);
 
   if (outputRows.length === 0) {
     e.clipboardData.setData('text/plain', '');
@@ -121,11 +103,43 @@ function handleAgendaCopy(e, selection) {
     return;
   }
 
-  // Plain text: hearing tab case, blank row after each
+  const { plainText, html } = buildAgendaPayload(outputRows);
+  e.clipboardData.setData('text/plain', plainText);
+  e.clipboardData.setData('text/html', html);
+  e.preventDefault();
+}
+
+/* -------------------------------------------------
+   OUTPUT BUILDERS (shared by the copy handler + Copy All button)
+------------------------------------------------- */
+
+// Turn day-table rows into cleaned output rows: { col5 hearing, col6 case, url }.
+function buildAgendaOutputRows(rows) {
+  const outputRows = [];
+  rows.forEach(row => {
+    const cells = row.querySelectorAll('td');
+    if (cells.length < 7) return;
+
+    const hearingText = extractHearingText(cells[5]);
+    const caseInfo    = extractCaseText(cells[6]);
+    if (!hearingText && !caseInfo.text) return;
+
+    const hearingResult = filterExcluded(hearingText);
+    if (hearingResult === null) return;
+
+    // Ensure no newlines remain that could split cells in Excel
+    const hearingClean = hearingResult.replace(/\n/g, ' ').replace(/\s{2,}/g, ' ').trim();
+    outputRows.push({ col5: hearingClean, col6: caseInfo.text, url: caseInfo.url });
+  });
+  return outputRows;
+}
+
+// Build the plain-text (tab-separated, blank row after each) and Times New Roman
+// 22pt HTML clipboard payloads from cleaned output rows.
+function buildAgendaPayload(outputRows) {
   const plainLines = outputRows.flatMap(r => [r.col5 + '\t' + r.col6, '']);
   const plainText  = plainLines.join('\n');
 
-  // HTML with Times New Roman 22pt
   const htmlRows = outputRows.flatMap(r => {
     const c5 = escapeHtml(r.col5);
     const c6 = escapeHtml(r.col6);
@@ -142,11 +156,95 @@ function handleAgendaCopy(e, selection) {
   }).join('');
 
   const html = '<html><body><table>' + htmlRows + '</table></body></html>';
-
-  e.clipboardData.setData('text/plain', plainText);
-  e.clipboardData.setData('text/html', html);
-  e.preventDefault();
+  return { plainText, html };
 }
+
+/* -------------------------------------------------
+   COPY ALL BUTTON (top-right; no Ctrl+A / Ctrl+C needed)
+------------------------------------------------- */
+
+const COPY_ALL_BTN_ID = '__lacourt_agenda_copy_all__';
+
+function agendaToast(message, ok) {
+  let t = document.getElementById('__lacourt_agenda_toast__');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = '__lacourt_agenda_toast__';
+    t.style.cssText = 'position:fixed;top:56px;right:16px;z-index:2147483647;'
+      + 'padding:8px 14px;border-radius:6px;font:600 13px system-ui,sans-serif;'
+      + 'color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.3);transition:opacity .3s;';
+    document.body.appendChild(t);
+  }
+  t.textContent = message;
+  t.style.background = ok === false ? '#c0392b' : '#0a6e6e';
+  t.style.opacity = '1';
+  clearTimeout(t.__hide);
+  t.__hide = setTimeout(() => { t.style.opacity = '0'; }, 2200);
+}
+
+async function copyAllAgenda(btn) {
+  const table = document.getElementById('day-table');
+  if (!table) { agendaToast('No agenda table found', false); return; }
+
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Copying…'; }
+  // Make sure truncated hearing names are expanded first so the copy is complete.
+  try { if (typeof expandTruncatedHearings === 'function') await expandTruncatedHearings(); } catch (_) {}
+
+  const rows = Array.from(table.querySelectorAll('tr.js-row')).filter(r => r.style.display !== 'none');
+  const outputRows = buildAgendaOutputRows(rows);
+  const restore = () => { if (btn) { btn.disabled = false; btn.textContent = label || 'Copy All'; } };
+
+  if (!outputRows.length) { agendaToast('Nothing to copy', false); restore(); return; }
+
+  const { plainText, html } = buildAgendaPayload(outputRows);
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      'text/plain': new Blob([plainText], { type: 'text/plain' }),
+      'text/html': new Blob([html], { type: 'text/html' }),
+    })]);
+    agendaToast('Copied ' + outputRows.length + ' hearing' + (outputRows.length === 1 ? '' : 's'), true);
+  } catch (e) {
+    // Fallback: plain text only (older browsers / no ClipboardItem).
+    try {
+      await navigator.clipboard.writeText(plainText);
+      agendaToast('Copied ' + outputRows.length + ' (text only)', true);
+    } catch (_) {
+      agendaToast('Copy failed — use Ctrl+A then Ctrl+C', false);
+    }
+  }
+  restore();
+}
+
+function renderCopyAllButton() {
+  if (document.getElementById(COPY_ALL_BTN_ID)) return;
+  if (!document.getElementById('day-table') || !document.body) return;
+  const btn = document.createElement('button');
+  btn.id = COPY_ALL_BTN_ID;
+  btn.type = 'button';
+  btn.textContent = 'Copy All';
+  btn.style.cssText = 'position:fixed;top:14px;right:16px;z-index:2147483647;'
+    + 'padding:8px 16px;border:none;border-radius:6px;cursor:pointer;'
+    + 'background:#0a6e6e;color:#fff;font:600 13px system-ui,sans-serif;'
+    + 'box-shadow:0 2px 6px rgba(0,0,0,.3);';
+  btn.addEventListener('mouseenter', () => { btn.style.background = '#0d8f8f'; });
+  btn.addEventListener('mouseleave', () => { btn.style.background = '#0a6e6e'; });
+  btn.addEventListener('click', () => copyAllAgenda(btn));
+  document.body.appendChild(btn);
+}
+
+(function initCopyAllButton() {
+  const start = () => {
+    renderCopyAllButton();
+    // The day-table can render late / re-render; keep the button pinned.
+    try { new MutationObserver(renderCopyAllButton).observe(document.body, { childList: true, subtree: true }); } catch (_) {}
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();
 
 /* -------------------------------------------------
    TEXT EXTRACTION
