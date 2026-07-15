@@ -2020,11 +2020,22 @@ try {
 
 // Case-insensitive substring match against the exclusion terms, mirroring the
 // agenda cleaner's isExcluded().
+// Match one excluded term against a hearing text. A term wrapped in double
+// quotes ("...") requires the whole text to equal it exactly (trimmed); an
+// unquoted term matches as a substring. Terms are already stored lowercased.
+// KEEP IN SYNC with agenda/content.js excludedTermMatches().
+function excludedTermMatches(term, lower) {
+  if (!term) return false;
+  const quoted = term.match(/^"(.*)"$/);
+  if (quoted) return lower.trim() === quoted[1].trim();
+  return lower.includes(term);
+}
+
 function isHearingExcluded(text) {
   if (!text) return false;
   const lower = text.toLowerCase();
   const terms = EXCLUDED_TERMS_CACHE || DEFAULT_EXCLUDED_TERMS;
-  return terms.some(t => t && lower.includes(t));
+  return terms.some(t => excludedTermMatches(t, lower));
 }
 
 function stripHearingOnPrefix(s) {

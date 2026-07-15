@@ -319,9 +319,20 @@ function extractCaseText(cell) {
    EXCLUSION FILTERING
 ------------------------------------------------- */
 
+// Match one excluded term against a hearing segment. A term wrapped in double
+// quotes ("...") requires the whole segment to equal it exactly (trimmed);
+// an unquoted term matches as a substring. Terms are already stored lowercased.
+// KEEP IN SYNC with clipboard/content.js excludedTermMatches().
+function excludedTermMatches(term, lower) {
+  if (!term) return false;
+  const quoted = term.match(/^"(.*)"$/);
+  if (quoted) return lower.trim() === quoted[1].trim();
+  return lower.includes(term);
+}
+
 function isExcluded(segment) {
   const lower = segment.trim().toLowerCase();
-  return EXCLUDED_TERMS.some(term => lower.includes(term));
+  return EXCLUDED_TERMS.some(term => excludedTermMatches(term, lower));
 }
 
 function stripBullet(seg) {
