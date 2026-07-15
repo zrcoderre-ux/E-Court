@@ -161,35 +161,49 @@ async function copyAllAgenda(btn) {
   restore();
 }
 
-// Find the site's fixed blue header bar: a fixed-position, (near-)full-width
-// element pinned to the top of the viewport with a plausible bar height.
+// Find the site's fixed blue header bar by probing what is actually rendered
+// at the top of the viewport (elementsFromPoint at a few x positions), then
+// taking the TALLEST fixed/sticky, near-full-width element pinned to the top.
+// Selector-based matching grabbed a slim inner wrapper (the search-bar row)
+// whose top aligned with the blue bar, so the button height came out wrong.
+let __topBarEl = null;
 function findTopBar() {
-  const candidates = document.querySelectorAll(
-    '.navbar-fixed-top, .navbar.fixed-top, #topnav, nav.navbar, header, .navbar');
-  for (const el of candidates) {
-    try {
-      const r = el.getBoundingClientRect();
-      const pos = getComputedStyle(el).position;
-      if ((pos === 'fixed' || pos === 'sticky') && r.top <= 2 &&
-          r.height >= 28 && r.height <= 90 && r.width >= window.innerWidth * 0.8) {
-        return el;
+  try {
+    if (__topBarEl && document.contains(__topBarEl)) {
+      const r = __topBarEl.getBoundingClientRect();
+      if (r.top <= 2 && r.height >= 20 && r.height <= 140) return __topBarEl;
+      __topBarEl = null;
+    }
+    const w = window.innerWidth;
+    let best = null, bestH = 0;
+    for (const x of [w * 0.3, w * 0.5, w * 0.7]) {
+      for (const el of document.elementsFromPoint(x, 8)) {
+        if (el === document.documentElement || el === document.body) continue;
+        if (el.id === COPY_ALL_BTN_ID || el.id === '__lacourt_agenda_toast__') continue;
+        const pos = getComputedStyle(el).position;
+        if (pos !== 'fixed' && pos !== 'sticky') continue;
+        const r = el.getBoundingClientRect();
+        if (r.top > 2 || r.height < 20 || r.height > 140) continue;
+        if (r.width < w * 0.6) continue;
+        if (r.height > bestH) { best = el; bestH = r.height; }
       }
-    } catch (_) {}
-  }
-  return null;
+    }
+    __topBarEl = best;
+    return best;
+  } catch (_) { return null; }
 }
 
 // Size the button to the full height of the top bar and align it flush with
 // the bar (falls back to a default size 8px from the viewport top when no bar
 // is found). Uses !important so site CSS can't shrink it.
-let __barLogged = false;
+let __barLoggedEl = null;
 function positionCopyAllButton(btn) {
   const bar = findTopBar();
   const set = (prop, val) => { try { btn.style.setProperty(prop, val, 'important'); } catch (_) { btn.style[prop] = val; } };
   if (bar) {
     const r = bar.getBoundingClientRect();
     const h = Math.round(r.height);
-    if (!__barLogged) { __barLogged = true; try { console.log('[LACourt-Agenda] top bar:', bar.tagName + '.' + (bar.className || ''), 'height=' + h); } catch (_) {} }
+    if (__barLoggedEl !== bar) { __barLoggedEl = bar; try { console.log('[LACourt-Agenda] top bar:', bar.tagName + '.' + (bar.className || ''), 'height=' + h); } catch (_) {} }
     set('top', Math.max(0, Math.round(r.top)) + 'px');
     set('height', h + 'px');
     set('line-height', h + 'px');
