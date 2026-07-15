@@ -207,11 +207,11 @@ function filterExcluded(text) {
 
    The agenda truncates long hearing names in the day-table (server-side, e.g.
    "Demurrer - without Motion..."). Each hearing <b> is wrapped in a per-hearing
-   event link (/ecourt/ecms/agenda/event?dispatch=eventPage&id=NNNN). For the
-   motion types that actually get copied (i.e. NOT on the exclusion list), we
-   fetch that event page, recover the full name, and drop it back into the <b>
-   in place — so both the on-page display and the copy output carry the full
-   name. Fetches are cached by event id; excluded rows are never fetched.
+   event link (/ecourt/ecms/agenda/event?dispatch=eventPage&id=NNNN). We fetch
+   that event page for every truncated hearing, recover the full name, and drop
+   it back into the <b> in place — so both the on-page display and the copy
+   output carry the full name, and the exclusion check always runs against the
+   full name rather than a truncated prefix. Fetches are cached by event id.
 ------------------------------------------------- */
 
 const EVENT_NAME_CACHE = new Map(); // eventId -> full name (''=none) or in-flight Promise
@@ -261,8 +261,8 @@ async function expandTruncatedHearings() {
     if (!b || b.getAttribute(EXPANDED_ATTR) === '1') continue;
     const text = (b.textContent || '').replace(/\s+/g, ' ').trim();
     if (!isTruncatedName(text)) continue;
-    // Only the motion types that get copied — skip excluded ones entirely.
-    if (isExcluded(text)) continue;
+    // Expand every truncated hearing so the exclusion check (during copy) always
+    // runs against the full name, not the truncated prefix.
     const eventId = eventIdFromAnchor(a);
     if (!eventId) continue;
     const prefix = truncatedPrefix(text);
