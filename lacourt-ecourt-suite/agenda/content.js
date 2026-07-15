@@ -650,26 +650,37 @@ function applyAgendaChanges(swaps) {
 }
 
 (function initHearingExpansion() {
-  let pending = false;
-  const run = () => {
-    if (__agendaBatching || pending) return;
-    pending = true;
-    requestAnimationFrame(() => {
-      pending = false;
-      // Fetch full names for any truncated hearings first (no DOM changes yet),
-      // then apply the renames, sort, colouring, and green-float together in one
-      // batch so the agenda jumps just once to its final state.
-      Promise.resolve(fetchHearingNameSwaps())
-        .then(swaps => applyAgendaChanges(swaps))
-        .catch(() => applyAgendaChanges([]));
-    });
+  // The day-table renders in phases (empty → partial → full), and name expansion
+  // needs async fetches. Debounce so we act only once the DOM has settled, and
+  // serialize so a batch never overlaps another — otherwise we'd reorder once for
+  // the initial rows and again after expansion (two visible jumps). A single
+  // settled batch does renames + sort + colour + float together: one jump.
+  let running = false;
+  let timer = null;
+  const SETTLE_MS = 300;
+
+  const kick = () => {
+    timer = null;
+    if (running) { schedule(); return; } // a batch is in flight — retry after it
+    running = true;
+    // Fetch full names for any truncated hearings first (no DOM changes yet),
+    // then apply the renames, sort, colouring, and green-float together.
+    Promise.resolve(fetchHearingNameSwaps())
+      .then(swaps => applyAgendaChanges(swaps))
+      .catch(() => applyAgendaChanges([]))
+      .finally(() => { running = false; });
+  };
+  const schedule = () => {
+    if (__agendaBatching) return; // ignore the mutations our own batch causes
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(kick, SETTLE_MS);
   };
   const start = () => {
-    run();
+    schedule();
     // Re-run when the day-table re-renders or paginates. Our own text swaps
     // no-op on the next pass (already-expanded / no longer truncated).
     const target = document.getElementById('day-table') || document.body;
-    try { new MutationObserver(run).observe(target, { childList: true, subtree: true }); } catch (_) {}
+    try { new MutationObserver(schedule).observe(target, { childList: true, subtree: true }); } catch (_) {}
   };
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', start, { once: true });
