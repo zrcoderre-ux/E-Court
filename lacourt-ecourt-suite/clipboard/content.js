@@ -2376,7 +2376,9 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
 //     fee-waiver filings, not substantive to any hearing.
 //   - "Proposed Order" / "[Proposed] Order": a lodged draft order, not a paper
 //     that briefs or supports the motion.
-const ALWAYS_IRRELEVANT_RE = /request to waive (additional )?court fees|\[?\s*proposed\s*\]?\s+order\b/i;
+//   - anything mentioning "Jury Fees" (e.g. "Notice of Posting of Jury Fees"):
+//     an administrative fee posting, not substantive to any hearing.
+const ALWAYS_IRRELEVANT_RE = /request to waive (additional )?court fees|\[?\s*proposed\s*\]?\s+order\b|jury fees/i;
 
 // Motion-type terms for which "Proof of Service" documents stay relevant.
 // For any other motion, proof-of-service filings are excluded.
