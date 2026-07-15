@@ -2678,13 +2678,22 @@ function renderFillFormButton() {
     setLabel('Working...');
     btn.style.opacity = '0.7';
 
-    // Fire-and-forget: download any court PDFs the user has open in this window.
-    try {
-      chrome.runtime.sendMessage({ type: 'downloadOpenPdfs' }, res => {
-        void chrome.runtime.lastError;
-        if (res && res.count) console.log('[LACourt] downloaded ' + res.count + ' open PDF(s)');
-      });
-    } catch (_) {}
+    // Download any court PDFs the user has open in this window. The background
+    // resolves once the downloads have settled; keep the button greyed out until
+    // then (a timeout backs it up so the button never sticks).
+    const downloadsDone = new Promise(resolve => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      const safety = setTimeout(finish, 60000);
+      try {
+        chrome.runtime.sendMessage({ type: 'downloadOpenPdfs' }, res => {
+          void chrome.runtime.lastError;
+          clearTimeout(safety);
+          if (res && res.count) console.log('[LACourt] downloaded ' + res.count + ' open PDF(s)');
+          finish();
+        });
+      } catch (_) { clearTimeout(safety); finish(); }
+    });
 
     try {
       const result = await getExportContext();
@@ -2723,13 +2732,17 @@ function renderFillFormButton() {
               return;
             }
 
-            // Success — show confirmation and reset.
-            setLabel(openedLabel);
-            btn.style.opacity = '1';
-            setTimeout(() => {
-              btn.disabled = false;
-              setLabel('Export');
-            }, 2000);
+            // Popup opened. If court PDFs are still downloading, keep the button
+            // greyed out until they finish; then show confirmation and reset.
+            setLabel('Downloading…');
+            downloadsDone.then(() => {
+              setLabel(openedLabel);
+              btn.style.opacity = '1';
+              setTimeout(() => {
+                btn.disabled = false;
+                setLabel('Export');
+              }, 2000);
+            });
           }
         );
       };
