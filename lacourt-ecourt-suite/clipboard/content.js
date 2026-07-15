@@ -3371,6 +3371,10 @@ let __nextDlFiled = null;
 let __nextDlFetchStarted = false;
 // OSC Re: Failure to Prosecute Default Judgment status: { text, color } or null.
 let __oscStatus = null;
+// Whether "No Opposition" / "No Reply" have been clicked to reveal their due date
+// inline (they always show it on hover via the title attribute).
+let __dlRevealOpp = false;
+let __dlRevealReply = false;
 
 let __dlNoMotionLogged = 0;
 // `eff` is an optional resolved hearing { motionType, hearingType, hearingDate,
@@ -3452,16 +3456,24 @@ function nextDlHtml() {
     const dd = dayMs(due);
     return dd != null && dd < dayMs(new Date());
   };
+  // An absent paper shows "No Opposition"/"No Reply", but keeps its due date on
+  // hover (title) and reveals it inline on click (toggled via __dlReveal*).
+  const absentSpan = (noun, dueLabel, due, key, revealed) => {
+    const dateStr = fmtShortDate(due);
+    const txt = revealed ? `No ${noun} — ${dueLabel} ${dateStr}` : `No ${noun}`;
+    return `<span class="__lac_dl_absent" data-dl-reveal="${key}" title="${dueLabel} ${dateStr}" ` +
+      `style="color:${RED};cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px">${txt}</span>`;
+  };
   const oppAbsent = absent(c.oppDue, f.opp);
 
   const parts = [item('Motion Due', 'motion', c.motionDue)];
   parts.push(oppAbsent
-    ? `<span style="color:${RED}">No Opposition</span>`
+    ? absentSpan('Opposition', 'Opposition Due', c.oppDue, 'opp', __dlRevealOpp)
     : item('Opposition Due', 'opp', c.oppDue));
   // With no opposition on file, the reply deadline is irrelevant — drop it.
   if (!oppAbsent) {
     parts.push(absent(c.replyDue, f.reply)
-      ? `<span style="color:${RED}">No Reply</span>`
+      ? absentSpan('Reply', 'Reply Due', c.replyDue, 'reply', __dlRevealReply)
       : item('Reply Due', 'reply', c.replyDue));
   }
   return prefix + parts.join(NEXT_DL_GAP);
@@ -3485,6 +3497,17 @@ function injectNextDeadlines() {
   const ws = __nextDlComputed.osc ? 'white-space:normal' : 'white-space:nowrap';
   el.setAttribute('style', 'margin-left:22px;font-weight:600;' + ws + ';font-family:inherit;display:inline-block;');
   el.innerHTML = nextDlHtml();
+  // Click "No Opposition"/"No Reply" to reveal its due date inline (persists via
+  // module flags; the listener stays put across innerHTML refreshes of el).
+  el.addEventListener('click', (e) => {
+    const t = e.target && e.target.closest && e.target.closest('[data-dl-reveal]');
+    if (!t) return;
+    e.preventDefault();
+    const which = t.getAttribute('data-dl-reveal');
+    if (which === 'opp') __dlRevealOpp = !__dlRevealOpp;
+    else if (which === 'reply') __dlRevealReply = !__dlRevealReply;
+    injectNextDeadlines();
+  });
   host.insertBefore(el, span.nextSibling);
   dlLog('injected deadlines next to header:', (span.textContent || '').slice(0, 60));
 }
