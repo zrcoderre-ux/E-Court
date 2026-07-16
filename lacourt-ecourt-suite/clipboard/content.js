@@ -2605,6 +2605,18 @@ function getAllDocumentsCached() {
   return __allDocsPromise;
 }
 
+// Memoized future scheduled hearings from the Hearings tab (fetched at most once).
+// Resolves to [] when the tab isn't reachable, so callers degrade gracefully.
+let __futureHearingsPromise = null;
+function getFutureHearingsCached() {
+  if (__futureHearingsPromise) return __futureHearingsPromise;
+  const url = getHearingsUrl();
+  __futureHearingsPromise = (url ? fetchCaseDoc(url) : Promise.resolve(null))
+    .then(doc => (doc ? parseFutureHearings(doc) : []))
+    .catch(() => []);
+  return __futureHearingsPromise;
+}
+
 // Orchestrates: resolve the motion, fetch all documents + hearings, compute the
 // relevant set. Resolves to { relevant, motionType, docCount, singleHearing }.
 async function getRelevantDocuments() {
@@ -3521,12 +3533,31 @@ async function fetchNextDeadlineFilings() {
         const mw = md ? md.when : null;
         const after = docs.filter(d => d.when && (!mw || d.when >= mw));
         const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
+
+        // When exactly one live motion has its moving papers on file, an
+        // Opposition/Reply on the docket can only belong to it — so match by
+        // title + position (Opposition after the motion, Reply after the
+        // Opposition) without needing the name to reference the motion. With
+        // multiple filed motions, require the name to link to THIS motion so we
+        // don't attribute the wrong paper.
+        const workable = (await getFutureHearingsCached()).filter(h => isWorkableHearing(h.type));
+        const filedMotions = workable.filter(h => bestFilingMatch(h.type, docs));
+        const singleMotion = !!md && filedMotions.length === 1;
+
         // The movant files the reply, so a "Reply …" by the same party as the
         // motion also counts (covers replies named only by party/abbreviation).
         const movantParties = md ? docPartyNames(md.filedBy) : [];
         const sharesMovant = d => movantParties.length && docSharesParty(docPartyNames(d.filedBy), movantParties);
-        const o = earliest(after.filter(d => /\bopposition\b/i.test(d.name) && docLinksToMotion(d.name, c.motionType)));
-        const r = earliest(after.filter(d => /\breply\b/i.test(d.name) && (docLinksToMotion(d.name, c.motionType) || sharesMovant(d))));
+
+        let o, r;
+        if (singleMotion) {
+          o = earliest(after.filter(d => /\bopposition\b/i.test(d.name)));
+          const afterOpp = o ? o.when : mw;
+          r = earliest(docs.filter(d => d.when && (!afterOpp || d.when >= afterOpp) && /\breply\b/i.test(d.name)));
+        } else {
+          o = earliest(after.filter(d => /\bopposition\b/i.test(d.name) && docLinksToMotion(d.name, c.motionType)));
+          r = earliest(after.filter(d => /\breply\b/i.test(d.name) && (docLinksToMotion(d.name, c.motionType) || sharesMovant(d))));
+        }
         filed.opp = o ? o.when : null;
         filed.reply = r ? r.when : null;
       }
