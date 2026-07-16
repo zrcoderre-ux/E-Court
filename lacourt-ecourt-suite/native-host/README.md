@@ -83,6 +83,40 @@ exported.
   `pythonw.exe` (same folder) in `ecourt_host.bat` (revert if the merge ever
   stops triggering).
 
+## Agenda auto-advance on paste (optional)
+
+The same host can also watch the OS clipboard so the **agenda page advances to
+the next day automatically after you paste it into Excel** — no clicks, no
+switching back to the browser.
+
+How it works:
+
+1. Landing on an agenda page auto-copies the cleaned agenda to your clipboard.
+2. You paste it into Excel. Your paste macro then **clears the clipboard**.
+3. The host (running in the background via a persistent connection) sees the
+   clipboard go empty and tells the extension, which navigates to the next day
+   (already prefetched, so it loads instantly).
+
+### Enable it
+
+1. **Update your Excel paste macro** so it clears the system clipboard at the
+   end. `Module2.bas` in this repo is the ready-to-import version — it adds a
+   `ClearSystemClipboard` helper (three `user32` API calls) and calls it in the
+   macro's `CleanUp` block. `Application.CutCopyMode = False` alone does **not**
+   clear the Windows clipboard, so the API call is required. Re-import
+   `Module2.bas` into your workbook (VBA editor → File → Import File).
+2. On any agenda page, click the **⏭ Auto-advance: Off** toggle (top-left) to
+   turn it **On**. The setting persists.
+3. That's it — paste as usual and each paste jumps you to the next day.
+
+Notes:
+
+- It advances **one day per paste**, paced by you — it never runs ahead on its
+  own. Turn the toggle off any time to stop.
+- The cue is specifically the clipboard going *empty*; only your paste macro
+  does that, so ordinary copying/pasting elsewhere won't trigger it.
+- No `pywin32` needed for this — the clipboard is read via stdlib `ctypes`.
+
 ## Uninstall
 
 ```powershell

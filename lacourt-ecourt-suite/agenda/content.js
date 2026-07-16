@@ -321,14 +321,90 @@ async function autoCopyAgenda() {
   const attempt = async () => {
     if (done) return true;
     if (!document.hasFocus()) return false;
-    try { await write(); done = true; try { console.log('[LACourt-Agenda] auto-copied', outputRows.length, 'hearings — ready to paste'); } catch (_) {} return true; }
-    catch (_) { return false; }
+    try {
+      await write(); done = true;
+      try { console.log('[LACourt-Agenda] auto-copied', outputRows.length, 'hearings — ready to paste'); } catch (_) {}
+      // The agenda is now on the clipboard — start watching for the paste if
+      // auto-advance is on, so clearing it (via the Excel macro) advances the day.
+      updateAutoAdvanceWatch();
+      return true;
+    } catch (_) { return false; }
   };
   if (await attempt()) return;
   // Not focused / not permitted yet — retry once the tab gains focus.
   const onFocus = async () => { if (await attempt()) window.removeEventListener('focus', onFocus); };
   window.addEventListener('focus', onFocus);
 }
+
+/* -------------------------------------------------
+   AUTO-ADVANCE ON PASTE
+
+   Opt-in (off by default). When on, once the agenda is auto-copied we ask the
+   service worker to watch the OS clipboard via the native host; the user's Excel
+   paste macro clears the clipboard, the host reports it empty, and we navigate to
+   the next agenda day (already prefetched, so it's instant). Toggle lives on the
+   page and in chrome.storage.sync so it persists.
+------------------------------------------------- */
+
+const AUTO_ADVANCE_KEY = 'autoAdvanceOnPaste';
+let AUTO_ADVANCE = false;
+
+// Tell the service worker to start/stop the clipboard watch for this tab.
+function updateAutoAdvanceWatch() {
+  try {
+    chrome.runtime.sendMessage({ type: 'AGENDA_AUTOADVANCE_WATCH', enabled: !!AUTO_ADVANCE },
+      () => { void chrome.runtime.lastError; });
+  } catch (_) {}
+}
+
+// Navigate to the next day when the service worker relays the paste signal.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.type === 'AGENDA_ADVANCE' && AUTO_ADVANCE) {
+    const url = nextAgendaUrl();
+    if (url) { try { console.log('[LACourt-Agenda] paste detected — advancing to next day'); } catch (_) {} location.href = url; }
+  }
+});
+
+function renderAutoAdvanceToggle() {
+  if (!document.body) { document.addEventListener('DOMContentLoaded', renderAutoAdvanceToggle, { once: true }); return; }
+  let btn = document.getElementById('__lacourt_agenda_autoadvance__');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = '__lacourt_agenda_autoadvance__';
+    btn.type = 'button';
+    btn.title = 'When on: after you paste the auto-copied agenda into Excel (which clears the clipboard), jump to the next day automatically.';
+    btn.style.cssText = 'position:fixed;top:8px;left:12px;z-index:2147483647;'
+      + 'padding:4px 10px;border:none;border-radius:5px;cursor:pointer;'
+      + 'font:600 12px system-ui,sans-serif;line-height:18px;box-shadow:0 1px 4px rgba(0,0,0,.3);';
+    btn.addEventListener('click', () => {
+      AUTO_ADVANCE = !AUTO_ADVANCE;
+      try { chrome.storage.sync.set({ [AUTO_ADVANCE_KEY]: AUTO_ADVANCE }, () => { void chrome.runtime.lastError; }); } catch (_) {}
+      paintAutoAdvanceToggle(btn);
+      updateAutoAdvanceWatch();
+    });
+    document.body.appendChild(btn);
+  }
+  paintAutoAdvanceToggle(btn);
+}
+function paintAutoAdvanceToggle(btn) {
+  btn.textContent = AUTO_ADVANCE ? '⏭ Auto-advance: On' : '⏭ Auto-advance: Off';
+  btn.style.background = AUTO_ADVANCE ? '#0a6e6e' : '#666';
+  btn.style.color = '#fff';
+}
+
+chrome.storage.sync.get([AUTO_ADVANCE_KEY], result => {
+  AUTO_ADVANCE = !!(result && result[AUTO_ADVANCE_KEY]);
+  try { renderAutoAdvanceToggle(); } catch (_) {}
+  updateAutoAdvanceWatch();
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && changes[AUTO_ADVANCE_KEY]) {
+    AUTO_ADVANCE = !!changes[AUTO_ADVANCE_KEY].newValue;
+    const btn = document.getElementById('__lacourt_agenda_autoadvance__');
+    if (btn) paintAutoAdvanceToggle(btn);
+    updateAutoAdvanceWatch();
+  }
+});
 
 // Find the site's fixed blue header bar by probing what is actually rendered
 // at the top of the viewport (elementsFromPoint at a few x positions), then
