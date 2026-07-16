@@ -103,8 +103,12 @@ How it works:
    end. `Module2.bas` in this repo is the ready-to-import version — it adds a
    `ClearSystemClipboard` helper (three `user32` API calls) and calls it in the
    macro's `CleanUp` block. `Application.CutCopyMode = False` alone does **not**
-   clear the Windows clipboard, so the API call is required. Re-import
-   `Module2.bas` into your workbook (VBA editor → File → Import File).
+   clear the Windows clipboard, so the API call is required. It has no
+   `Attribute` lines, so you can **File > Import File** it or paste its contents
+   over your module. (Or edit your existing module: add the `#If VBA7 ... #End
+   If` `Declare` block plus `ClearSystemClipboard` at the top, and call
+   `ClearSystemClipboard` in `CleanUp`.) `Attribute ...` lines only work when a
+   `.bas` is imported, not pasted -- that's the usual "syntax error on paste".
 2. On any agenda page, click the **⏭ Auto-advance: Off** toggle (top-left) to
    turn it **On**. The setting persists.
 3. That's it — paste as usual and each paste jumps you to the next day.
