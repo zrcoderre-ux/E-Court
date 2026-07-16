@@ -290,6 +290,46 @@ async function copyAllAgenda(btn) {
   restore();
 }
 
+// On landing, copy the cleaned agenda to the clipboard automatically (silently)
+// so it's ready to paste into Excel without touching the Copy All button — that
+// button is only needed after something else is copied in between. Runs once per
+// page load, after the settled batch, so it reflects the expanded/filtered rows.
+// Needs the tab focused (Chrome clipboard rule); retries when it regains focus.
+let __autoCopyStarted = false;
+async function autoCopyAgenda() {
+  if (__autoCopyStarted) return;
+  const table = document.getElementById('day-table');
+  if (!table) return;
+  const rows = Array.from(table.querySelectorAll('tr.js-row')).filter(r => r.style.display !== 'none');
+  const outputRows = buildAgendaOutputRows(rows);
+  if (!outputRows.length) return;
+  __autoCopyStarted = true;
+
+  const { plainText, html } = buildAgendaPayload(outputRows);
+  const write = async () => {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/plain': new Blob([plainText], { type: 'text/plain' }),
+        'text/html': new Blob([html], { type: 'text/html' }),
+      })]);
+    } catch (_) {
+      await navigator.clipboard.writeText(plainText); // plain tabs still paste into Excel
+    }
+  };
+
+  let done = false;
+  const attempt = async () => {
+    if (done) return true;
+    if (!document.hasFocus()) return false;
+    try { await write(); done = true; try { console.log('[LACourt-Agenda] auto-copied', outputRows.length, 'hearings — ready to paste'); } catch (_) {} return true; }
+    catch (_) { return false; }
+  };
+  if (await attempt()) return;
+  // Not focused / not permitted yet — retry once the tab gains focus.
+  const onFocus = async () => { if (await attempt()) window.removeEventListener('focus', onFocus); };
+  window.addEventListener('focus', onFocus);
+}
+
 // Find the site's fixed blue header bar by probing what is actually rendered
 // at the top of the viewport (elementsFromPoint at a few x positions), then
 // taking the TALLEST fixed/sticky, near-full-width element pinned to the top.
@@ -763,7 +803,11 @@ function applyAgendaChanges(swaps) {
     Promise.resolve(fetchHearingNameSwaps())
       .then(swaps => applyAgendaChanges(swaps))
       .catch(() => applyAgendaChanges([]))
-      .finally(() => { running = false; });
+      .finally(() => {
+        running = false;
+        // Pre-copy the cleaned agenda to the clipboard once the page has settled.
+        try { autoCopyAgenda(); } catch (_) {}
+      });
   };
   const schedule = () => {
     if (__agendaBatching) return; // ignore the mutations our own batch causes
