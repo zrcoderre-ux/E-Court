@@ -3371,10 +3371,6 @@ let __nextDlFiled = null;
 let __nextDlFetchStarted = false;
 // OSC Re: Failure to Prosecute Default Judgment status: { text, color } or null.
 let __oscStatus = null;
-// Whether "No Opposition" / "No Reply" have been clicked to reveal their due date
-// inline (they always show it on hover via the title attribute).
-let __dlRevealOpp = false;
-let __dlRevealReply = false;
 
 let __dlNoMotionLogged = 0;
 // `eff` is an optional resolved hearing { motionType, hearingType, hearingDate,
@@ -3456,54 +3452,28 @@ function nextDlHtml() {
     const dd = dayMs(due);
     return dd != null && dd < dayMs(new Date());
   };
-  // An absent paper shows "No Opposition"/"No Reply", but keeps its due date on
-  // hover (title) and reveals it inline on click (toggled via __dlReveal*).
-  const absentSpan = (noun, dueLabel, due, key, revealed) => {
-    const dateStr = fmtShortDate(due);
-    const txt = revealed ? `No ${noun} — ${dueLabel} ${dateStr}` : `No ${noun}`;
-    return `<span class="__lac_dl_absent" data-dl-reveal="${key}" title="${dueLabel} ${dateStr}" ` +
-      `style="color:${RED};cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px">${txt}</span>`;
-  };
+  // An absent paper shows "No Opposition (Due <date>)" / "No Reply (Due <date>)".
+  const absentSpan = (noun, due) =>
+    `<span style="color:${RED}">No ${noun} (Due ${fmtShortDate(due)})</span>`;
   const oppAbsent = absent(c.oppDue, f.opp);
 
   const parts = [item('Motion Due', 'motion', c.motionDue)];
   parts.push(oppAbsent
-    ? absentSpan('Opposition', 'Opposition Due', c.oppDue, 'opp', __dlRevealOpp)
+    ? absentSpan('Opposition', c.oppDue)
     : item('Opposition Due', 'opp', c.oppDue));
   // With no opposition on file, the reply deadline is irrelevant — drop it.
   if (!oppAbsent) {
     parts.push(absent(c.replyDue, f.reply)
-      ? absentSpan('Reply', 'Reply Due', c.replyDue, 'reply', __dlRevealReply)
+      ? absentSpan('Reply', c.replyDue)
       : item('Reply Due', 'reply', c.replyDue));
   }
   return prefix + parts.join(NEXT_DL_GAP);
-}
-
-// Click "No Opposition"/"No Reply" to reveal its due date inline. Bound once on
-// the document in the CAPTURE phase so it runs before e-court's own header click
-// handlers (the "Next" indicator sits inside a clickable element that would
-// otherwise swallow the click or navigate). Toggles persist via module flags.
-let __dlClickBound = false;
-function bindDlRevealClick() {
-  if (__dlClickBound) return;
-  __dlClickBound = true;
-  document.addEventListener('click', (e) => {
-    const t = e.target && e.target.closest && e.target.closest('[data-dl-reveal]');
-    if (!t) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const which = t.getAttribute('data-dl-reveal');
-    if (which === 'opp') __dlRevealOpp = !__dlRevealOpp;
-    else if (which === 'reply') __dlRevealReply = !__dlRevealReply;
-    injectNextDeadlines();
-  }, true);
 }
 
 // Idempotent: injects the widget if missing, else refreshes its colours. Re-finds
 // the header each time so it survives e-court's React re-renders.
 function injectNextDeadlines() {
   if (!__nextDlComputed || __nextDlComputed.skip) return;
-  bindDlRevealClick();
   const span = findNextHeaderSpan();
   if (!span || !span.parentNode) return;
   const host = span.parentNode;
