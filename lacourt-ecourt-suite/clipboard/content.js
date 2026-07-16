@@ -3479,10 +3479,31 @@ function nextDlHtml() {
   return prefix + parts.join(NEXT_DL_GAP);
 }
 
+// Click "No Opposition"/"No Reply" to reveal its due date inline. Bound once on
+// the document in the CAPTURE phase so it runs before e-court's own header click
+// handlers (the "Next" indicator sits inside a clickable element that would
+// otherwise swallow the click or navigate). Toggles persist via module flags.
+let __dlClickBound = false;
+function bindDlRevealClick() {
+  if (__dlClickBound) return;
+  __dlClickBound = true;
+  document.addEventListener('click', (e) => {
+    const t = e.target && e.target.closest && e.target.closest('[data-dl-reveal]');
+    if (!t) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const which = t.getAttribute('data-dl-reveal');
+    if (which === 'opp') __dlRevealOpp = !__dlRevealOpp;
+    else if (which === 'reply') __dlRevealReply = !__dlRevealReply;
+    injectNextDeadlines();
+  }, true);
+}
+
 // Idempotent: injects the widget if missing, else refreshes its colours. Re-finds
 // the header each time so it survives e-court's React re-renders.
 function injectNextDeadlines() {
   if (!__nextDlComputed || __nextDlComputed.skip) return;
+  bindDlRevealClick();
   const span = findNextHeaderSpan();
   if (!span || !span.parentNode) return;
   const host = span.parentNode;
@@ -3497,17 +3518,6 @@ function injectNextDeadlines() {
   const ws = __nextDlComputed.osc ? 'white-space:normal' : 'white-space:nowrap';
   el.setAttribute('style', 'margin-left:22px;font-weight:600;' + ws + ';font-family:inherit;display:inline-block;');
   el.innerHTML = nextDlHtml();
-  // Click "No Opposition"/"No Reply" to reveal its due date inline (persists via
-  // module flags; the listener stays put across innerHTML refreshes of el).
-  el.addEventListener('click', (e) => {
-    const t = e.target && e.target.closest && e.target.closest('[data-dl-reveal]');
-    if (!t) return;
-    e.preventDefault();
-    const which = t.getAttribute('data-dl-reveal');
-    if (which === 'opp') __dlRevealOpp = !__dlRevealOpp;
-    else if (which === 'reply') __dlRevealReply = !__dlRevealReply;
-    injectNextDeadlines();
-  });
   host.insertBefore(el, span.nextSibling);
   dlLog('injected deadlines next to header:', (span.textContent || '').slice(0, 60));
 }
