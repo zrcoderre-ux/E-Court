@@ -2315,6 +2315,11 @@ function motionAbbrevMatch(name, motionType) {
 function docLinksToMotion(name, motionType) {
   return docWordOverlap(name, motionType) || motionAbbrevMatch(name, motionType);
 }
+// A real opposition — NOT a "Notice of Non-Opposition", which the moving party
+// files to note the ABSENCE of an opposition and must not count as one.
+function isOppositionDoc(name) {
+  return /\bopposition\b/i.test(name || '') && !/\bnon-?\s*opposition\b/i.test(name || '');
+}
 function docPartyNames(filedBy) {
   return parseFiledByParties(filedBy).parties.map(p => movantNormName(p.name)).filter(Boolean);
 }
@@ -3551,11 +3556,11 @@ async function fetchNextDeadlineFilings() {
 
         let o, r;
         if (singleMotion) {
-          o = earliest(after.filter(d => /\bopposition\b/i.test(d.name)));
+          o = earliest(after.filter(d => isOppositionDoc(d.name)));
           const afterOpp = o ? o.when : mw;
           r = earliest(docs.filter(d => d.when && (!afterOpp || d.when >= afterOpp) && /\breply\b/i.test(d.name)));
         } else {
-          o = earliest(after.filter(d => /\bopposition\b/i.test(d.name) && docLinksToMotion(d.name, c.motionType)));
+          o = earliest(after.filter(d => isOppositionDoc(d.name) && docLinksToMotion(d.name, c.motionType)));
           r = earliest(after.filter(d => /\breply\b/i.test(d.name) && (docLinksToMotion(d.name, c.motionType) || sharesMovant(d))));
         }
         filed.opp = o ? o.when : null;
