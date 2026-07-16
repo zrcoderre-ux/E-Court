@@ -1,4 +1,3 @@
-Attribute VB_Name = "Module2"
 Option Explicit
 
 ' --- Windows API: clear the SYSTEM clipboard after pasting. This is the cue the
@@ -25,7 +24,6 @@ Public Sub ClearSystemClipboard()
 End Sub
 
 Sub PasteKeepHyperlinks()
-Attribute PasteKeepHyperlinks.VB_ProcData.VB_Invoke_Func = "v\n14"
     ' Pastes the clipboard into the active cell using the DESTINATION cells'
     ' existing formatting, while preserving any hyperlinks from the source.
 
