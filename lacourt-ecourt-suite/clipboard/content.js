@@ -2303,6 +2303,18 @@ function docWordOverlap(name, motionType) {
   if (!a.size) return false;
   return docSigTokens(name).some(t => a.has(t));
 }
+// Common motion abbreviations, so a filing that names the motion by its shorthand
+// ("Reply ISO Ford's MSA") still links to the spelled-out motion type ("Motion
+// for Summary Adjudication") even though no full word overlaps.
+const MOTION_ABBREV_RE = /\bms[ja]\b|summary\s+(?:judgment|adjudication)|\bmil\b|motion\s+in\s+limine|\bmtc\b|motion\s+to\s+compel|\bmtq\b|motion\s+to\s+quash/i;
+function motionAbbrevMatch(name, motionType) {
+  return MOTION_ABBREV_RE.test(name || '') && MOTION_ABBREV_RE.test(motionType || '');
+}
+// A filing links to the upcoming motion if it shares a significant word or a
+// known abbreviation with the motion type.
+function docLinksToMotion(name, motionType) {
+  return docWordOverlap(name, motionType) || motionAbbrevMatch(name, motionType);
+}
 function docPartyNames(filedBy) {
   return parseFiledByParties(filedBy).parties.map(p => movantNormName(p.name)).filter(Boolean);
 }
@@ -3509,8 +3521,12 @@ async function fetchNextDeadlineFilings() {
         const mw = md ? md.when : null;
         const after = docs.filter(d => d.when && (!mw || d.when >= mw));
         const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
-        const o = earliest(after.filter(d => /\bopposition\b/i.test(d.name) && docWordOverlap(d.name, c.motionType)));
-        const r = earliest(after.filter(d => /\breply\b/i.test(d.name) && docWordOverlap(d.name, c.motionType)));
+        // The movant files the reply, so a "Reply …" by the same party as the
+        // motion also counts (covers replies named only by party/abbreviation).
+        const movantParties = md ? docPartyNames(md.filedBy) : [];
+        const sharesMovant = d => movantParties.length && docSharesParty(docPartyNames(d.filedBy), movantParties);
+        const o = earliest(after.filter(d => /\bopposition\b/i.test(d.name) && docLinksToMotion(d.name, c.motionType)));
+        const r = earliest(after.filter(d => /\breply\b/i.test(d.name) && (docLinksToMotion(d.name, c.motionType) || sharesMovant(d))));
         filed.opp = o ? o.when : null;
         filed.reply = r ? r.when : null;
       }
