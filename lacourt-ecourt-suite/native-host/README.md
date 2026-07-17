@@ -18,6 +18,7 @@ host does **not** reimplement your macro — your proven VBA stays in charge.
 | `ecourt_host.bat` | Launcher Chrome runs (calls `python ecourt_host.py`). |
 | `com.lacourt.ecourt_host.json` | Host manifest (whitelists your extension). |
 | `install.ps1` | Patches the manifest + registers the host in the registry. |
+| `MailMerge_AutoMacro.bas` | Source of record for the `.dotm`'s `ThisDocument` VBA. To update the template: open the `.dotm` in Word > Alt+F11 > `ThisDocument` > delete the existing code and paste this whole file > Save. |
 
 ## Requirements
 
