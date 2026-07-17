@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Default Judgment Attorney-Fee Calculator</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#f0f4f8; --surface:#ffffff; --fg:#0f1923; --fg2:#2d3f50; --muted:#526070;
+    --accent:#0a6e6e; --accent2:#0d8f8f; --accent-lt:#e6f4f4; --accent-border:#a0d4d4;
+    --border:#ccd6e0; --border2:#e2eaf0; --row-b:#f5f8fb;
+  }
+  body { font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+    background:var(--bg); color:var(--fg); font-size:14px; line-height:1.5; padding-bottom:40px; }
+  .app-header { background:var(--accent); color:#fff; padding:18px 28px 16px;
+    display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; }
+  .app-header h1 { font-size:1.25rem; font-weight:700; letter-spacing:-0.01em; }
+  .app-header .subtitle { font-size:0.78rem; opacity:0.8; font-weight:400; }
+  #caseBanner { display:none; background:var(--accent-lt); border-bottom:1px solid var(--accent-border);
+    padding:8px 28px; font-size:0.82rem; color:var(--fg2); font-weight:600; }
+  .wrap { max-width:640px; margin:24px auto; padding:0 20px; display:grid; gap:20px; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:10px;
+    box-shadow:0 1px 3px rgba(15,25,35,.06); overflow:hidden; }
+  .card-h { padding:12px 18px; border-bottom:1px solid var(--border2); font-weight:700;
+    font-size:0.95rem; color:var(--fg2); }
+  .card-b { padding:18px; display:grid; gap:16px; }
+  label.field { display:grid; gap:6px; font-size:0.82rem; color:var(--muted); font-weight:600; }
+  .amount-in { display:flex; align-items:center; border:1px solid var(--border); border-radius:8px;
+    background:#fff; overflow:hidden; }
+  .amount-in span { padding:0 12px; color:var(--muted); font-size:1.3rem; background:var(--row-b);
+    align-self:stretch; display:flex; align-items:center; border-right:1px solid var(--border); }
+  .amount-in input { border:0; outline:0; padding:12px 14px; font-size:1.35rem; font-weight:600;
+    width:100%; color:var(--fg); font-family:inherit; }
+  .segmented { display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .segmented label { padding:8px 16px; cursor:pointer; font-size:0.85rem; font-weight:600;
+    color:var(--fg2); background:#fff; }
+  .segmented label:first-of-type { border-right:1px solid var(--border); }
+  .segmented input { position:absolute; opacity:0; pointer-events:none; }
+  .segmented input:checked + span { }
+  .segmented label:has(input:checked) { background:var(--accent); color:#fff; }
+  .check { display:flex; align-items:center; gap:9px; font-size:0.9rem; color:var(--fg2); cursor:pointer; }
+  .check input { width:16px; height:16px; accent-color:var(--accent); }
+  .result { text-align:center; padding:22px 18px; }
+  .result .lbl { font-size:0.78rem; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); font-weight:700; }
+  .result .fee { font-size:2.5rem; font-weight:800; color:var(--accent); margin-top:4px; letter-spacing:-0.02em; }
+  #breakdown { display:grid; gap:2px; }
+  .bd-row { display:flex; justify-content:space-between; gap:16px; padding:6px 0;
+    border-bottom:1px dashed var(--border2); font-size:0.88rem; color:var(--fg2); }
+  .bd-row:last-child { border-bottom:0; }
+  .bd-row b { color:var(--fg); font-variant-numeric:tabular-nums; }
+  .bd-row.sub { font-weight:700; border-top:1px solid var(--border); border-bottom:0; margin-top:4px; padding-top:8px; }
+  .bd-row.muted, .muted { color:var(--muted); }
+  table.sched { width:100%; border-collapse:collapse; font-size:0.85rem; }
+  table.sched td { padding:7px 18px; border-top:1px solid var(--border2); color:var(--fg2); vertical-align:top; }
+  table.sched td:first-child { white-space:nowrap; font-weight:600; color:var(--fg); font-variant-numeric:tabular-nums; }
+  table.sched tr.active td { background:var(--accent-lt); }
+  .cite { font-size:0.76rem; color:var(--muted); padding:0 20px; line-height:1.55; }
+  .cite a { color:var(--accent); }
+</style>
+</head>
+<body>
+  <header class="app-header">
+    <h1>Default Judgment Attorney-Fee Calculator</h1>
+    <span class="subtitle">LASC Local Rule 3.214(a)</span>
+  </header>
+  <div id="caseBanner"></div>
+
+  <div class="wrap">
+    <div class="card">
+      <div class="card-b">
+        <label class="field">Judgment amount
+          <div class="amount-in"><span>$</span><input id="amount" type="text" inputmode="decimal"
+            placeholder="0.00" autocomplete="off"></div>
+        </label>
+
+        <label class="field">Fee schedule
+          <div class="segmented">
+            <label><input type="radio" name="sched" value="default" checked><span>Default</span></label>
+            <label><input type="radio" name="sched" value="contested"><span>Contested</span></label>
+          </div>
+        </label>
+
+        <label class="check"><input type="checkbox" id="mortgage">
+          Foreclosed mortgage / trust deed &nbsp;(+10%, Rule 3.214(b))</label>
+      </div>
+
+      <div class="result">
+        <div class="lbl">Attorney Fee</div>
+        <div class="fee" id="feeValue">—</div>
+      </div>
+
+      <div class="card-b" style="border-top:1px solid var(--border2)">
+        <div id="breakdown"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-h">Rule 3.214(a) schedule</div>
+      <table class="sched"><tbody id="scheduleBody"></tbody></table>
+      <p class="cite" style="padding:12px 20px 16px">
+        LASC Local Rule 3.214(a), “Contract Provision or Note” (new & effective July 1, 2011).
+        Applies when a promissory note, contract, or statute provides for reasonable attorney
+        fees. Computed on the amount of the judgment unless the court determines otherwise; a
+        greater fee for extraordinary services requires an itemized application (Rule 3.214(d)).
+        This is the schedule figure only — not legal advice.
+      </p>
+    </div>
+  </div>
+
+  <script src="default-judgment-fees.js"></script>
+</body>
+</html>
