@@ -109,14 +109,22 @@ How it works:
    If` `Declare` block plus `ClearSystemClipboard` at the top, and call
    `ClearSystemClipboard` in `CleanUp`.) `Attribute ...` lines only work when a
    `.bas` is imported, not pasted -- that's the usual "syntax error on paste".
-2. On any agenda page, click the **⏭ Auto-advance: Off** toggle (top-left) to
-   turn it **On**. The setting persists.
+2. Open the extension's **Options** page and tick **“Auto-advance to the next
+   agenda day after pasting.”** The setting persists (synced).
 3. That's it — paste as usual and each paste jumps you to the next day.
 
 Notes:
 
 - It advances **one day per paste**, paced by you — it never runs ahead on its
-  own. Turn the toggle off any time to stop.
+  own. Untick the option any time to stop.
+- On each advance it jumps to the next day that has a **green (will-be-copied)
+  hearing**, skipping weekends, holidays, and fully-excluded days.
+- When it advances, the service worker **refocuses the Chrome window** so the
+  next page can auto-copy to the clipboard (Chrome blocks clipboard writes from
+  an unfocused tab). Focus returns to eCourt; click back into Excel as usual.
+- If you **scrub back** to an earlier day to review, auto-advance is suspended
+  there (it only fires at/ahead of the furthest day you've reached), so pasting
+  won't yank you forward.
 - The cue is specifically the clipboard going *empty*; only your paste macro
   does that, so ordinary copying/pasting elsewhere won't trigger it.
 - No `pywin32` needed for this — the clipboard is read via stdlib `ctypes`.
