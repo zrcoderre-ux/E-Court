@@ -33,23 +33,17 @@
   'use strict';
 
   /* ------------------------------------------------------------------ */
-  /* OSC Re: Failure to Prosecute Default Judgment — alternate flow     */
+  /* OSC Re: Failure to Prosecute Default Judgment detection            */
   /* ------------------------------------------------------------------ */
   //
-  // When the case's next event is an OSC Re: Failure to Prosecute Default
-  // Judgment, the Fill Microsoft Form button:
-  //   1. Routes to a different (shorter) Microsoft Form that only collects
-  //      Case Number and Hearing Date.
-  //   2. Strips the rotation down to just those two fields so auto-fill
-  //      doesn't try to fill non-existent party fields.
-  //   3. Also opens a pre-composed mailto: link addressed to Judge
-  //      Mackenzie with the case info in the subject and a standard body.
+  // Exports for these OSCs go through the same Order Template popup as any
+  // motion (the old trimmed-Microsoft-Form + mailto flow is retired), but the
+  // detection still drives the inline default/dismissal status, the Documents
+  // button's prove-up packet logic, and the effective-hearing lookahead.
   //
-  // Ctrl+A rotation and manual selection paste are unaffected.
   // Use DesignPageV2 with topview=Preview so the form loads in the owner's
   // authenticated context (the Auto-Export companion extension needs this
   // session to call the owner-API; the public ResponsePage URL returns 401).
-  const OSC_FORM_URL = 'https://forms.office.com/Pages/DesignPageV2.aspx?prevorigin=rbf&origin=NeoPortalPage&rpring=UsGovGccProduction&subpage=design&id=x8OU3Ei7_0CTBeRz_W9qFt74YgjxwElOsa89AoRCn9FUQldVVTI0OUlZSUc0UTNMTDdISDNWU0JUNS4u&analysis=false&tab=0&topview=Preview';
   const REGULAR_FORM_URL = 'https://forms.office.com/Pages/DesignPageV2.aspx?prevorigin=rbf&origin=NeoPortalPage&rpring=UsGovGccProduction&subpage=design&id=x8OU3Ei7_0CTBeRz_W9qFt74YgjxwElOsa89AoRCn9FUQzNGQ0NPWVpUMDBVTzcwN1I2Q0JFOVFZVi4u&analysis=false&tab=0&topview=Preview';
 
   // Strict trigger: must include "Default Judgment" — the OSC for other
@@ -60,52 +54,6 @@
     if (!hearingType) return false;
     return OSC_DEFAULT_JUDGMENT_RE.test(hearingType);
   }
-
-  /**
-   * Builds the mailto: URL fired automatically when Fill Microsoft Form is
-   * used on an OSC Re: Failure to Prosecute Default Judgment case.
-   *
-   *   To:      AMackenzie@lacourt.ca.gov
-   *   Subject: "MM/DD/YYYY – CASENUM – CASE NAME – OSC RE: FAILURE TO
-   *             PROSECUTE DEFAULT JUDGMENT"
-   *             (em-dash separators; case name in its original casing)
-   *   Body:    Three paragraphs separated by blank lines:
-   *              "Judge Mackenzie,"
-   *              "The default prove-up packet is complete. I recommend
-   *               entering a default judgment. I have sent the judgment
-   *               to your queue for your signature."
-   *              "Best,\nZach"
-   *
-   * Returns null if essential pieces are missing (case number or date).
-   * The case name is non-essential — we'll send the email without it
-   * rather than block the workflow.
-   */
-  function buildOscMailto(caseNumber, hearingDate, caseName) {
-    if (!caseNumber || !hearingDate) return null;
-
-    const EM = '\u2013'; // en-dash — what the user calls "em dash" colloquially
-    const subjectParts = [hearingDate, caseNumber];
-    if (caseName) subjectParts.push(caseName);
-    subjectParts.push('OSC RE: FAILURE TO PROSECUTE DEFAULT JUDGMENT');
-    const subject = subjectParts.join(' ' + EM + ' ');
-
-    // CRLF line breaks so Outlook on Windows handles the mailto body
-    // exactly as written. mailto: spec is technically %0A only, but %0D%0A
-    // is widely accepted and renders correctly in Outlook.
-    const body =
-      'Judge Mackenzie,\r\n' +
-      '\r\n' +
-      'The default prove-up packet is complete. I recommend entering a default judgment. I have sent the judgment to your queue for your signature.\r\n' +
-      '\r\n' +
-      'Best,\r\n' +
-      'Zach';
-
-    return 'mailto:AMackenzie@lacourt.ca.gov' +
-      '?subject=' + encodeURIComponent(subject) +
-      '&body=' + encodeURIComponent(body);
-  }
-
-
 
   /* ------------------------------------------------------------------ */
   /* Dismissed-party motion exclusion list                              */
@@ -221,7 +169,15 @@ function buildRotationData(root, hearingOverride) {
   // When Export resolved a different hearing (because the Next event was
   // excluded), use its date/type; otherwise parse the Next event live.
   const hearingDate = hearingOverride ? hearingOverride.hearingDate : parseHearingDate(root);
-  const motionType = hearingOverride ? hearingOverride.motionType : parseMotionType(root);
+  let motionType = hearingOverride ? hearingOverride.motionType : parseMotionType(root);
+  // An OSC Re: Failure to Prosecute Default Judgment has no "Hearing on" prefix,
+  // so parseMotionType comes back empty. Export treats default judgments like any
+  // motion now — use the hearing type itself as the motion type so the Order
+  // Template popup (and mail merge) get a meaningful value.
+  if (!motionType) {
+    const ht = hearingOverride ? hearingOverride.hearingType : parseHearingType(root);
+    if (isOscDefaultJudgment(ht)) motionType = ht;
+  }
 
   // If the motion type indicates a proceeding that a dismissed party would
   // not be involved in (e.g. summary judgment, demurrer), drop dismissed
@@ -440,23 +396,16 @@ function storeOrderTemplateData(labeled) {
 /**
  * Builds the context object both Fill-Microsoft-Form entry points need.
  *
- * Detects whether the case is an OSC Re: Failure to Prosecute Default
- * Judgment and, if so:
- *   - Selects the OSC form URL instead of the regular one.
- *   - Trims the rotation data down to only Case Number + Hearing Date
- *     (the OSC form has only those two fields).
- *   - Builds a mailto: URL pre-addressed to Judge Mackenzie.
- *
- * For non-OSC (regular) cases the Order Template Input Microsoft Form has been
- * retired in favor of an in-extension popup: `openUrl` points at the packaged
- * order-template page and `isOrderTemplate` is true. OSC / Default Judgment
- * Checklist cases are unchanged — they still open the real Microsoft Form.
+ * Every export — motions AND OSC Re: Failure to Prosecute Default Judgment —
+ * now takes the same path: the in-extension Order Template popup with the full
+ * rotation data (the old OSC flow that trimmed to two fields, opened the OSC
+ * Microsoft Form, and fired a mailto has been retired; buildRotationData fills
+ * motionType with the OSC hearing type so the popup/merge get a value).
  *
  * Returns null if there's no rotation data at all.
  * Returns { data, formUrl, openUrl, isOrderTemplate, mailtoUrl, isOsc,
- *           hearingType } otherwise.
- *
- * mailtoUrl is null for non-OSC cases.
+ *           hearingType } otherwise. mailtoUrl is always null now; isOsc is
+ *           kept for logging/telemetry only.
  */
 function getFillFormContext(root, hearingOverride) {
   root = root || document;
@@ -465,51 +414,15 @@ function getFillFormContext(root, hearingOverride) {
 
   const hearingType = hearingOverride ? hearingOverride.hearingType : parseHearingType(root);
   const isOsc = isOscDefaultJudgment(hearingType);
-
-  if (!isOsc) {
-    return {
-      data,
-      formUrl: REGULAR_FORM_URL,
-      openUrl: chrome.runtime.getURL('order-template/order-template.html'),
-      isOrderTemplate: true,
-      mailtoUrl: null,
-      isOsc: false,
-      hearingType,
-    };
-  }
-
-  // OSC flow — trim everything except case number and hearing date so
-  // paste-rotator's auto-fill matcher only fills those two OSC form
-  // fields. The labeled object's other keys are deleted; the rotation
-  // sequence is rebuilt from the two surviving values.
-  const trimmedLabeled = {};
-  if (data.labeled.caseNumber)  trimmedLabeled.caseNumber  = data.labeled.caseNumber;
-  if (data.labeled.hearingDate) trimmedLabeled.hearingDate = data.labeled.hearingDate;
-  const trimmedSequence = [];
-  if (trimmedLabeled.caseNumber)  trimmedSequence.push(trimmedLabeled.caseNumber);
-  if (trimmedLabeled.hearingDate) trimmedSequence.push(trimmedLabeled.hearingDate);
-
-  // Build mailto using values from the labeled object (already cleaned)
-  // plus a fresh case-name parse. parseCaseName accepts an optional case
-  // number hint so it can pin the location precisely.
-  const caseName = parseCaseName(trimmedLabeled.caseNumber, root);
-  const mailtoUrl = buildOscMailto(
-    trimmedLabeled.caseNumber,
-    trimmedLabeled.hearingDate,
-    caseName
-  );
-
-  console.log('[LACourt] OSC default-judgment flow:', {
-    hearingType, caseName, mailtoUrl: !!mailtoUrl,
-  });
+  if (isOsc) console.log('[LACourt] OSC default judgment — exporting via the Order Template like a motion');
 
   return {
-    data: { sequence: trimmedSequence, labeled: trimmedLabeled },
-    formUrl: OSC_FORM_URL,
-    openUrl: OSC_FORM_URL,
-    isOrderTemplate: false,
-    mailtoUrl,
-    isOsc: true,
+    data,
+    formUrl: REGULAR_FORM_URL,
+    openUrl: chrome.runtime.getURL('order-template/order-template.html'),
+    isOrderTemplate: true,
+    mailtoUrl: null,
+    isOsc,
     hearingType,
   };
 }
@@ -2700,9 +2613,8 @@ function showToast(message) {
 /* Always visible on parties pages, resets after each use.             */
 /* ------------------------------------------------------------------ */
 
-// Note: form URLs are defined at the top of the IIFE (REGULAR_FORM_URL
-// and OSC_FORM_URL); getFillFormContext() picks the right one based on
-// the case's next event.
+// Note: every export (motions and OSC default judgments alike) opens the
+// in-extension Order Template popup via getFillFormContext().
 
 function renderFillFormButton() {
   if (document.getElementById('__lacourt_fill_btn__')) return;
