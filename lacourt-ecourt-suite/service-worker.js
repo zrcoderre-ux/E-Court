@@ -58,7 +58,16 @@ try {
     port.onMessage.addListener((msg) => {
       if (!msg) return;
       if (msg.event === 'clipboardEmpty' && agendaTabId != null) {
-        chrome.tabs.sendMessage(agendaTabId, { type: 'AGENDA_ADVANCE' }, () => { void chrome.runtime.lastError; });
+        // Refocus the agenda window/tab first: the next page's auto-copy can only
+        // write the clipboard while its tab is focused, and the user is in Excel.
+        const tabId = agendaTabId;
+        chrome.tabs.get(tabId, (tab) => {
+          if (!chrome.runtime.lastError && tab && tab.windowId != null) {
+            try { chrome.windows.update(tab.windowId, { focused: true }, () => { void chrome.runtime.lastError; }); } catch (_) {}
+          }
+          try { chrome.tabs.update(tabId, { active: true }, () => { void chrome.runtime.lastError; }); } catch (_) {}
+          chrome.tabs.sendMessage(tabId, { type: 'AGENDA_ADVANCE' }, () => { void chrome.runtime.lastError; });
+        });
       }
       // 'keepalive' events just reset this worker's idle timer — nothing to do.
     });

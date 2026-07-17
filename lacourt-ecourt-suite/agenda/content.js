@@ -339,69 +339,110 @@ async function autoCopyAgenda() {
 /* -------------------------------------------------
    AUTO-ADVANCE ON PASTE
 
-   Opt-in (off by default). When on, once the agenda is auto-copied we ask the
-   service worker to watch the OS clipboard via the native host; the user's Excel
-   paste macro clears the clipboard, the host reports it empty, and we navigate to
-   the next agenda day (already prefetched, so it's instant). Toggle lives on the
-   page and in chrome.storage.sync so it persists.
+   Opt-in (toggle lives in the extension Options). When on, once the agenda is
+   auto-copied we ask the service worker to watch the OS clipboard via the native
+   host; the user's Excel paste macro clears the clipboard, the host reports it
+   empty, the service worker refocuses this window (so the next page's auto-copy
+   can write the clipboard — Chrome blocks that from an unfocused tab), and we
+   advance to the next day that has a green (will-be-copied) hearing, skipping
+   weekends, holidays, and fully-excluded days.
+
+   Manual review is preserved via a per-tab-session high-water mark: we only
+   auto-advance when the current day is at/ahead of the furthest day reached.
+   Scrubbing BACK to an earlier day suspends auto-advance so you can inspect it.
 ------------------------------------------------- */
 
 const AUTO_ADVANCE_KEY = 'autoAdvanceOnPaste';
 let AUTO_ADVANCE = false;
+const HWM_KEY = 'lacAgendaHWM';
 
-// Tell the service worker to start/stop the clipboard watch for this tab.
+// True when the current day is at/ahead of the furthest day reached this tab
+// session (records a new high-water mark when it advances). False means the user
+// scrubbed back to review — auto-advance stays suspended there.
+function atForwardFrontier() {
+  const today = dayKeyNum(agendaDay());
+  if (!today) return false;
+  let hwm = 0;
+  try { hwm = parseInt(sessionStorage.getItem(HWM_KEY) || '0', 10) || 0; } catch (_) {}
+  if (today >= hwm) {
+    if (today > hwm) { try { sessionStorage.setItem(HWM_KEY, String(today)); } catch (_) {} }
+    return true;
+  }
+  return false;
+}
+
+// Watch only when enabled AND at the forward frontier (not scrubbed back).
 function updateAutoAdvanceWatch() {
+  const enabled = !!AUTO_ADVANCE && atForwardFrontier();
   try {
-    chrome.runtime.sendMessage({ type: 'AGENDA_AUTOADVANCE_WATCH', enabled: !!AUTO_ADVANCE },
+    chrome.runtime.sendMessage({ type: 'AGENDA_AUTOADVANCE_WATCH', enabled },
       () => { void chrome.runtime.lastError; });
   } catch (_) {}
 }
 
-// Navigate to the next day when the service worker relays the paste signal.
+// Build the agenda URL for a given M/D/YYYY day (swap the ?day= param).
+function agendaUrlForDay(mdy) {
+  try { const u = new URL(location.href); u.searchParams.set('day', mdy); return u.toString(); }
+  catch (_) { return null; }
+}
+// A fetched agenda day has a green hearing if any row's hearing isn't excluded.
+function docHasGreenHearing(doc) {
+  const table = doc.getElementById('day-table');
+  if (!table) return false;
+  return Array.from(table.querySelectorAll('tr.js-row')).some(r => rowHasGreenHearing(r));
+}
+// From the current day, find the next day forward that has a green hearing,
+// skipping weekends/holidays/empty days. Returns its URL, or null within window.
+async function findNextGreenAgendaUrl(maxDays) {
+  maxDays = maxDays || 60;
+  const m = agendaDay().match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (!m) return nextAgendaUrl();
+  const d = new Date(+m[3], +m[1] - 1, +m[2]);
+  for (let i = 0; i < maxDays; i++) {
+    d.setDate(d.getDate() + 1);
+    const mdy = pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()) + '/' + d.getFullYear();
+    const url = agendaUrlForDay(mdy);
+    if (!url) continue;
+    try {
+      const res = await fetchWithTimeout(url, 10000);
+      if (!res || !res.ok) continue;
+      const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+      if (docHasGreenHearing(doc)) {
+        // Pre-warm this day's name expansion so the landed page auto-copies fast,
+        // while the window is still focused (before you click back into Excel).
+        try { await warmTruncatedCaseHearings(doc); } catch (_) {}
+        return url;
+      }
+    } catch (_) { /* keep looking */ }
+  }
+  return null;
+}
+
+let __advancing = false;
+async function advanceToNextGreenDay() {
+  if (__advancing) return;
+  __advancing = true;
+  try {
+    const url = await findNextGreenAgendaUrl();
+    if (url) { try { console.log('[LACourt-Agenda] paste detected — advancing to', url); } catch (_) {} location.href = url; }
+    else { try { console.log('[LACourt-Agenda] paste detected — no upcoming green day found'); } catch (_) {} }
+  } finally { __advancing = false; }
+}
+
+// The service worker relays the paste signal (after refocusing this window).
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === 'AGENDA_ADVANCE' && AUTO_ADVANCE) {
-    const url = nextAgendaUrl();
-    if (url) { try { console.log('[LACourt-Agenda] paste detected — advancing to next day'); } catch (_) {} location.href = url; }
+  if (msg && msg.type === 'AGENDA_ADVANCE' && AUTO_ADVANCE && atForwardFrontier()) {
+    advanceToNextGreenDay();
   }
 });
 
-function renderAutoAdvanceToggle() {
-  if (!document.body) { document.addEventListener('DOMContentLoaded', renderAutoAdvanceToggle, { once: true }); return; }
-  let btn = document.getElementById('__lacourt_agenda_autoadvance__');
-  if (!btn) {
-    btn = document.createElement('button');
-    btn.id = '__lacourt_agenda_autoadvance__';
-    btn.type = 'button';
-    btn.title = 'When on: after you paste the auto-copied agenda into Excel (which clears the clipboard), jump to the next day automatically.';
-    btn.style.cssText = 'position:fixed;top:8px;left:12px;z-index:2147483647;'
-      + 'padding:4px 10px;border:none;border-radius:5px;cursor:pointer;'
-      + 'font:600 12px system-ui,sans-serif;line-height:18px;box-shadow:0 1px 4px rgba(0,0,0,.3);';
-    btn.addEventListener('click', () => {
-      AUTO_ADVANCE = !AUTO_ADVANCE;
-      try { chrome.storage.sync.set({ [AUTO_ADVANCE_KEY]: AUTO_ADVANCE }, () => { void chrome.runtime.lastError; }); } catch (_) {}
-      paintAutoAdvanceToggle(btn);
-      updateAutoAdvanceWatch();
-    });
-    document.body.appendChild(btn);
-  }
-  paintAutoAdvanceToggle(btn);
-}
-function paintAutoAdvanceToggle(btn) {
-  btn.textContent = AUTO_ADVANCE ? '⏭ Auto-advance: On' : '⏭ Auto-advance: Off';
-  btn.style.background = AUTO_ADVANCE ? '#0a6e6e' : '#666';
-  btn.style.color = '#fff';
-}
-
 chrome.storage.sync.get([AUTO_ADVANCE_KEY], result => {
   AUTO_ADVANCE = !!(result && result[AUTO_ADVANCE_KEY]);
-  try { renderAutoAdvanceToggle(); } catch (_) {}
   updateAutoAdvanceWatch();
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'sync' && changes[AUTO_ADVANCE_KEY]) {
     AUTO_ADVANCE = !!changes[AUTO_ADVANCE_KEY].newValue;
-    const btn = document.getElementById('__lacourt_agenda_autoadvance__');
-    if (btn) paintAutoAdvanceToggle(btn);
     updateAutoAdvanceWatch();
   }
 });
@@ -760,6 +801,27 @@ function nextAgendaUrl() {
   } catch (_) { return null; }
 }
 
+// Warm the (persistent) case-hearings cache for a fetched agenda day's cases
+// that have a truncated hearing — so that day's name expansion is instant when
+// it loads. Returns how many cases were warmed.
+async function warmTruncatedCaseHearings(doc) {
+  const table = doc.getElementById('day-table');
+  if (!table) return 0;
+  const ids = new Set();
+  for (const row of table.querySelectorAll('tr.js-row')) {
+    let hasTrunc = false;
+    for (const b of row.querySelectorAll('a[href*="/ecourt/ecms/agenda/event"] b')) {
+      if (isTruncatedName((b.textContent || '').replace(/\s+/g, ' ').trim())) { hasTrunc = true; break; }
+    }
+    if (!hasTrunc) continue;
+    const caseA = row.querySelector('td a[href*="/ecourt/ecms/case"]');
+    const idm = (caseA ? (caseA.getAttribute('href') || caseA.href || '') : '').match(/[?&]id=(\d+)/);
+    if (idm) ids.add(idm[1]);
+  }
+  await runWithConcurrency(Array.from(ids), 4, id => getCaseHearings(id));
+  return ids.size;
+}
+
 let __prefetchStarted = false;
 async function prefetchNextAgenda() {
   if (__prefetchStarted) return;
@@ -774,22 +836,8 @@ async function prefetchNextAgenda() {
     const res = await fetchWithTimeout(url, 10000);
     if (!res || !res.ok) return;
     const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
-    const table = doc.getElementById('day-table');
-    if (!table) return;
-    // Warm only cases with a truncated hearing (the ones expansion will fetch).
-    const ids = new Set();
-    for (const row of table.querySelectorAll('tr.js-row')) {
-      let hasTrunc = false;
-      for (const b of row.querySelectorAll('a[href*="/ecourt/ecms/agenda/event"] b')) {
-        if (isTruncatedName((b.textContent || '').replace(/\s+/g, ' ').trim())) { hasTrunc = true; break; }
-      }
-      if (!hasTrunc) continue;
-      const caseA = row.querySelector('td a[href*="/ecourt/ecms/case"]');
-      const idm = (caseA ? (caseA.getAttribute('href') || caseA.href || '') : '').match(/[?&]id=(\d+)/);
-      if (idm) ids.add(idm[1]);
-    }
-    await runWithConcurrency(Array.from(ids), 4, id => getCaseHearings(id));
-    try { console.log('[LACourt-Agenda] prefetched next agenda', url, '—', ids.size, 'cases warmed'); } catch (_) {}
+    const warmed = await warmTruncatedCaseHearings(doc);
+    try { console.log('[LACourt-Agenda] prefetched next agenda', url, '—', warmed, 'cases warmed'); } catch (_) {}
   } catch (_) { /* best-effort */ }
 }
 

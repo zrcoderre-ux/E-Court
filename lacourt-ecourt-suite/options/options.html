@@ -265,6 +265,19 @@
     </div>
 
     <div class="card">
+      <h2>Agenda Auto-Advance</h2>
+      <p class="hint">When enabled, the agenda page advances to the next day automatically after you
+        paste the auto-copied agenda into Excel (your paste macro clears the clipboard, which is the cue).
+        Days with no green (will-be-copied) hearings — weekends, holidays, fully-excluded days — are skipped
+        forward automatically, unless you manually navigated backwards to review. Saves instantly.</p>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer;">
+        <input type="checkbox" id="autoAdvanceToggle" style="width:16px;height:16px;cursor:pointer;">
+        Auto-advance to the next agenda day after pasting
+        <span class="save-status" id="autoAdvanceStatus">✓ Saved</span>
+      </label>
+    </div>
+
+    <div class="card">
       <h2>Documents Button — Debug Tracking</h2>
       <p class="hint">One row per document opened for a case, tagged by <strong>source</strong>
         (<code>button</code> / <code>manual</code> / <code>button+manual</code>). Click any column header to sort.

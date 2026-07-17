@@ -217,6 +217,25 @@ makeListController({
 });
 
 /* ------------------------------------------------------------------ */
+/* Agenda auto-advance toggle                                          */
+/* ------------------------------------------------------------------ */
+(function () {
+  const cb = document.getElementById('autoAdvanceToggle');
+  const status = document.getElementById('autoAdvanceStatus');
+  if (!cb) return;
+  if (status) status.style.opacity = '0';
+  chrome.storage.sync.get(['autoAdvanceOnPaste'], r => {
+    cb.checked = !!(r && r.autoAdvanceOnPaste);
+  });
+  cb.addEventListener('change', () => {
+    chrome.storage.sync.set({ autoAdvanceOnPaste: cb.checked }, () => {
+      void chrome.runtime.lastError;
+      if (status) { status.style.opacity = '1'; setTimeout(() => { status.style.opacity = '0'; }, 1500); }
+    });
+  });
+})();
+
+/* ------------------------------------------------------------------ */
 /* Card 3: Documents-button debug tracking (sortable table + CSV)      */
 /* ------------------------------------------------------------------ */
 
