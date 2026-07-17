@@ -2987,6 +2987,81 @@ function renderDeadlineButton() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Floating "Fees" button (default-judgment pages only, left of Deadlines) */
+/* Opens the LASC Rule 3.214 attorney-fee calculator.                   */
+/* ------------------------------------------------------------------ */
+
+// Shown only when the effective hearing is an OSC Re: Failure to Prosecute
+// Default Judgment (resolved by the inline deadline widget).
+function isDefaultJudgmentPage() {
+  return !!(__nextDlComputed && __nextDlComputed.osc);
+}
+
+function renderDefaultJudgmentFeesButton() {
+  if (document.getElementById('__lacourt_djfees_btn__')) return;
+  if (!isDefaultJudgmentPage()) return;
+  const caseReady = document.querySelector('a[href*="/ecourt/ecms/case"]');
+  if (!caseReady) return;
+
+  const btn = document.createElement('button');
+  btn.id = '__lacourt_djfees_btn__';
+  btn.type = 'button';
+  const setLabel = (text) => {
+    btn.innerHTML = '<span class="lac-btn-icon" style="vertical-align:middle">🧮</span>' +
+      '<span class="lac-btn-text" style="vertical-align:middle">' + text + '</span>';
+  };
+  setLabel('Fees');
+  Object.assign(btn.style, {
+    position: 'fixed',
+    top: '0px',
+    right: '430px',
+    zIndex: '999998',
+    padding: '6px 16px',
+    background: '#0a6e6e',
+    color: 'white',
+    border: 'none',
+    borderRadius: '0 0 6px 6px',
+    fontFamily: 'Georgia, serif',
+    fontSize: '13px',
+    fontWeight: 'bold',
+    cursor: 'pointer',
+    boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+    transition: 'background 0.15s, opacity 0.2s',
+  });
+  btn.title = 'Default judgment attorney fees (LASC Local Rule 3.214)';
+  btn.addEventListener('mouseover', () => { btn.style.background = '#0d8f8f'; });
+  btn.addEventListener('mouseout',  () => { btn.style.background = '#0a6e6e'; });
+
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    setLabel('Opening…');
+    btn.style.opacity = '0.7';
+    const reset = (text) => {
+      setLabel(text);
+      setTimeout(() => { btn.disabled = false; setLabel('Fees'); btn.style.opacity = '1'; }, 1500);
+    };
+    try {
+      const payload = { caseNumber: parseCaseNumber() || '', createdAt: Date.now() };
+      await new Promise(res => {
+        try { chrome.storage.local.set({ djFeesData: payload }, () => { void chrome.runtime.lastError; res(); }); }
+        catch (_) { res(); }
+      });
+      const url = chrome.runtime.getURL('default-judgment-fees/default-judgment-fees.html');
+      chrome.runtime.sendMessage({ type: 'openFormOnOppositeDisplay', url }, () => {
+        void chrome.runtime.lastError;
+        reset('Opened');
+      });
+    } catch (err) {
+      console.error('[LACourt] DJ fees button error:', err);
+      reset('Error');
+    }
+  });
+
+  document.body.appendChild(btn);
+  try { scheduleButtonCollapse(); } catch (_) {}
+}
+
+/* ------------------------------------------------------------------ */
 /* Collapse the floating buttons to icons when zoomed in enough that     */
 /* their expanded labels would sit over e-court text.                    */
 /* ------------------------------------------------------------------ */
@@ -3002,12 +3077,13 @@ function ensureButtonStyles() {
   st.id = '__lacourt_btn_styles__';
   st.textContent =
     '#__lacourt_fill_btn__ .lac-btn-text,#__lacourt_docs_btn__ .lac-btn-text,' +
-    '#__lacourt_deadline_btn__ .lac-btn-text{margin-left:6px}' +
+    '#__lacourt_deadline_btn__ .lac-btn-text,#__lacourt_djfees_btn__ .lac-btn-text{margin-left:6px}' +
     '#__lacourt_fill_btn__[data-collapsed="1"] .lac-btn-text,' +
     '#__lacourt_docs_btn__[data-collapsed="1"] .lac-btn-text,' +
-    '#__lacourt_deadline_btn__[data-collapsed="1"] .lac-btn-text{display:none}' +
+    '#__lacourt_deadline_btn__[data-collapsed="1"] .lac-btn-text,' +
+    '#__lacourt_djfees_btn__[data-collapsed="1"] .lac-btn-text{display:none}' +
     '#__lacourt_fill_btn__[data-collapsed="1"],#__lacourt_docs_btn__[data-collapsed="1"],' +
-    '#__lacourt_deadline_btn__[data-collapsed="1"]' +
+    '#__lacourt_deadline_btn__[data-collapsed="1"],#__lacourt_djfees_btn__[data-collapsed="1"]' +
     '{padding-left:9px!important;padding-right:9px!important}';
   (document.head || document.documentElement).appendChild(st);
 }
@@ -3052,7 +3128,7 @@ function lacRegionHasText(left, right, top, bottom, btns) {
 // agenda/content.js findTopBar() so the case-page buttons match the agenda
 // Copy All button's full-bar sizing.
 let __caseTopBarEl = null;
-const __LAC_BTN_IDS = ['__lacourt_fill_btn__', '__lacourt_docs_btn__', '__lacourt_deadline_btn__'];
+const __LAC_BTN_IDS = ['__lacourt_fill_btn__', '__lacourt_docs_btn__', '__lacourt_deadline_btn__', '__lacourt_djfees_btn__'];
 function findCaseTopBar() {
   try {
     if (__caseTopBarEl && document.contains(__caseTopBarEl)) {
@@ -3157,9 +3233,10 @@ function dockButtonsRow(btns) {
 // Measures the expanded footprint (toggling attributes synchronously so nothing
 // paints mid-measurement), then collapses all floating buttons to icons if that
 // footprint would overlap e-court text. Keeps the buttons docked in a row
-// (Export rightmost, then Documents, then Deadlines) in whichever state.
+// (Export rightmost, then Documents, Deadlines, and — on default-judgment pages
+// — DJ Fees) in whichever state.
 function updateButtonCollapse() {
-  const ids = ['__lacourt_fill_btn__', '__lacourt_docs_btn__', '__lacourt_deadline_btn__'];
+  const ids = ['__lacourt_fill_btn__', '__lacourt_docs_btn__', '__lacourt_deadline_btn__', '__lacourt_djfees_btn__'];
   const btns = ids.map(id => document.getElementById(id)).filter(Boolean);
   if (!btns.length) return;
 
@@ -3661,6 +3738,7 @@ function applyNextDlComputed(c) {
     dlLog('OSC re failure to prosecute default judgment detected', c.eff ? '(looked ahead)' : '');
     injectNextDeadlines();  // "Checking defaults…"
     fetchOscStatus();       // then fill in the default/dismissal status
+    try { renderDefaultJudgmentFeesButton(); } catch (_) {} // reveal the DJ Fees button
     return;
   }
   dlLog('computed:', c.skip ? 'skip (' + (c.reason || 'not hearing-based') + ')'
@@ -3727,6 +3805,7 @@ function setupFillFormButton() {
     renderFillFormButton();
     renderDocumentsButton();
     renderDeadlineButton();
+    renderDefaultJudgmentFeesButton(); // default-judgment pages only
     renderNextHeaderDeadlines();
     observeNextHeader();
     // Size immediately from the remembered bar dimensions (no flash to default),
