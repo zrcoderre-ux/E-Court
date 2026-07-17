@@ -55,6 +55,8 @@
   table.sched td { padding:7px 18px; border-top:1px solid var(--border2); color:var(--fg2); vertical-align:top; }
   table.sched td:first-child { white-space:nowrap; font-weight:600; color:var(--fg); font-variant-numeric:tabular-nums; }
   table.sched tr.active td { background:var(--accent-lt); }
+  .reminder { font-size:0.78rem; font-weight:600; color:var(--gold, #b87000); }
+  .reminder b { font-weight:800; text-transform:uppercase; letter-spacing:0.02em; }
   .cite { font-size:0.76rem; color:var(--muted); padding:0 20px; line-height:1.55; }
   .cite a { color:var(--accent); }
 </style>
@@ -72,6 +74,7 @@
         <label class="field">Judgment amount
           <div class="amount-in"><span>$</span><input id="amount" type="text" inputmode="decimal"
             placeholder="0.00" autocomplete="off"></div>
+          <span class="reminder">↳ Damages + prejudgment interest — <b>not</b> costs.</span>
         </label>
 
         <label class="field">Fee schedule
