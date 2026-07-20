@@ -1621,7 +1621,7 @@ function parseHearingType(root) {
  * rendered alongside the case number in an element matched by
  * [class*="case"]. Observed textContent format:
  *
- *   "25STCV12345 ACME HOLDINGS, LP, et al. vs JORDAN RIVERA ReactDOM.render(...)"
+ *   "25STCV12345 ACME HOLDINGS, LP, et al. vs TAYLOR ROE ReactDOM.render(...)"
  *
  * The case number prefix and the trailing ReactDOM.render(…) noise both
  * leak into textContent because of how the page is built. We strip both.
@@ -1877,7 +1877,7 @@ function buildMovantRoster(root) {
     }
 
     // Name: first cell that isn't a role/type/action/index cell; strip any
-    // trailing parenthetical (e.g. "Sam Carter (Non-Party)" -> "Sam Carter").
+    // trailing parenthetical (e.g. "Alex Roe (Non-Party)" -> "Alex Roe").
     let name = '';
     for (const c of cells) {
       if (/^(update\s*party|edit|delete|view|action)$/i.test(c)) continue;
