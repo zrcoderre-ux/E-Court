@@ -93,7 +93,7 @@ Sub RunMailMerge()
 
     '--- 1. Paths ---------------------------------------------
     sDownloadsPath = Environ("USERPROFILE") & "\Downloads\"
-    sSummaryPath = "C:\Users\ZCoderre\OneDrive - Los Angeles Superior Court\Summaries\"
+    sSummaryPath = "C:\Users\<USERNAME>\OneDrive - Los Angeles Superior Court\Summaries\"
 
     '--- 2. Find most recent Order*.xlsx ----------------------
     sExcelFile = GetMostRecentExcel(sDownloadsPath, dtExcelTime, dtPrevExcelTime)
@@ -213,7 +213,7 @@ Sub RunMailMerge()
     End If
 
     Dim oSummaryDoc As Document
-    Set oSummaryDoc = Documents.Add(Template:="C:\Users\ZCoderre\OneDrive - Los Angeles Superior Court\Documents\Custom Office Templates\Summary Template.dotx", NewTemplate:=False)
+    Set oSummaryDoc = Documents.Add(Template:="C:\Users\<USERNAME>\OneDrive - Los Angeles Superior Court\Documents\Custom Office Templates\Summary Template.dotx", NewTemplate:=False)
     If Not oSummaryDoc Is Nothing Then
         oSummaryDoc.SaveAs2 FileName:=sSummarySavePath, FileFormat:=wdFormatXMLDocument
         oSummaryDoc.Close SaveChanges:=wdDoNotSaveChanges
@@ -294,15 +294,15 @@ Private Sub OpenOutlookDraft(sSubject As String)
     Dim sRecipient  As String
     Dim oShell      As Object
 
-    ' Recipient - set to "" to leave the To field blank
-    sRecipient = "amackenzie@lacourt.ca.gov"
+    ' Recipient - set to the reviewing judge's email, or "" to leave To blank
+    sRecipient = "reviewing.judge@example.com"
 
     ' Build body. vbCrLf = paragraph break in mailto.
     ' Outlook auto-appends the signature block, so it's omitted here.
-    sBody = "Judge Mackenzie," & vbCrLf & vbCrLf & _
+    sBody = "Dear Judge," & vbCrLf & vbCrLf & _
             "Please see the workup attached." & vbCrLf & vbCrLf & _
             "Best," & vbCrLf & _
-            "Zach"
+            "[Your name]"
 
     ' Build mailto URI with URL-encoded subject and body.
     sMailto = "mailto:" & sRecipient & _
@@ -929,7 +929,7 @@ Private Sub RunPDFLinker(sFolderPath As String)
     Dim sCmd    As String
     Dim oShell  As Object
 
-    sScript = "C:\Users\ZCoderre\Apps\PDF Linker\pdf_linker.py"
+    sScript = "C:\Users\<USERNAME>\Apps\PDF Linker\pdf_linker.py"
 
     If Dir(sScript) = "" Then Exit Sub
 

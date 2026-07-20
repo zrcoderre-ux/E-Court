@@ -45,7 +45,7 @@ import time
 # ---------------------------------------------------------------------------
 # EDIT THIS: full path to your mail-merge template (.dotm).
 # ---------------------------------------------------------------------------
-TEMPLATE_PATH = r"C:\Users\ZCoderre\Mail Merge Order Template (Automatic).dotm"
+TEMPLATE_PATH = r"C:\Users\<USERNAME>\Mail Merge Order Template (Automatic).dotm"
 
 # stdout is written from both the main thread (responses) and the clipboard
 # watch thread (events), so guard it.
