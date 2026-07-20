@@ -49,21 +49,6 @@ host does **not** reimplement your macro — your proven VBA stays in charge.
 
 4. **Fully quit and reopen Chrome** so it picks up the new host.
 
-5. **Set the recommendation-email recipient (local, not committed).** The
-   `MailMerge_AutoMacro` addresses its Outlook draft from a local file so the
-   reviewing judge's email/name never land in the repo. Copy
-   `ecourt-recipient.example.txt` to `%USERPROFILE%\ecourt-recipient.txt` and
-   fill it in:
-
-   ```
-   email=judge@example.com
-   salutation=Judge Smith
-   signoff=First
-   ```
-
-   Missing file or blank `email` → the draft's To field is left empty; a blank
-   `salutation` falls back to a generic “Judge,”. The real file is git-ignored.
-
 ## Test
 
 - In the popup, leave **“Run the Word mail merge automatically after download”**

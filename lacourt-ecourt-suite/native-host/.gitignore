@@ -1,4 +1,2 @@
 __pycache__/
 *.pyc
-# Local, machine-specific recipient config (judge email/name) — never commit.
-ecourt-recipient.txt
