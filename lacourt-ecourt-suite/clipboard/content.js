@@ -2371,14 +2371,43 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   add(initialPleading);
   add(latestDoc(docs.filter(d => isCrossComplaintDoc(d.name))));
 
+  // Identify the moving paper up front so the Hearings-tab blob match below can
+  // use its filing date as a floor. (The full motion-doc handling still runs in
+  // its own block later.)
+  const motionDoc = bestFilingMatch(motionType, docs);
+  const motionFloor = motionDoc && motionDoc.when ? motionDoc.when : null;
+
   // Documents the Hearings tab lists for this motion (substring containment).
   // The Hearings tab is authoritative, so this runs regardless of whether we
   // can independently identify the moving paper below — otherwise a motion
   // whose filing name doesn't match (bestFilingMatch returns null) would leave
   // only the operative pleading.
+  //
+  // The blob lists document NAMES, not identities, and filing names are not
+  // unique — a generic "Separate Statement" appears on every MSJ. So a match by
+  // name alone would pull in an OLD filing that merely shares a name with one of
+  // this motion's papers (e.g. a "Separate Statement" filed months earlier for a
+  // different motion). Two guards prevent that:
+  //   1. When we know the motion's filing date, never add a filing dated before
+  //      it — nothing filed before the motion briefs the motion (the operative
+  //      pleadings are added separately, above).
+  //   2. When we don't (bestFilingMatch returned null, so no date), and several
+  //      filings share the same name, keep only the latest.
   if (hearingDocBlob) {
     const blob = movantNormName(hearingDocBlob);
-    for (const d of docs) { const nn = movantNormName(d.name); if (nn && nn.length >= 6 && blob.indexOf(nn) !== -1) add(d); }
+    const hits = [];
+    for (const d of docs) {
+      const nn = movantNormName(d.name);
+      if (nn && nn.length >= 6 && blob.indexOf(nn) !== -1) hits.push({ d, nn });
+    }
+    for (const { d, nn } of hits) {
+      if (motionFloor) {
+        if (d.when && d.when < motionFloor) continue;
+      } else if (hits.some(o => o.nn === nn && o.d.when && d.when && o.d.when > d.when)) {
+        continue;
+      }
+      add(d);
+    }
   }
 
   // For an OSC Re: Failure to Prosecute Default Judgment, the prove-up packet is
@@ -2396,7 +2425,6 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
     }
   }
 
-  const motionDoc = bestFilingMatch(motionType, docs);
   if (motionDoc) {
     add(motionDoc);
     const mov = docPartyNames(motionDoc.filedBy), mw = motionDoc.when;
