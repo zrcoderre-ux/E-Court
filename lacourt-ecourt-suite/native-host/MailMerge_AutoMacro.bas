@@ -288,21 +288,58 @@ End Sub
 ' as if typed - which is what saves the draft.
 '=============================================================
 
+'=============================================================
+' Read one key=value from the LOCAL recipient config, kept OUT
+' of the repo at:  %USERPROFILE%\ecourt-recipient.txt
+'     email=name@example.com
+'     salutation=Judge Smith
+'     signoff=First
+' Returns "" when the file or key is absent. This keeps the
+' reviewing judge's email/name off of version control while the
+' macro still uses them at runtime. See ecourt-recipient.example.txt.
+'=============================================================
+Private Function RecipientCfg(sKey As String) As String
+    Dim sPath As String, iFile As Integer, sLine As String, sPrefix As String
+    RecipientCfg = ""
+    sPath = Environ$("USERPROFILE") & "\ecourt-recipient.txt"
+    If Dir(sPath) = "" Then Exit Function
+    sPrefix = LCase$(sKey) & "="
+    iFile = FreeFile
+    On Error GoTo done
+    Open sPath For Input As #iFile
+    Do While Not EOF(iFile)
+        Line Input #iFile, sLine
+        sLine = Trim$(sLine)
+        If Left$(LCase$(sLine), Len(sPrefix)) = sPrefix Then
+            RecipientCfg = Trim$(Mid$(sLine, Len(sPrefix) + 1))
+        End If
+    Loop
+done:
+    Close #iFile
+End Function
+
 Private Sub OpenOutlookDraft(sSubject As String)
     Dim sBody       As String
     Dim sMailto     As String
     Dim sRecipient  As String
+    Dim sSalutation As String
+    Dim sSignoff    As String
     Dim oShell      As Object
 
-    ' Recipient - set to the reviewing judge's email, or "" to leave To blank
-    sRecipient = "reviewing.judge@example.com"
+    ' Recipient, greeting, and sign-off come from the local config file
+    ' (%USERPROFILE%\ecourt-recipient.txt) so they stay out of the repo. A
+    ' blank/absent email leaves the Outlook "To" field empty.
+    sRecipient = RecipientCfg("email")
+    sSalutation = RecipientCfg("salutation")
+    If sSalutation = "" Then sSalutation = "Judge"
+    sSignoff = RecipientCfg("signoff")
 
     ' Build body. vbCrLf = paragraph break in mailto.
     ' Outlook auto-appends the signature block, so it's omitted here.
-    sBody = "Dear Judge," & vbCrLf & vbCrLf & _
+    sBody = sSalutation & "," & vbCrLf & vbCrLf & _
             "Please see the workup attached." & vbCrLf & vbCrLf & _
             "Best," & vbCrLf & _
-            "[Your name]"
+            sSignoff
 
     ' Build mailto URI with URL-encoded subject and body.
     sMailto = "mailto:" & sRecipient & _
