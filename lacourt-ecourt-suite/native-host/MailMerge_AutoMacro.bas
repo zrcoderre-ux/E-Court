@@ -93,7 +93,7 @@ Sub RunMailMerge()
 
     '--- 1. Paths ---------------------------------------------
     sDownloadsPath = Environ("USERPROFILE") & "\Downloads\"
-    sSummaryPath = "C:\Users\<USERNAME>\OneDrive - Los Angeles Superior Court\Summaries\"
+    sSummaryPath = "C:\Users\ZCoderre\OneDrive - Los Angeles Superior Court\Summaries\"
 
     '--- 2. Find most recent Order*.xlsx ----------------------
     sExcelFile = GetMostRecentExcel(sDownloadsPath, dtExcelTime, dtPrevExcelTime)
@@ -213,7 +213,7 @@ Sub RunMailMerge()
     End If
 
     Dim oSummaryDoc As Document
-    Set oSummaryDoc = Documents.Add(Template:="C:\Users\<USERNAME>\OneDrive - Los Angeles Superior Court\Documents\Custom Office Templates\Summary Template.dotx", NewTemplate:=False)
+    Set oSummaryDoc = Documents.Add(Template:="C:\Users\ZCoderre\OneDrive - Los Angeles Superior Court\Documents\Custom Office Templates\Summary Template.dotx", NewTemplate:=False)
     If Not oSummaryDoc Is Nothing Then
         oSummaryDoc.SaveAs2 FileName:=sSummarySavePath, FileFormat:=wdFormatXMLDocument
         oSummaryDoc.Close SaveChanges:=wdDoNotSaveChanges
@@ -929,7 +929,7 @@ Private Sub RunPDFLinker(sFolderPath As String)
     Dim sCmd    As String
     Dim oShell  As Object
 
-    sScript = "C:\Users\<USERNAME>\Apps\PDF Linker\pdf_linker.py"
+    sScript = "C:\Users\ZCoderre\Apps\PDF Linker\pdf_linker.py"
 
     If Dir(sScript) = "" Then Exit Sub
 
