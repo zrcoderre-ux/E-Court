@@ -13,4 +13,4 @@ rem
 rem Console flash on each Export? Swap python.exe -> pythonw.exe below (same
 rem folder). Revert to python.exe if the merge ever stops triggering, since
 rem pythonw can, in rare setups, mishandle the stdio pipes.
-"C:\Users\ZCoderre\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\python.exe" "%~dp0ecourt_host.py"
+"C:\Users\<USERNAME>\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0\python.exe" "%~dp0ecourt_host.py"
