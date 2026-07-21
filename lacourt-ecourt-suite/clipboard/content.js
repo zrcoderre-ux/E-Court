@@ -1805,9 +1805,9 @@ function canonicalMovantRole(raw) {
 }
 
 // "Appellant" is an appellate designation a party carries IN ADDITION to its
-// trial-court role (e.g. a Defendant who appeals is listed as both). The movant
-// on an order should read by the substantive role, never "Appellant", so we
-// treat it as a last-resort role — used only when the party holds no other.
+// trial-court role (e.g. a Defendant who appeals is listed as both). This is a
+// trial court, so the movant is never labeled "Appellant" — the designation is
+// dropped wherever it would otherwise become a movant's role.
 function isAppellateRole(role) { return /^appellants?$/i.test((role || '').trim()); }
 
 // Reads the parties table into a movant roster: every party row's name and an
@@ -1881,14 +1881,16 @@ function buildMovantRoster(root) {
   }
 
   // Resolve one effective role per party. A party can appear under several roles
-  // (e.g. "Defendant" and "Appellant" when a defendant appeals); prefer a
-  // non-appellate role so the movant never reads "Appellant" when the party has
-  // another. Among non-appellate roles the last one wins, matching prior
-  // behavior. Only falls back to "Appellant" when it's the party's sole role.
+  // (e.g. "Defendant" and "Appellant" when a defendant appeals). This is a trial
+  // court, so the movant is NEVER labeled "Appellant" — that appellate
+  // designation is dropped and the party's substantive role is used. Among the
+  // remaining roles the last one wins, matching prior behavior. A party whose
+  // only captured role is "Appellant" is left out of the roster so formatMovant
+  // resolves it by the role it filed under instead.
   for (const [nn, roles] of rolesByName) {
     const nonAppellate = roles.filter(r => !isAppellateRole(r));
-    const chosen = nonAppellate.length ? nonAppellate[nonAppellate.length - 1]
-                                       : roles[roles.length - 1];
+    if (!nonAppellate.length) continue;
+    const chosen = nonAppellate[nonAppellate.length - 1];
     byName.set(nn, chosen);
     if (!byRole.has(chosen)) byRole.set(chosen, new Set());
     byRole.get(chosen).add(nn);
@@ -1902,9 +1904,9 @@ function formatMovant(parties, truncated, roster) {
   for (const p of parties) {
     if (!p.name || /^clerk$/i.test(p.name)) continue;
     let role = roster.byName.get(movantNormName(p.name)) || p.role || '';
-    // Never label the movant "Appellant" — if that's all the roster has for this
-    // party, fall back to the role it filed under when that one is substantive.
-    if (isAppellateRole(role) && p.role && !isAppellateRole(p.role)) role = p.role;
+    // Trial court: the movant is never "Appellant". If that's the only label
+    // available, drop it and group the party by name alone rather than emit it.
+    if (isAppellateRole(role)) role = '';
     if (!groups.has(role)) groups.set(role, []);
     groups.get(role).push(p.name);
   }
