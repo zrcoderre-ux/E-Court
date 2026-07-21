@@ -3404,7 +3404,10 @@ window.addEventListener('pageshow', scheduleButtonCollapse);
 // electronic service. Each paper is checked against the case Documents: if the
 // paper was filed on or before its due date it shows GREEN (filed on time); if
 // its due date has passed with no timely filing it shows RED (overdue); if it
-// isn't due yet it shows in the neutral colour.
+// isn't due yet it shows in the neutral colour. The Motion additionally shows
+// YELLOW when it missed the electronic-service deadline but would still be timely
+// under personal service (no notice extension) — a cue to check the proof of
+// service.
 
 // California motion-deadline engine, inlined so the content script is
 // self-contained (no dependency on a separate file loading first).
@@ -3538,6 +3541,11 @@ function computeDueDates(eff) {
   return Object.assign({
     skip: false, motionType, cat,
     motionDue: cat === 'msj' ? D.msjMotion(hearing, 'electronic') : D.stdMotion(hearing, 'electronic'),
+    // Same deadline assuming PERSONAL service, which carries no notice extension
+    // (electronic adds 2 court days). A motion filed after the electronic
+    // deadline but on/before this one would still be timely if personally served
+    // — the widget flags that in yellow so the proof of service can be checked.
+    motionDuePersonal: cat === 'msj' ? D.msjMotion(hearing, 'personal') : D.stdMotion(hearing, 'personal'),
     oppDue:    cat === 'msj' ? D.msjOpp(hearing) : D.stdOpp(hearing),
     replyDue:  cat === 'msj' ? D.msjReply(hearing) : D.stdReply(hearing),
   }, tag);
@@ -3551,6 +3559,27 @@ function nextDlColor(due, filed) {
   if (__nextDlFiled && __nextDlFiled.filedKnown) {
     const fm = dayMs(filed);
     if (fm != null && fm <= dd) return '#1a6b3a';
+  }
+  return dd < dayMs(new Date()) ? '#c0392b' : '#0a6e6e';
+}
+
+const DL_YELLOW = '#b8860b'; // late for e-service but timely if personally served
+
+// Motion-specific colour. Like nextDlColor, but when a filed motion missed the
+// electronic-service deadline yet lands on/before the (more lenient) personal-
+// service deadline, it shows YELLOW instead of red — a cue to check the proof of
+// service, since personal service (no notice extension) would make it timely.
+function motionDlColor(elecDue, personalDue, filed) {
+  const dd = dayMs(elecDue);
+  if (dd == null) return '#0a6e6e';
+  if (__nextDlFiled && __nextDlFiled.filedKnown) {
+    const fm = dayMs(filed);
+    if (fm != null) {
+      if (fm <= dd) return '#1a6b3a';                       // timely for electronic service
+      const pd = dayMs(personalDue);
+      if (pd != null && fm <= pd) return DL_YELLOW;          // timely only if personally served
+      return '#c0392b';                                      // late even for personal service
+    }
   }
   return dd < dayMs(new Date()) ? '#c0392b' : '#0a6e6e';
 }
@@ -3596,7 +3625,16 @@ function nextDlHtml() {
     `<span style="color:${RED}">No ${noun} (Due ${fmtShortDate(due)})</span>`;
   const oppAbsent = absent(c.oppDue, f.opp);
 
-  const parts = [item('Motion Due', 'motion', c.motionDue)];
+  // The Motion uses its own colour so a late-but-maybe-personally-served filing
+  // reads yellow (a cue to check the proof of service) rather than red.
+  const motionColor = motionDlColor(c.motionDue, c.motionDuePersonal, f.motion);
+  const motionTitle = motionColor === DL_YELLOW
+    ? ' title="Late for electronic service, but timely if personally served — check the proof of service."'
+    : '';
+  const motionSpan =
+    `<span style="color:${motionColor}"${motionTitle}>Motion Due ${fmtShortDate(c.motionDue)}</span>`;
+
+  const parts = [motionSpan];
   parts.push(oppAbsent
     ? absentSpan('Opposition', c.oppDue)
     : item('Opposition Due', 'opp', c.oppDue));
@@ -3818,14 +3856,16 @@ function dlSerComp(c) {
   const e = c.eff;
   return {
     motionType: c.motionType || '', cat: c.cat || '',
-    motionDue: dlEpoch(c.motionDue), oppDue: dlEpoch(c.oppDue), replyDue: dlEpoch(c.replyDue),
+    motionDue: dlEpoch(c.motionDue), motionDuePersonal: dlEpoch(c.motionDuePersonal),
+    oppDue: dlEpoch(c.oppDue), replyDue: dlEpoch(c.replyDue),
     eff: e ? { motionType: e.motionType || '', hearingDate: e.hearingDate || '', hearingType: e.hearingType || '', lookedAhead: !!e.lookedAhead } : null,
   };
 }
 function dlDeserComp(s) {
   return {
     skip: false, motionType: s.motionType, cat: s.cat,
-    motionDue: dlUnepoch(s.motionDue), oppDue: dlUnepoch(s.oppDue), replyDue: dlUnepoch(s.replyDue),
+    motionDue: dlUnepoch(s.motionDue), motionDuePersonal: dlUnepoch(s.motionDuePersonal),
+    oppDue: dlUnepoch(s.oppDue), replyDue: dlUnepoch(s.replyDue),
     eff: s.eff || null,
   };
 }
