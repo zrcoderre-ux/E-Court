@@ -111,13 +111,13 @@ function stripHearingLabelNumbers() {
 /* -------------------------------------------------
    AUTO-SORT + GREEN-ROWS-TO-TOP
 
-   The agenda's "Hearing / Documents" column sort is eCourt's own client-side
-   tablesort, fired by the column header's inline onclick
-   (eCourt.DayView.Rows.sortByHeader(2, th)). We can't call eCourt.* from the
-   isolated content-script world, but clicking the <th> runs its handler in the
-   page world. We apply that sort once on load (unless the column is already the
-   active sort), then float the green (will-be-copied) hearings to the top while
-   preserving the site's sort order within each group.
+   The agenda's "Hearing / Documents" column has eCourt's own client-side
+   tablesort behind the header onclick (eCourt.DayView.Rows.sortByHeader(2, th)),
+   but that re-renders the rows asynchronously — landing as a separate reflow
+   after our rename/float batch. So we reorder the rows ourselves, synchronously,
+   replicating that column's ascending sort, then float the green (will-be-copied)
+   hearings to the top while preserving the sort order within each group. Doing
+   the sort in-batch means renames, sort, and float all land in one jump.
 ------------------------------------------------- */
 
 // A row is "green" (Copy All will take it) when any hearing link in the
@@ -133,9 +133,17 @@ function rowHasGreenHearing(row) {
   return false;
 }
 
-// Apply the native "Hearing / Documents" sort once per page load. Only clicks
-// when that column isn't already the active sort, so we never toggle a sort the
-// user (or the page default) already set to ascending/descending.
+// Apply the "Hearing / Documents" ascending sort once per page load.
+//
+// We deliberately do NOT click eCourt's column header to trigger its own
+// sortByHeader: that re-renders the rows ASYNCHRONOUSLY, so the reorder lands as
+// a separate reflow AFTER our rename/green-float batch has already painted — the
+// full names would expand at one moment and the sort would visibly happen a beat
+// later. Reordering the rows ourselves keeps the sort in the SAME synchronous
+// DOM write as the renames and the green-float, so the page settles in one jump.
+//
+// Only runs when the column isn't already the active sort, so we never override a
+// sort the user (or the page default) has already applied.
 let __autoSortApplied = false;
 function applyHearingDocsSort() {
   if (__autoSortApplied) return;
@@ -145,7 +153,28 @@ function applyHearingDocsSort() {
   if (!th) return;
   __autoSortApplied = true;
   if (th.hasAttribute('aria-sort')) return; // already sorted by this column
-  try { th.click(); } catch (_) {}
+
+  const rows = Array.from(table.querySelectorAll('tr.js-row'));
+  if (rows.length < 2) return;
+  // Sort key: the Hearing/Documents cell text (cells[5]), ascending,
+  // case-insensitively — matching eCourt's column-2 tablesort. Stable on ties.
+  const keyOf = r => {
+    const cells = r.querySelectorAll('td');
+    return cells.length > 5 ? (cells[5].textContent || '').replace(/\s+/g, ' ').trim().toLowerCase() : '';
+  };
+  const sorted = rows
+    .map((r, i) => ({ r, k: keyOf(r), i }))
+    .sort((a, b) => a.k.localeCompare(b.k) || a.i - b.i)
+    .map(o => o.r);
+  let same = true;
+  for (let i = 0; i < rows.length; i++) { if (rows[i] !== sorted[i]) { same = false; break; } }
+  if (same) return; // already in ascending order — don't churn the DOM
+  const parent = rows[0].parentNode;
+  const anchor = rows[0].previousSibling; // node just before the row block (may be null)
+  const frag = document.createDocumentFragment();
+  sorted.forEach(r => frag.appendChild(r));
+  if (anchor && anchor.parentNode === parent) anchor.after(frag);
+  else parent.insertBefore(frag, parent.firstChild);
 }
 
 // Move green rows to the top, keeping the site's current order within the green
