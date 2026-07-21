@@ -2947,21 +2947,31 @@ function renderDocumentsButton() {
       if (!opened.length) { reset('None found'); return; }
       let capped = false;
       if (opened.length > MAX_DOCS_TO_OPEN) { capped = true; opened = opened.slice(0, MAX_DOCS_TO_OPEN); }
-      const urls = opened.map(d => d.openUrl);
 
-      // Debug tracking: record the documents the button opened.
-      try {
-        chrome.runtime.sendMessage({
-          type: 'recordOpenedDocs',
-          source: 'button',
-          caseNumber: parseCaseNumber(),
-          docs: opened.map(d => ({ docId: d.docId, name: d.name })),
-        }, () => void chrome.runtime.lastError);
-      } catch (_) {}
-
-      chrome.runtime.sendMessage({ type: 'openDocsBackground', urls }, () => {
+      // The background decides whether to open or close: if every relevant
+      // document is already open it closes them all (no download); otherwise it
+      // opens just the ones not yet open. It returns which docIds it opened so we
+      // only record those for debug tracking (nothing is recorded on a close).
+      const docsPayload = opened.map(d => ({ docId: d.docId, name: d.name, openUrl: d.openUrl }));
+      chrome.runtime.sendMessage({ type: 'toggleDocsBackground', docs: docsPayload }, resp => {
         void chrome.runtime.lastError;
-        reset('Opened ' + urls.length + (capped ? '+' : ''));
+        const r = resp || {};
+        if (r.action === 'closed') { reset('Closed ' + (r.count || 0)); return; }
+
+        // Debug tracking: record only the documents actually opened.
+        const openedIds = new Set((r.openedDocIds || []).map(String));
+        const recorded = opened.filter(d => openedIds.has(String(d.docId)));
+        if (recorded.length) {
+          try {
+            chrome.runtime.sendMessage({
+              type: 'recordOpenedDocs',
+              source: 'button',
+              caseNumber: parseCaseNumber(),
+              docs: recorded.map(d => ({ docId: d.docId, name: d.name })),
+            }, () => void chrome.runtime.lastError);
+          } catch (_) {}
+        }
+        reset('Opened ' + (r.count || 0) + (capped ? '+' : ''));
       });
     } catch (err) {
       console.error('[LACourt] documents button error:', err);

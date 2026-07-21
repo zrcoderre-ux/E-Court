@@ -119,15 +119,60 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
-  // Open a batch of e-court document URLs as background tabs next to the
-  // requesting case tab (used by the Documents button).
-  if (msg.type === 'openDocsBackground' && Array.isArray(msg.urls)) {
+  // Toggle a set of e-court documents as background tabs next to the requesting
+  // case tab (used by the Documents button). If every requested document is
+  // already open in the window, close those tabs (without downloading);
+  // otherwise open only the ones that aren't open yet. Returns which docIds were
+  // opened so the caller can update its debug tracking.
+  if (msg.type === 'toggleDocsBackground' && Array.isArray(msg.docs)) {
     const tab = _sender && _sender.tab;
-    let count = 0;
-    if (tab && tab.url && tab.url.includes('civil.lacourt.org')) {
+    if (!(tab && tab.url && tab.url.includes('civil.lacourt.org'))) {
+      sendResponse({ ok: false, action: 'none', count: 0, openedDocIds: [] });
+      return false;
+    }
+    // Requested docs we can actually open, keyed by docId.
+    const wanted = new Map();
+    for (const d of msg.docs) {
+      if (!d || !d.docId || typeof d.openUrl !== 'string') continue;
+      if (!d.openUrl.includes('/ecourt/ecms/doc')) continue;
+      wanted.set(String(d.docId), d.openUrl);
+    }
+    if (!wanted.size) {
+      sendResponse({ ok: true, action: 'none', count: 0, openedDocIds: [] });
+      return false;
+    }
+
+    chrome.tabs.query({ windowId: tab.windowId }, tabs => {
+      if (chrome.runtime.lastError) {
+        sendResponse({ ok: false, action: 'none', count: 0, openedDocIds: [] });
+        return;
+      }
+      // Map each requested docId to the open tab(s) currently showing it.
+      const openTabsById = new Map();
+      for (const t of (tabs || [])) {
+        const id = docIdFromTabUrl(t.url || t.pendingUrl || '');
+        if (!id || !wanted.has(id)) continue;
+        let ids = openTabsById.get(id);
+        if (!ids) { ids = []; openTabsById.set(id, ids); }
+        if (t.id != null) ids.push(t.id);
+      }
+
+      // Every requested document is already open -> close them all (no download).
+      if (openTabsById.size === wanted.size) {
+        const tabIds = [];
+        for (const ids of openTabsById.values()) tabIds.push(...ids);
+        if (tabIds.length) {
+          try { chrome.tabs.remove(tabIds, () => { void chrome.runtime.lastError; }); } catch (_) {}
+        }
+        sendResponse({ ok: true, action: 'closed', count: openTabsById.size, openedDocIds: [] });
+        return;
+      }
+
+      // Otherwise open the ones that aren't open yet, next to the case tab.
       let i = 1;
-      for (const url of msg.urls) {
-        if (typeof url !== 'string' || !url.includes('/ecourt/ecms/doc')) continue;
+      const openedDocIds = [];
+      for (const [id, url] of wanted) {
+        if (openTabsById.has(id)) continue;
         chrome.tabs.create({
           url,
           active: false,
@@ -135,11 +180,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           index: tab.index + (i++),
           openerTabId: tab.id,
         });
-        count++;
+        openedDocIds.push(id);
       }
-    }
-    sendResponse({ ok: true, count });
-    return false;
+      sendResponse({ ok: true, action: 'opened', count: openedDocIds.length, openedDocIds });
+    });
+    return true; // async: keep the channel open for chrome.tabs.query
   }
 
   // Download every court PDF currently open in a tab of the requesting window,
@@ -260,6 +305,15 @@ function resolveOpenPdfUrl(rawUrl) {
 function isCourtPdfUrl(u) {
   return typeof u === 'string' && /^https?:/i.test(u) &&
     (/\/ecourt\/ecms\/doc\b/i.test(u) || /[?&]docId=\d+/i.test(u) || /\.pdf(?:[?#]|$)/i.test(u));
+}
+
+// Extract the eCourt docId a tab is showing, unwrapping the companion PDF
+// viewer if needed, or null if the tab isn't a court document. Used by the
+// Documents-button toggle to tell which relevant documents are already open.
+function docIdFromTabUrl(rawUrl) {
+  const u = resolveOpenPdfUrl(rawUrl) || rawUrl;
+  const m = /[?&]docId=(\d+)/i.exec(typeof u === 'string' ? u : '');
+  return m ? m[1] : null;
 }
 
 // The companion viewer sets the tab title to "<document name> — PDF Viewer".
