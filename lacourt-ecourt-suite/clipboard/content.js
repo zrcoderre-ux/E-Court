@@ -2490,14 +2490,6 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
     }
   }
 
-  // Proof-of-service documents are noise for most motions. Keep them only when
-  // the motion is one where service itself tends to be at issue.
-  const mtl = (motionType || '').toLowerCase();
-  const keepProofOfService = POS_KEEP_TERMS.some(t => mtl.indexOf(t) !== -1);
-  if (!keepProofOfService) {
-    for (const [id, d] of rel) if (/proof of (personal )?service/i.test(d.name || '')) rel.delete(id);
-  }
-
   // A fee-waiver request (and its "additional fees" variant) is an
   // administrative filing that is never relevant to a motion — always drop it.
   for (const [id, d] of rel) if (ALWAYS_IRRELEVANT_RE.test(d.name || '')) rel.delete(id);
@@ -2513,13 +2505,6 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
 //   - anything mentioning "Jury Fees" (e.g. "Notice of Posting of Jury Fees"):
 //     an administrative fee posting, not substantive to any hearing.
 const ALWAYS_IRRELEVANT_RE = /request to waive (additional )?court fees|\[?\s*proposed\s*\]?\s+order\b|jury fees/i;
-
-// Motion-type terms for which "Proof of Service" documents stay relevant.
-// For any other motion, proof-of-service filings are excluded.
-const POS_KEEP_TERMS = [
-  'paga', 'settlement', 'transfer', 'order to show cause re',
-  'default', 'quash', 'set aside', 'vacate',
-];
 
 function absoluteDocUrl(u) { try { return new URL(u, location.origin).href; } catch (_) { return u; } }
 
