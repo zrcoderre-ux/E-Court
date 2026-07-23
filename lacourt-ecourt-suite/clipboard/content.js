@@ -2383,6 +2383,11 @@ function isDemurrerOrMotionToStrikeDoc(name) {
 function isDemurrerOrStrikeMotion(motionType) {
   return /\bdemurrer\b|\bmotion to strike\b/i.test(motionType || '');
 }
+// A challenge whose Result column shows it's already been ruled on / disposed of,
+// so it's not the moving paper for an upcoming hearing.
+function isResolvedChallengeResult(result) {
+  return /sustain|overrul|grant|deni|off[\s-]?calendar|moot|withdrawn|taken off/i.test(result || '');
+}
 // A petition is another kind of initial pleading (probate, family, writ, etc.),
 // used as the operative pleading only when the case has no complaint. Match the
 // pleading ITSELF — a name that starts with "Petition" (optionally prefixed by
@@ -3580,7 +3585,7 @@ function computeDueDates(eff) {
   const hearing = parseHearingDateTime(eff ? eff.hearingDate : parseHearingDate(document));
   if (!hearing) { dlLog('no hearing date parsed for motion:', motionType); return null; }
   return Object.assign({
-    skip: false, motionType, cat,
+    skip: false, motionType, cat, hearingWhen: hearing,
     motionDue: cat === 'msj' ? D.msjMotion(hearing, 'electronic') : D.stdMotion(hearing, 'electronic'),
     // Same deadline assuming PERSONAL service, which carries no notice extension
     // (electronic adds 2 court days). A motion filed after the electronic
@@ -3729,11 +3734,33 @@ async function fetchNextDeadlineFilings() {
       const docs = await getAllDocumentsCached();
       if (docs && docs.length) {
         filed.filedKnown = true;
-        const md = bestFilingMatch(c.motionType, docs);
+        const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
+        const hearings = await getFutureHearingsCached();
+
+        // Identify the moving paper. With multiple identically-named challenges
+        // on calendar — e.g. a demurrer to the complaint AND a demurrer to a
+        // cross-complaint, both "Demurrer - without Motion to Strike" —
+        // bestFilingMatch can't tell them apart and grabs the newest, mis-dating
+        // the motion and its timeliness. When the pending challenge docs line up
+        // one-to-one with the upcoming challenge hearings, pair them by date
+        // instead: the Nth challenge hearing (soonest first) is answered by the
+        // Nth pending challenge filing (earliest first). Falls back to
+        // bestFilingMatch whenever that clean pairing doesn't hold, so ordinary
+        // single-motion cases are unchanged.
+        let md = bestFilingMatch(c.motionType, docs);
+        if (isDemurrerOrStrikeMotion(c.motionType) && c.hearingWhen) {
+          const challengeHearings = hearings.filter(h => isDemurrerOrStrikeMotion(h.type));
+          const pendingChallenges = docs
+            .filter(d => d.when && isDemurrerOrMotionToStrikeDoc(d.name) && !isResolvedChallengeResult(d.result))
+            .sort((a, b) => a.when - b.when);
+          const idx = challengeHearings.findIndex(h => dayMs(h.when) === dayMs(c.hearingWhen));
+          if (idx >= 0 && challengeHearings.length === pendingChallenges.length && pendingChallenges[idx]) {
+            md = pendingChallenges[idx];
+          }
+        }
         filed.motion = md ? md.when : null;
         const mw = md ? md.when : null;
         const after = docs.filter(d => d.when && (!mw || d.when >= mw));
-        const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
 
         // When exactly one live motion has its moving papers on file, an
         // Opposition/Reply on the docket can only belong to it — so match by
@@ -3741,7 +3768,7 @@ async function fetchNextDeadlineFilings() {
         // Opposition) without needing the name to reference the motion. With
         // multiple filed motions, require the name to link to THIS motion so we
         // don't attribute the wrong paper.
-        const workable = (await getFutureHearingsCached()).filter(h => isWorkableHearing(h.type));
+        const workable = hearings.filter(h => isWorkableHearing(h.type));
         const filedMotions = workable.filter(h => bestFilingMatch(h.type, docs));
         const singleMotion = !!md && filedMotions.length === 1;
 
@@ -3764,22 +3791,17 @@ async function fetchNextDeadlineFilings() {
 
         // Demurrer or motion to strike answered by a first amended complaint in
         // lieu of opposition (CCP 472): the of-right amendment moots the
-        // challenge. Only a FIRST amended complaint qualifies — a plaintiff gets
-        // one amendment of course, so a challenge to the FAC can't be answered of
-        // right by an SAC.
-        //
-        // The FAC only stands in for the opposition if it RESPONDS to the current
-        // challenge — i.e. it was filed after the MOST RECENT demurrer or motion
-        // to strike in the case. (bestFilingMatch can't tell two same-named
-        // challenges apart, so key off the latest challenge, not the matched
-        // moving paper.) When the current hearing is a challenge to the FAC, the
-        // FAC predates that challenge and so is the challenged pleading, not a
-        // response — filed on/before the latest challenge, it's excluded.
-        if (isDemurrerOrStrikeMotion(c.motionType)) {
-          const challenges = docs.filter(d => d.when && isDemurrerOrMotionToStrikeDoc(d.name));
-          const latestChallenge = challenges.reduce((a, b) => (!a || b.when > a.when ? b : a), null);
-          const cw = latestChallenge ? latestChallenge.when : null;
-          const fac = cw ? earliest(docs.filter(d => d.when && d.when > cw && isFirstAmendedComplaintDoc(d.name))) : null;
+        // challenge, so show it in place of the opposition. Three conditions:
+        //   - the current hearing is a demurrer / motion to strike;
+        //   - the plaintiff did NOT oppose (in lieu = INSTEAD of opposition) — if
+        //     an opposition is on file, that's what we show, not the amendment;
+        //   - a FIRST amended complaint (only the one of-right amendment, never an
+        //     SAC) was filed AFTER the current challenge (mw). One filed on/before
+        //     mw is the challenged pleading, not a response — e.g. a demurrer to
+        //     the FAC, whose FAC predates it. Pairing mw to the right challenge
+        //     above is what keeps a cross-complaint's demurrer from polluting this.
+        if (isDemurrerOrStrikeMotion(c.motionType) && !filed.opp && mw) {
+          const fac = earliest(docs.filter(d => d.when && d.when > mw && isFirstAmendedComplaintDoc(d.name)));
           filed.fac = fac ? { label: 'First Amended Complaint', when: fac.when } : null;
         }
       }
@@ -3924,7 +3946,7 @@ function dlSerComp(c) {
   if (!c || c.osc || c.skip) return null; // nothing paintable worth caching
   const e = c.eff;
   return {
-    motionType: c.motionType || '', cat: c.cat || '',
+    motionType: c.motionType || '', cat: c.cat || '', hearingWhen: dlEpoch(c.hearingWhen),
     motionDue: dlEpoch(c.motionDue), motionDuePersonal: dlEpoch(c.motionDuePersonal),
     oppDue: dlEpoch(c.oppDue), replyDue: dlEpoch(c.replyDue),
     eff: e ? { motionType: e.motionType || '', hearingDate: e.hearingDate || '', hearingType: e.hearingType || '', lookedAhead: !!e.lookedAhead } : null,
@@ -3932,7 +3954,7 @@ function dlSerComp(c) {
 }
 function dlDeserComp(s) {
   return {
-    skip: false, motionType: s.motionType, cat: s.cat,
+    skip: false, motionType: s.motionType, cat: s.cat, hearingWhen: dlUnepoch(s.hearingWhen),
     motionDue: dlUnepoch(s.motionDue), motionDuePersonal: dlUnepoch(s.motionDuePersonal),
     oppDue: dlUnepoch(s.oppDue), replyDue: dlUnepoch(s.replyDue),
     eff: s.eff || null,
