@@ -2378,6 +2378,11 @@ function isFirstAmendedComplaintDoc(name) { return amendedComplaintOrdinal(name)
 function isDemurrerOrMotionToStrikeDoc(name) {
   return isMovingPaper(name) && (/\bdemurrer\b/i.test(name) || /\bmotion to strike\b/i.test(name));
 }
+// True when the hearing on calendar is itself a demurrer or motion to strike — a
+// first amended complaint filed in lieu of opposition moots either one.
+function isDemurrerOrStrikeMotion(motionType) {
+  return /\bdemurrer\b|\bmotion to strike\b/i.test(motionType || '');
+}
 // A petition is another kind of initial pleading (probate, family, writ, etc.),
 // used as the operative pleading only when the case has no complaint. Match the
 // pleading ITSELF — a name that starts with "Petition" (optionally prefixed by
@@ -3671,10 +3676,10 @@ function nextDlHtml() {
     `<span style="color:${motionColor}"${motionTitle}>Motion Due ${fmtShortDate(c.motionDue)}</span>`;
 
   const parts = [motionSpan];
-  // A demurrer answered by an amended complaint in lieu of opposition (CCP 472):
-  // the amended pleading moots the demurrer, so show it in place of the
-  // Opposition/Reply slots rather than "No Opposition".
-  if (f.fac && /demurrer/i.test(c.motionType || '')) {
+  // A demurrer or motion to strike answered by an amended complaint in lieu of
+  // opposition (CCP 472): the amended pleading moots the challenge, so show it in
+  // place of the Opposition/Reply slots rather than "No Opposition".
+  if (f.fac && isDemurrerOrStrikeMotion(c.motionType)) {
     parts.push(`<span style="color:#1a6b3a">${dlEsc(f.fac.label)}</span>`);
   } else {
     parts.push(oppAbsent
@@ -3757,19 +3762,20 @@ async function fetchNextDeadlineFilings() {
         filed.opp = o ? o.when : null;
         filed.reply = r ? r.when : null;
 
-        // Demurrer answered by a first amended complaint in lieu of opposition
-        // (CCP 472): the of-right amendment moots the demurrer. Only a FIRST
-        // amended complaint qualifies — a plaintiff gets one amendment of course,
-        // so a demurrer to the FAC can't be answered of right by an SAC.
+        // Demurrer or motion to strike answered by a first amended complaint in
+        // lieu of opposition (CCP 472): the of-right amendment moots the
+        // challenge. Only a FIRST amended complaint qualifies — a plaintiff gets
+        // one amendment of course, so a challenge to the FAC can't be answered of
+        // right by an SAC.
         //
         // The FAC only stands in for the opposition if it RESPONDS to the current
         // challenge — i.e. it was filed after the MOST RECENT demurrer or motion
         // to strike in the case. (bestFilingMatch can't tell two same-named
-        // demurrers apart, so key off the latest challenge, not the matched
-        // moving paper.) When the current hearing is a demurrer to the FAC, the
-        // FAC predates that demurrer and so is the challenged pleading, not a
+        // challenges apart, so key off the latest challenge, not the matched
+        // moving paper.) When the current hearing is a challenge to the FAC, the
+        // FAC predates that challenge and so is the challenged pleading, not a
         // response — filed on/before the latest challenge, it's excluded.
-        if (/demurrer/i.test(c.motionType || '')) {
+        if (isDemurrerOrStrikeMotion(c.motionType)) {
           const challenges = docs.filter(d => d.when && isDemurrerOrMotionToStrikeDoc(d.name));
           const latestChallenge = challenges.reduce((a, b) => (!a || b.when > a.when ? b : a), null);
           const cw = latestChallenge ? latestChallenge.when : null;
