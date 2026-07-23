@@ -32,6 +32,10 @@
     align-self:stretch; display:flex; align-items:center; border-right:1px solid var(--border); }
   .amount-in input { border:0; outline:0; padding:12px 14px; font-size:1.35rem; font-weight:600;
     width:100%; color:var(--fg); font-family:inherit; }
+  .amount-in.sm span { font-size:1.05rem; }
+  .amount-in.sm input { font-size:1.05rem; padding:10px 12px; }
+  .two-col { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:460px) { .two-col { grid-template-columns:1fr; } }
   .segmented { display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
   .segmented label { padding:8px 16px; cursor:pointer; font-size:0.85rem; font-weight:600;
     color:var(--fg2); background:#fff; }
@@ -71,10 +75,21 @@
   <div class="wrap">
     <div class="card">
       <div class="card-b">
+        <div class="two-col">
+          <label class="field">Damages
+            <div class="amount-in sm"><span>$</span><input id="damages" type="text" inputmode="decimal"
+              placeholder="0.00" autocomplete="off"></div>
+          </label>
+          <label class="field">Prejudgment interest
+            <div class="amount-in sm"><span>$</span><input id="interest" type="text" inputmode="decimal"
+              placeholder="0.00" autocomplete="off"></div>
+          </label>
+        </div>
+
         <label class="field">Judgment amount
           <div class="amount-in"><span>$</span><input id="amount" type="text" inputmode="decimal"
             placeholder="0.00" autocomplete="off"></div>
-          <span class="reminder">↳ Damages + prejudgment interest — <b>not</b> costs.</span>
+          <span class="reminder">↳ Auto-summed from damages + interest (or type it directly). <b>Not</b> costs.</span>
         </label>
 
         <label class="field">Fee schedule
