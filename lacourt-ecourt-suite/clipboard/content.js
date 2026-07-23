@@ -2343,6 +2343,30 @@ function isCrossComplaintDoc(name) {
   if (/^amendment to /i.test(n)) return false;
   return /^(?:(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+)?(?:amended\s+)?cross-?complaint\b/i.test(n);
 }
+// An AMENDED complaint (not the original, not a cross-complaint) — a plaintiff's
+// response that moots a demurrer when filed in lieu of opposition (CCP 472).
+// Titled a few ways: "First Amended Complaint", "1st Amended Complaint", or
+// "Amended Complaint (1st)". The "\bamended complaint\b" test won't match
+// "amended cross-complaint" (the "cross-" breaks adjacency) or the original.
+function isAmendedComplaintDoc(name) {
+  const n = (name || '').trim();
+  if (/^amendment to /i.test(n)) return false;               // "Amendment to Complaint (Fictitious/Incorrect Name)"
+  if (/fictitious|incorrect\s+name/i.test(n)) return false;
+  return /\bamended\s+complaint\b/i.test(n);
+}
+// Normalize an amended-complaint doc name to "<Ordinal> Amended Complaint",
+// reading the ordinal as a word ("First"), a numeric suffix ("1st"), or a
+// parenthesized suffix ("Amended Complaint (1st)"). Falls back to the bare label.
+function amendedComplaintLabel(name) {
+  const n = name || '';
+  const WORDS = ['first','second','third','fourth','fifth','sixth','seventh','eighth','ninth','tenth'];
+  const ORD = ['First','Second','Third','Fourth','Fifth','Sixth','Seventh','Eighth','Ninth','Tenth'];
+  const w = n.match(/\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\b/i);
+  if (w) return ORD[WORDS.indexOf(w[1].toLowerCase())] + ' Amended Complaint';
+  const num = n.match(/\b(\d+)\s*(?:st|nd|rd|th)\b/i);
+  if (num) { const k = parseInt(num[1], 10); if (k >= 1 && k <= 10) return ORD[k - 1] + ' Amended Complaint'; }
+  return 'Amended Complaint';
+}
 // A petition is another kind of initial pleading (probate, family, writ, etc.),
 // used as the operative pleading only when the case has no complaint. Match the
 // pleading ITSELF — a name that starts with "Petition" (optionally prefixed by
@@ -3645,14 +3669,21 @@ function nextDlHtml() {
     `<span style="color:${motionColor}"${motionTitle}>Motion Due ${fmtShortDate(c.motionDue)}</span>`;
 
   const parts = [motionSpan];
-  parts.push(oppAbsent
-    ? absentSpan('Opposition', c.oppDue)
-    : item('Opposition Due', 'opp', c.oppDue));
-  // With no opposition on file, the reply deadline is irrelevant — drop it.
-  if (!oppAbsent) {
-    parts.push(absent(c.replyDue, f.reply)
-      ? absentSpan('Reply', c.replyDue)
-      : item('Reply Due', 'reply', c.replyDue));
+  // A demurrer answered by an amended complaint in lieu of opposition (CCP 472):
+  // the amended pleading moots the demurrer, so show it in place of the
+  // Opposition/Reply slots rather than "No Opposition".
+  if (f.fac && /demurrer/i.test(c.motionType || '')) {
+    parts.push(`<span style="color:#1a6b3a">${dlEsc(f.fac.label)}</span>`);
+  } else {
+    parts.push(oppAbsent
+      ? absentSpan('Opposition', c.oppDue)
+      : item('Opposition Due', 'opp', c.oppDue));
+    // With no opposition on file, the reply deadline is irrelevant — drop it.
+    if (!oppAbsent) {
+      parts.push(absent(c.replyDue, f.reply)
+        ? absentSpan('Reply', c.replyDue)
+        : item('Reply Due', 'reply', c.replyDue));
+    }
   }
   return prefix + parts.join(NEXT_DL_GAP);
 }
@@ -3723,6 +3754,15 @@ async function fetchNextDeadlineFilings() {
         }
         filed.opp = o ? o.when : null;
         filed.reply = r ? r.when : null;
+
+        // Demurrer answered by an amended complaint in lieu of opposition
+        // (CCP 472): the amended pleading moots the demurrer. Detect the
+        // earliest amended complaint filed AFTER the demurrer — one filed
+        // before it is the challenged pleading, not a response.
+        if (mw && /demurrer/i.test(c.motionType || '')) {
+          const fac = earliest(docs.filter(d => d.when && d.when > mw && isAmendedComplaintDoc(d.name)));
+          filed.fac = fac ? { label: amendedComplaintLabel(fac.name), when: fac.when } : null;
+        }
       }
     }
   } catch (_) { /* keep date-only colours */ }
@@ -3880,10 +3920,16 @@ function dlDeserComp(s) {
   };
 }
 function dlSerFiled(f) {
-  return f ? { filedKnown: !!f.filedKnown, motion: dlEpoch(f.motion), opp: dlEpoch(f.opp), reply: dlEpoch(f.reply) } : null;
+  return f ? {
+    filedKnown: !!f.filedKnown, motion: dlEpoch(f.motion), opp: dlEpoch(f.opp), reply: dlEpoch(f.reply),
+    fac: f.fac ? { label: f.fac.label, when: dlEpoch(f.fac.when) } : null,
+  } : null;
 }
 function dlDeserFiled(s) {
-  return { filedKnown: !!s.filedKnown, motion: dlUnepoch(s.motion), opp: dlUnepoch(s.opp), reply: dlUnepoch(s.reply) };
+  return {
+    filedKnown: !!s.filedKnown, motion: dlUnepoch(s.motion), opp: dlUnepoch(s.opp), reply: dlUnepoch(s.reply),
+    fac: s.fac ? { label: s.fac.label, when: dlUnepoch(s.fac.when) } : null,
+  };
 }
 function dlCacheWrite() {
   const key = dlCacheKey(); if (!key) return;
