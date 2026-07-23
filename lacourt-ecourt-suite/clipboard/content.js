@@ -2343,30 +2343,35 @@ function isCrossComplaintDoc(name) {
   if (/^amendment to /i.test(n)) return false;
   return /^(?:(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+)?(?:amended\s+)?cross-?complaint\b/i.test(n);
 }
-// An AMENDED complaint (not the original, not a cross-complaint) — a plaintiff's
-// response that moots a demurrer when filed in lieu of opposition (CCP 472).
-// Titled a few ways: "First Amended Complaint", "1st Amended Complaint", or
-// "Amended Complaint (1st)". The "\bamended complaint\b" test won't match
-// "amended cross-complaint" (the "cross-" breaks adjacency) or the original.
+// An AMENDED complaint (not the original, not a cross-complaint). The
+// "\bamended complaint\b" test won't match "amended cross-complaint" (the
+// "cross-" breaks adjacency) or the original complaint.
 function isAmendedComplaintDoc(name) {
   const n = (name || '').trim();
   if (/^amendment to /i.test(n)) return false;               // "Amendment to Complaint (Fictitious/Incorrect Name)"
   if (/fictitious|incorrect\s+name/i.test(n)) return false;
   return /\bamended\s+complaint\b/i.test(n);
 }
-// Normalize an amended-complaint doc name to "<Ordinal> Amended Complaint",
-// reading the ordinal as a word ("First"), a numeric suffix ("1st"), or a
-// parenthesized suffix ("Amended Complaint (1st)"). Falls back to the bare label.
-function amendedComplaintLabel(name) {
+// The ordinal of an amended complaint: 1 for "First"/"1st"/"(1st)" or a bare
+// "Amended Complaint" (the first amendment is often titled without an ordinal),
+// 2 for "Second"/"2nd", etc. Returns null when it isn't an amended complaint.
+function amendedComplaintOrdinal(name) {
+  if (!isAmendedComplaintDoc(name)) return null;
   const n = name || '';
   const WORDS = ['first','second','third','fourth','fifth','sixth','seventh','eighth','ninth','tenth'];
-  const ORD = ['First','Second','Third','Fourth','Fifth','Sixth','Seventh','Eighth','Ninth','Tenth'];
   const w = n.match(/\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\b/i);
-  if (w) return ORD[WORDS.indexOf(w[1].toLowerCase())] + ' Amended Complaint';
+  if (w) return WORDS.indexOf(w[1].toLowerCase()) + 1;
   const num = n.match(/\b(\d+)\s*(?:st|nd|rd|th)\b/i);
-  if (num) { const k = parseInt(num[1], 10); if (k >= 1 && k <= 10) return ORD[k - 1] + ' Amended Complaint'; }
-  return 'Amended Complaint';
+  if (num) return parseInt(num[1], 10);
+  return 1; // bare "Amended Complaint" — the first amendment
 }
+// A plaintiff may amend once as a matter of course in response to a demurrer
+// (CCP 472). That single amendment is the FIRST amended complaint — a Second (or
+// later) Amended Complaint is NOT of right and cannot moot a demurrer to the FAC.
+// So only a first amended complaint counts as the "in lieu of opposition"
+// response. Titled a few ways: "First Amended Complaint", "1st Amended
+// Complaint", "Amended Complaint (1st)", or a bare "Amended Complaint".
+function isFirstAmendedComplaintDoc(name) { return amendedComplaintOrdinal(name) === 1; }
 // A petition is another kind of initial pleading (probate, family, writ, etc.),
 // used as the operative pleading only when the case has no complaint. Match the
 // pleading ITSELF — a name that starts with "Petition" (optionally prefixed by
@@ -3755,13 +3760,15 @@ async function fetchNextDeadlineFilings() {
         filed.opp = o ? o.when : null;
         filed.reply = r ? r.when : null;
 
-        // Demurrer answered by an amended complaint in lieu of opposition
-        // (CCP 472): the amended pleading moots the demurrer. Detect the
-        // earliest amended complaint filed AFTER the demurrer — one filed
-        // before it is the challenged pleading, not a response.
+        // Demurrer answered by a first amended complaint in lieu of opposition
+        // (CCP 472): the of-right amendment moots the demurrer. Only a FIRST
+        // amended complaint qualifies — a plaintiff gets one amendment of course,
+        // so a demurrer to the FAC can't be answered of right by an SAC. Detect
+        // the earliest first-amended complaint filed AFTER the demurrer (one
+        // filed before it is the challenged pleading, not a response).
         if (mw && /demurrer/i.test(c.motionType || '')) {
-          const fac = earliest(docs.filter(d => d.when && d.when > mw && isAmendedComplaintDoc(d.name)));
-          filed.fac = fac ? { label: amendedComplaintLabel(fac.name), when: fac.when } : null;
+          const fac = earliest(docs.filter(d => d.when && d.when > mw && isFirstAmendedComplaintDoc(d.name)));
+          filed.fac = fac ? { label: 'First Amended Complaint', when: fac.when } : null;
         }
       }
     }
