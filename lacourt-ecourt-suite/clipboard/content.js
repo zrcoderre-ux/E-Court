@@ -2449,6 +2449,12 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   // filed after the one that entered the default) plus everything the plaintiff
   // filed on or after it.
   if (isOscDefaultJudgment(motionType)) {
+    // Every Request for Dismissal is relevant on a default-judgment prove-up:
+    // dismissals of individual defendants drive severability (CCP 578-579) and
+    // confirm the remaining defendants are all in default. Always flag them,
+    // independent of whether the prove-up packet below is detected.
+    for (const d of docs) if (/\brequest for dismissal\b/i.test(d.name || '')) add(d);
+
     const pu = findDefaultProveUp(docs);
     if (pu && pu.proveUp) {
       add(pu.proveUp);
