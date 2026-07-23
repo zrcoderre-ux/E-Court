@@ -85,6 +85,27 @@ function tierFormulaLabel(sched, i) {
   return money0(t.base) + ' + ' + pct(t.rate) + ' of excess over ' + money0(t.over);
 }
 
+// Parse a currency-ish input to a number (0 when empty/invalid).
+function parseAmt(v) { const n = Number((v || '').replace(/[$,\s]/g, '')); return isFinite(n) ? n : 0; }
+function fmtAmt(n) { return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+// Damages + interest auto-fill the judgment amount. When both parts are blank we
+// clear the amount (so a direct entry isn't clobbered by an empty sum); when
+// either has a value, the amount box shows their sum. The amount box stays
+// directly editable — typing in it just recomputes the fee.
+function syncAmountFromParts() {
+  const dmg = document.getElementById('damages').value;
+  const intr = document.getElementById('interest').value;
+  const amt = document.getElementById('amount');
+  if (dmg.trim() === '' && intr.trim() === '') {
+    amt.value = '';
+  } else {
+    const sum = parseAmt(dmg) + parseAmt(intr);
+    amt.value = sum > 0 ? fmtAmt(sum) : '';
+  }
+  render();
+}
+
 function render() {
   const amountRaw = document.getElementById('amount').value.replace(/[$,\s]/g, '');
   const scheduleKey = document.querySelector('input[name="sched"]:checked').value;
@@ -152,13 +173,15 @@ function init() {
     });
   } catch (_) {}
 
+  document.getElementById('damages').addEventListener('input', syncAmountFromParts);
+  document.getElementById('interest').addEventListener('input', syncAmountFromParts);
   document.getElementById('amount').addEventListener('input', render);
   document.querySelectorAll('input[name="sched"]').forEach(r => r.addEventListener('change', () => { buildScheduleTable(); render(); }));
   document.getElementById('mortgage').addEventListener('change', render);
 
   buildScheduleTable();
   render();
-  document.getElementById('amount').focus();
+  document.getElementById('damages').focus();
 }
 
 document.addEventListener('DOMContentLoaded', init);
