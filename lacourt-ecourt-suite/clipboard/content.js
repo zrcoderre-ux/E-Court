@@ -2372,6 +2372,12 @@ function amendedComplaintOrdinal(name) {
 // response. Titled a few ways: "First Amended Complaint", "1st Amended
 // Complaint", "Amended Complaint (1st)", or a bare "Amended Complaint".
 function isFirstAmendedComplaintDoc(name) { return amendedComplaintOrdinal(name) === 1; }
+// A demurrer or motion to strike — the challenges a plaintiff can moot by amending
+// once as a matter of course (CCP 472). isMovingPaper excludes the oppositions,
+// replies, notices, and orders that merely mention "demurrer"/"motion to strike".
+function isDemurrerOrMotionToStrikeDoc(name) {
+  return isMovingPaper(name) && (/\bdemurrer\b/i.test(name) || /\bmotion to strike\b/i.test(name));
+}
 // A petition is another kind of initial pleading (probate, family, writ, etc.),
 // used as the operative pleading only when the case has no complaint. Match the
 // pleading ITSELF — a name that starts with "Petition" (optionally prefixed by
@@ -3754,11 +3760,20 @@ async function fetchNextDeadlineFilings() {
         // Demurrer answered by a first amended complaint in lieu of opposition
         // (CCP 472): the of-right amendment moots the demurrer. Only a FIRST
         // amended complaint qualifies — a plaintiff gets one amendment of course,
-        // so a demurrer to the FAC can't be answered of right by an SAC. Detect
-        // the earliest first-amended complaint filed AFTER the demurrer (one
-        // filed before it is the challenged pleading, not a response).
-        if (mw && /demurrer/i.test(c.motionType || '')) {
-          const fac = earliest(docs.filter(d => d.when && d.when > mw && isFirstAmendedComplaintDoc(d.name)));
+        // so a demurrer to the FAC can't be answered of right by an SAC.
+        //
+        // The FAC only stands in for the opposition if it RESPONDS to the current
+        // challenge — i.e. it was filed after the MOST RECENT demurrer or motion
+        // to strike in the case. (bestFilingMatch can't tell two same-named
+        // demurrers apart, so key off the latest challenge, not the matched
+        // moving paper.) When the current hearing is a demurrer to the FAC, the
+        // FAC predates that demurrer and so is the challenged pleading, not a
+        // response — filed on/before the latest challenge, it's excluded.
+        if (/demurrer/i.test(c.motionType || '')) {
+          const challenges = docs.filter(d => d.when && isDemurrerOrMotionToStrikeDoc(d.name));
+          const latestChallenge = challenges.reduce((a, b) => (!a || b.when > a.when ? b : a), null);
+          const cw = latestChallenge ? latestChallenge.when : null;
+          const fac = cw ? earliest(docs.filter(d => d.when && d.when > cw && isFirstAmendedComplaintDoc(d.name))) : null;
           filed.fac = fac ? { label: 'First Amended Complaint', when: fac.when } : null;
         }
       }
