@@ -2531,7 +2531,12 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
         add(opp); const P = docPartyNames(opp.filedBy);
         for (const d of docs) if (sameCalendarDay(d.when, opp.when) && docSharesParty(docPartyNames(d.filedBy), P)) add(d);
       }
-      for (const rep of after) if (/\breply\b/i.test(rep.name) && docWordOverlap(rep.name, motionType)) {
+      // The movant files the reply, so a "Reply …" by the same party as the
+      // motion also counts — covers replies that name the motion only by the
+      // party or a mangled title (e.g. "…BERNARDSDEMURRER" with no space, which
+      // no word-overlap can catch).
+      for (const rep of after) if (/\breply\b/i.test(rep.name)
+          && (docWordOverlap(rep.name, motionType) || docSharesParty(docPartyNames(rep.filedBy), mov))) {
         add(rep); const P = docPartyNames(rep.filedBy);
         for (const d of docs) if (sameCalendarDay(d.when, rep.when) && docSharesParty(docPartyNames(d.filedBy), P)) add(d);
       }
