@@ -33,11 +33,12 @@
   'use strict';
 
   /* ------------------------------------------------------------------ */
-  /* OSC Re: Failure to Prosecute Default Judgment — alternate flow     */
+  /* Default judgment (OSC Re: Failure to Prosecute / Prove-Up) flow     */
   /* ------------------------------------------------------------------ */
   //
   // When the case's next event is an OSC Re: Failure to Prosecute Default
-  // Judgment, Export runs the SAME flow as a regular motion — the in-extension
+  // Judgment or a Default Prove-Up Hearing, Export runs the SAME flow as a
+  // regular motion — the in-extension
   // Order Template popup, spreadsheet export, and Word mail merge — and, in
   // addition, opens a pre-composed mailto: link addressed to Judge Mackenzie
   // with the case info in the subject and a standard body. The DJ recommendation
@@ -49,9 +50,12 @@
   // session to call the owner-API; the public ResponsePage URL returns 401).
   const REGULAR_FORM_URL = 'https://forms.office.com/Pages/DesignPageV2.aspx?prevorigin=rbf&origin=NeoPortalPage&rpring=UsGovGccProduction&subpage=design&id=x8OU3Ei7_0CTBeRz_W9qFt74YgjxwElOsa89AoRCn9FUQzNGQ0NPWVpUMDBVTzcwN1I2Q0JFOVFZVi4u&analysis=false&tab=0&topview=Preview';
 
-  // Strict trigger: must include "Default Judgment" — the OSC for other
-  // reasons (sanctions, etc.) doesn't go through this flow.
-  const OSC_DEFAULT_JUDGMENT_RE = /\border\s+to\s+show\s+cause\s+re:?\s+failure\s+to\s+prosecute\s+default\s+judgment\b/i;
+  // Triggers the default-judgment flow: either an OSC Re: Failure to Prosecute
+  // Default Judgment, or a Default Prove-Up Hearing — both are worked up the same
+  // way (prove-up packet documents, recommendation email, fee calculator). The
+  // OSC branch must include "Default Judgment"; the OSC for other reasons
+  // (sanctions, etc.) doesn't go through this flow.
+  const OSC_DEFAULT_JUDGMENT_RE = /\border\s+to\s+show\s+cause\s+re:?\s+failure\s+to\s+prosecute\s+default\s+judgment\b|\bprove\s*-?\s*up\b/i;
 
   function isOscDefaultJudgment(hearingType) {
     if (!hearingType) return false;
@@ -77,13 +81,17 @@
    * The case name is non-essential — we'll send the email without it
    * rather than block the workflow.
    */
-  function buildOscMailto(caseNumber, hearingDate, caseName) {
+  function buildOscMailto(caseNumber, hearingDate, caseName, hearingType) {
     if (!caseNumber || !hearingDate) return null;
 
     const EM = '\u2013'; // en-dash — what the user calls "em dash" colloquially
     const subjectParts = [hearingDate, caseNumber];
     if (caseName) subjectParts.push(caseName);
-    subjectParts.push('OSC RE: FAILURE TO PROSECUTE DEFAULT JUDGMENT');
+    // Describe the actual hearing in the subject: a Default Prove-Up Hearing vs.
+    // the OSC. Both run the same recommendation-email flow.
+    subjectParts.push(/prove\s*-?\s*up/i.test(hearingType || '')
+      ? 'DEFAULT PROVE-UP HEARING'
+      : 'OSC RE: FAILURE TO PROSECUTE DEFAULT JUDGMENT');
     const subject = subjectParts.join(' ' + EM + ' ');
 
     // CRLF line breaks so Outlook on Windows handles the mailto body
@@ -476,7 +484,8 @@ function getFillFormContext(root, hearingOverride) {
     mailtoUrl = buildOscMailto(
       data.labeled.caseNumber,
       data.labeled.hearingDate,
-      caseName
+      caseName,
+      hearingType
     );
     console.log('[LACourt] OSC default-judgment flow:', {
       hearingType, caseName, mailtoUrl: !!mailtoUrl,
