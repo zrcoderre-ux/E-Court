@@ -2397,6 +2397,28 @@ function isDemurrerOrStrikeMotion(motionType) {
 function isResolvedChallengeResult(result) {
   return /sustain|overrul|grant|deni|off[\s-]?calendar|moot|withdrawn|taken off/i.test(result || '');
 }
+// Resolve the moving paper for a given hearing. bestFilingMatch alone can't tell
+// identically-named challenges apart — e.g. a demurrer to the complaint AND a
+// demurrer to a cross-complaint, both "Demurrer - without Motion to Strike" — and
+// grabs the newest. When the pending challenge docs line up one-to-one with the
+// upcoming challenge hearings, pair them by date instead: the Nth challenge
+// hearing (soonest first) is answered by the Nth pending challenge (earliest
+// first). Falls back to bestFilingMatch whenever that clean pairing doesn't hold,
+// so ordinary single-motion cases are unchanged.
+function resolveMovingPaper(motionType, hearingWhen, hearings, docs) {
+  let md = bestFilingMatch(motionType, docs);
+  if (isDemurrerOrStrikeMotion(motionType) && hearingWhen) {
+    const challengeHearings = (hearings || []).filter(h => isDemurrerOrStrikeMotion(h.type));
+    const pendingChallenges = docs
+      .filter(d => d.when && isDemurrerOrMotionToStrikeDoc(d.name) && !isResolvedChallengeResult(d.result))
+      .sort((a, b) => a.when - b.when);
+    const idx = challengeHearings.findIndex(h => dayMs(h.when) === dayMs(hearingWhen));
+    if (idx >= 0 && challengeHearings.length === pendingChallenges.length && pendingChallenges[idx]) {
+      md = pendingChallenges[idx];
+    }
+  }
+  return md;
+}
 // A petition is another kind of initial pleading (probate, family, writ, etc.),
 // used as the operative pleading only when the case has no complaint. Match the
 // pleading ITSELF — a name that starts with "Petition" (optionally prefixed by
@@ -2419,7 +2441,7 @@ function latestDoc(list) {
   return best;
 }
 
-function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearing) {
+function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearing, movingPaper) {
   const rel = new Map();
   const add = d => { if (d && d.docId && d.openUrl) rel.set(d.docId, d); };
 
@@ -2432,8 +2454,9 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
 
   // Identify the moving paper up front so the Hearings-tab blob match below can
   // use its filing date as a floor. (The full motion-doc handling still runs in
-  // its own block later.)
-  const motionDoc = bestFilingMatch(motionType, docs);
+  // its own block later.) The caller resolves it (pairing parallel same-named
+  // demurrers to the right hearing); fall back to bestFilingMatch.
+  const motionDoc = movingPaper || bestFilingMatch(motionType, docs);
   const motionFloor = motionDoc && motionDoc.when ? motionDoc.when : null;
 
   // Documents the Hearings tab lists for this motion (substring containment).
@@ -2512,6 +2535,19 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
         add(rep); const P = docPartyNames(rep.filedBy);
         for (const d of docs) if (sameCalendarDay(d.when, rep.when) && docSharesParty(docPartyNames(d.filedBy), P)) add(d);
       }
+    }
+  }
+
+  // With parallel same-named challenges (e.g. a demurrer to the complaint AND a
+  // demurrer to a cross-complaint), the name-based paths above can pull in the
+  // OTHER demurrer/motion-to-strike, which belongs to a different hearing. Keep
+  // only the current motion's moving paper among challenge documents — but keep
+  // a challenge filed the SAME day as it (a demurrer + motion to strike filed
+  // together belong to this hearing).
+  if (motionDoc) {
+    for (const [id, d] of rel) {
+      if (d.docId !== motionDoc.docId && isDemurrerOrMotionToStrikeDoc(d.name)
+          && !sameCalendarDay(d.when, motionDoc.when)) rel.delete(id);
     }
   }
 
@@ -2720,10 +2756,16 @@ async function getRelevantDocuments() {
 
   const hearingsUrl = getHearingsUrl();
   const hearingsDoc = hearingsUrl ? await fetchCaseDoc(hearingsUrl) : null;
-  const singleHearing = hearingsDoc ? parseFutureHearings(hearingsDoc).length <= 1 : true;
+  const futureHearings = hearingsDoc ? parseFutureHearings(hearingsDoc) : [];
+  const singleHearing = futureHearings.length <= 1;
   const hearingDocBlob = hearingsDoc ? findHearingDocBlob(hearingsDoc, matchType) : '';
 
-  const relevant = computeRelevantDocuments(docs, matchType, hearingDocBlob, singleHearing);
+  // Pick the moving paper for THIS hearing, disambiguating parallel same-named
+  // demurrers/motions to strike by pairing them to their hearings by date.
+  const hearingWhen = hearing && hearing.hearingDate ? parseHearingDateTime(hearing.hearingDate) : null;
+  const movingPaper = resolveMovingPaper(matchType, hearingWhen, futureHearings, docs);
+
+  const relevant = computeRelevantDocuments(docs, matchType, hearingDocBlob, singleHearing, movingPaper);
   console.log('[LACourt] relevant documents:', {
     motionType: matchType, docCount: docs.length, singleHearing, relevant: relevant.map(d => d.name),
   });
@@ -3746,27 +3788,12 @@ async function fetchNextDeadlineFilings() {
         const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
         const hearings = await getFutureHearingsCached();
 
-        // Identify the moving paper. With multiple identically-named challenges
-        // on calendar — e.g. a demurrer to the complaint AND a demurrer to a
-        // cross-complaint, both "Demurrer - without Motion to Strike" —
-        // bestFilingMatch can't tell them apart and grabs the newest, mis-dating
-        // the motion and its timeliness. When the pending challenge docs line up
-        // one-to-one with the upcoming challenge hearings, pair them by date
-        // instead: the Nth challenge hearing (soonest first) is answered by the
-        // Nth pending challenge filing (earliest first). Falls back to
-        // bestFilingMatch whenever that clean pairing doesn't hold, so ordinary
-        // single-motion cases are unchanged.
-        let md = bestFilingMatch(c.motionType, docs);
-        if (isDemurrerOrStrikeMotion(c.motionType) && c.hearingWhen) {
-          const challengeHearings = hearings.filter(h => isDemurrerOrStrikeMotion(h.type));
-          const pendingChallenges = docs
-            .filter(d => d.when && isDemurrerOrMotionToStrikeDoc(d.name) && !isResolvedChallengeResult(d.result))
-            .sort((a, b) => a.when - b.when);
-          const idx = challengeHearings.findIndex(h => dayMs(h.when) === dayMs(c.hearingWhen));
-          if (idx >= 0 && challengeHearings.length === pendingChallenges.length && pendingChallenges[idx]) {
-            md = pendingChallenges[idx];
-          }
-        }
+        // Identify the moving paper, disambiguating parallel same-named
+        // demurrers/motions to strike by pairing them to their hearings by date
+        // (see resolveMovingPaper). bestFilingMatch alone grabs the newest, which
+        // for a case with a demurrer to the complaint AND one to a cross-complaint
+        // mis-dates the motion and its timeliness.
+        const md = resolveMovingPaper(c.motionType, c.hearingWhen, hearings, docs);
         filed.motion = md ? md.when : null;
         const mw = md ? md.when : null;
         const after = docs.filter(d => d.when && (!mw || d.when >= mw));
