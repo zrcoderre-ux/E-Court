@@ -2334,6 +2334,13 @@ function docLinksToMotion(name, motionType) {
 function isOppositionDoc(name) {
   return /\bopposition\b/i.test(name || '') && !/\bnon-?\s*opposition\b/i.test(name || '');
 }
+// A "Notice of Non-Opposition" / "Statement of No Opposition" — a filing that
+// affirmatively notes the ABSENCE of any opposition, rather than opposing on the
+// merits. Depending on who filed it, it stands in for a Reply (moving party) or
+// for the Opposition (non-moving party). See fetchNextDeadlineFilings.
+function isNonOppositionDoc(name) {
+  return /\bnon-?\s*opposition\b/i.test(name || '') || /\bno\s+opposition\b/i.test(name || '');
+}
 function docPartyNames(filedBy) {
   return parseFiledByParties(filedBy).parties.map(p => movantNormName(p.name)).filter(Boolean);
 }
@@ -3737,17 +3744,27 @@ function nextDlHtml() {
     `<span style="color:${motionColor}"${motionTitle}>Motion Due ${fmtShortDate(c.motionDue)}</span>`;
 
   const parts = [motionSpan];
+  const nonOpp = f.nonOpp || null;
+  const nonOppSpan = '<span style="color:#1a6b3a">Notice of Non-Opposition</span>';
   // A demurrer or motion to strike answered by an amended complaint in lieu of
   // opposition (CCP 472): the amended pleading moots the challenge, so show it in
   // place of the Opposition/Reply slots rather than "No Opposition".
   if (f.fac && isDemurrerOrStrikeMotion(c.motionType)) {
     parts.push(`<span style="color:#1a6b3a">${dlEsc(f.fac.label)}</span>`);
+  } else if (nonOpp && nonOpp.slot === 'opp') {
+    // The non-moving party filed a Notice of Non-Opposition — it takes the place
+    // of (and is more meaningful than) its opposition, and moots the reply.
+    parts.push(nonOppSpan);
   } else {
     parts.push(oppAbsent
       ? absentSpan('Opposition', c.oppDue)
       : item('Opposition Due', 'opp', c.oppDue));
-    // With no opposition on file, the reply deadline is irrelevant — drop it.
-    if (!oppAbsent) {
+    if (nonOpp && nonOpp.slot === 'reply') {
+      // The moving party filed a Notice of Non-Opposition noting the absence of
+      // any opposition — it takes the place of the reply.
+      parts.push(nonOppSpan);
+    } else if (!oppAbsent) {
+      // With no opposition on file, the reply deadline is irrelevant — drop it.
       parts.push(absent(c.replyDue, f.reply)
         ? absentSpan('Reply', c.replyDue)
         : item('Reply Due', 'reply', c.replyDue));
@@ -3784,7 +3801,7 @@ async function fetchNextDeadlineFilings() {
   if (__nextDlFetchStarted || !__nextDlComputed || __nextDlComputed.skip) return;
   __nextDlFetchStarted = true;
   const c = __nextDlComputed;
-  const filed = { filedKnown: false, motion: null, opp: null, reply: null };
+  const filed = { filedKnown: false, motion: null, opp: null, reply: null, nonOpp: null };
   try {
     {
       const docs = await getAllDocumentsCached();
@@ -3829,6 +3846,35 @@ async function fetchNextDeadlineFilings() {
         }
         filed.opp = o ? o.when : null;
         filed.reply = r ? r.when : null;
+
+        // A "Notice of Non-Opposition" / "No Opposition" stands in for a briefing
+        // paper, matched by WHO filed it (only meaningful when no real opposition
+        // is on the docket):
+        //   - filed by the NON-moving party, it affirmatively states that party
+        //     does not oppose — more meaningful than, and taking the place of, its
+        //     Opposition, so it fills the Opposition slot (and moots the reply);
+        //   - filed by the MOVING party, it notes the absence of any opposition
+        //     and takes the place of the reply.
+        // Multi-motion cases still require the notice to link to THIS motion (or,
+        // for the movant's, be filed by the movant) so it isn't misattributed.
+        if (!o) {
+          const nonOpps = after.filter(d => isNonOppositionDoc(d.name)
+            && (singleMotion || docLinksToMotion(d.name, c.motionType) || sharesMovant(d)));
+          const byNonMovant = earliest(nonOpps.filter(d => {
+            const p = docPartyNames(d.filedBy);
+            return p.length && !docSharesParty(p, movantParties);
+          }));
+          if (byNonMovant) {
+            filed.nonOpp = { slot: 'opp', when: byNonMovant.when };
+          } else {
+            // The movant's own notice (or one whose filer we can't identify).
+            const byMovant = earliest(nonOpps.filter(d => {
+              const p = docPartyNames(d.filedBy);
+              return !p.length || docSharesParty(p, movantParties);
+            }));
+            if (byMovant) filed.nonOpp = { slot: 'reply', when: byMovant.when };
+          }
+        }
 
         // Demurrer or motion to strike answered by a first amended complaint in
         // lieu of opposition (CCP 472): the of-right amendment moots the
@@ -4005,12 +4051,14 @@ function dlSerFiled(f) {
   return f ? {
     filedKnown: !!f.filedKnown, motion: dlEpoch(f.motion), opp: dlEpoch(f.opp), reply: dlEpoch(f.reply),
     fac: f.fac ? { label: f.fac.label, when: dlEpoch(f.fac.when) } : null,
+    nonOpp: f.nonOpp ? { slot: f.nonOpp.slot, when: dlEpoch(f.nonOpp.when) } : null,
   } : null;
 }
 function dlDeserFiled(s) {
   return {
     filedKnown: !!s.filedKnown, motion: dlUnepoch(s.motion), opp: dlUnepoch(s.opp), reply: dlUnepoch(s.reply),
     fac: s.fac ? { label: s.fac.label, when: dlUnepoch(s.fac.when) } : null,
+    nonOpp: s.nonOpp ? { slot: s.nonOpp.slot, when: dlUnepoch(s.nonOpp.when) } : null,
   };
 }
 function dlCacheWrite() {
