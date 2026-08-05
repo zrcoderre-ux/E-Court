@@ -1226,6 +1226,17 @@ function parsePartiesTable(root) {
   // never do) reliably excludes the container row.
   const HEADING_COMPLAINT_RE = /^\s*(amended\s+)?complaint\s+filed\s+by\b/i;
   const HEADING_CROSS_RE     = /^\s*cross[-\s]?complaint\s+filed\s+by\b/i;
+  // An appeal opens its own subcase section, e.g.
+  //   "Appeal filed by Adam Roe on 05/14/2026"
+  // whose rows re-list parties under their APPELLATE designations —
+  // "Appellant (Appellant)" and "Respondent (Respondent)". Those designations
+  // are carried IN ADDITION to the party's trial-court role, and the party is
+  // already listed under that role in the complaint section above. This is a
+  // trial court, so the appellate rows are dropped: keeping them would file the
+  // plaintiff/appellate respondent under the defendant/respondent side (wrong
+  // caption on export, and a false "not in default/dismissed" defendant on the
+  // OSC Re: Failure to Prosecute Default Judgment status line).
+  const HEADING_APPEAL_RE    = /^\s*(notice\s+of\s+)?(cross[-\s]?)?appeal\s+filed\s+by\b/i;
 
   // Locate the parties table. The UPDATE PARTY anchors live inside it; walk
   // up from the first anchor to its enclosing <table>.
@@ -1243,6 +1254,7 @@ function parsePartiesTable(root) {
   //   'primary'  → original/amended complaint (always included)
   //   'cross-1'  → first cross-complaint (included)
   //   'cross-N'  → subsequent cross-complaints (excluded)
+  //   'appeal'   → an appeal subcase (excluded; see HEADING_APPEAL_RE)
   let currentSection = 'primary';
   let crossSectionsSeen = 0;
 
@@ -1259,6 +1271,10 @@ function parsePartiesTable(root) {
     // Heading-row detection. Cross- check goes first because the cross
     // pattern is a more specific superset (the primary pattern's "complaint
     // filed by" substring also appears inside "Cross-Complaint filed by").
+    if (!hasUpdateAnchor && HEADING_APPEAL_RE.test(rowText)) {
+      currentSection = 'appeal-skip';
+      continue;
+    }
     if (!hasUpdateAnchor && HEADING_CROSS_RE.test(rowText)) {
       crossSectionsSeen += 1;
       currentSection = (crossSectionsSeen === 1) ? 'cross-1' : 'cross-skip';
@@ -1272,8 +1288,10 @@ function parsePartiesTable(root) {
     // Party-row detection: must contain an UPDATE PARTY anchor.
     if (!hasUpdateAnchor) continue;
 
-    // Drop any parties belonging to a 2nd+ cross-complaint section.
-    if (currentSection === 'cross-skip') continue;
+    // Drop any parties belonging to a 2nd+ cross-complaint section, or to an
+    // appeal subcase (the party's substantive role comes from the complaint
+    // section; the appellate designation is not a caption role here).
+    if (currentSection === 'cross-skip' || currentSection === 'appeal-skip') continue;
 
     // Read each cell's trimmed text.
     const cells = Array.from(row.querySelectorAll('td')).map(td => {
@@ -3915,9 +3933,19 @@ async function computeOscDefaultStatus() {
       if (url) { const doc = await fetchCaseDoc(url); if (doc) partiesRoot = doc; }
     }
     const parties = parsePartiesTable(partiesRoot);
+    // A party on the claimant side is never a defendant who could be in
+    // default, even if some other row labels it "Respondent" — the plaintiff of
+    // a case on appeal is listed as the appellate Respondent, and a "Respondent"
+    // row is otherwise a writ/petition defendant. Appeal-subcase rows are
+    // already dropped by parsePartiesTable; this also covers a subcase heading
+    // we don't recognize.
+    const claimants = new Set(parties
+      .filter(p => /^\s*(plaintiff|petitioner|cross[-\s]?complainant)\b/i.test(p.role || ''))
+      .map(p => movantNormName(p.name)));
     const defendants = parties.filter(p => {
       const r = p.role || '';
-      return !/cross[-\s]?defendant/i.test(r) && /^\s*(defendant|respondent)\b/i.test(r);
+      if (/cross[-\s]?defendant/i.test(r) || !/^\s*(defendant|respondent)\b/i.test(r)) return false;
+      return !claimants.has(movantNormName(p.name));
     });
     if (!defendants.length) return { text: 'No defendants found', color: '#0a6e6e' };
 
