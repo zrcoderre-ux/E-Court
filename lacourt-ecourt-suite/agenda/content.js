@@ -17,19 +17,15 @@
    EXCLUSION TERMS
 ------------------------------------------------- */
 
-const DEFAULT_EXCLUDED_TERMS = [
-  'conference',
-  'non-appearance case revie',
-  'non-jury trial',
-  'order to show cause re: d',
-  'ex parte',
-  'application for order for',
-  'jury trial',
-  'post-arbitration status c',
-  'post-mediation status con',
-  'order to show cause re: s',
-  'informal discovery confer',
-];
+// The case-status engine (lib/case-status.js, loaded first): the exclusion list,
+// the briefing-deadline maths, and the background case fetches — the same code
+// the case page runs, so a case reads the same on the agenda as on its own page.
+const {
+  caseCtxForId, computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
+  isWorkableHearing, isOscDefaultJudgment, loadExcludedTerms, excludedTermMatches,
+  stripHearingOnPrefix, stripTrailingParenNumber, fetchWithTimeout,
+  DEFAULT_EXCLUDED_TERMS, dlLog,
+} = LACCaseStatus;
 
 let EXCLUDED_TERMS = [...DEFAULT_EXCLUDED_TERMS];
 
@@ -604,17 +600,6 @@ function extractCaseText(cell) {
    EXCLUSION FILTERING
 ------------------------------------------------- */
 
-// Match one excluded term against a hearing segment. A term wrapped in double
-// quotes ("...") requires the whole segment to equal it exactly (trimmed);
-// an unquoted term matches as a substring. Terms are already stored lowercased.
-// KEEP IN SYNC with clipboard/content.js excludedTermMatches().
-function excludedTermMatches(term, lower) {
-  if (!term) return false;
-  const quoted = term.match(/^"(.*)"$/);
-  if (quoted) return lower.trim() === quoted[1].trim();
-  return lower.includes(term);
-}
-
 function isExcluded(segment) {
   const lower = segment.trim().toLowerCase();
   return EXCLUDED_TERMS.some(term => excludedTermMatches(term, lower));
@@ -660,32 +645,9 @@ function isTruncatedName(text) { return /(?:\.\.\.|…)\s*$/.test(text); }
 function truncatedPrefix(text) { return text.replace(/\s*(?:\.\.\.|…)\s*$/, '').trim(); }
 function normDate(s) { const m = (s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? (+m[1]) + '/' + (+m[2]) + '/' + (+m[3]) : ''; }
 function stripHearingOn(s) { return (s || '').replace(/^\s*hearing on\s+/i, '').trim(); }
-// Drop trailing number-only decorations: a purely-numeric parenthetical
-// ("...defendant's aka (6861)") or a dash-number ("Motion to Compel - 3891").
-// Repeats so stacked forms ("X (123) - 456") fully strip. Alphanumeric
-// parentheticals like "(CCP 437c)" and worded dashes ("Demurrer - without
-// Motion to Strike") are kept.
-// KEEP IN SYNC with stripTrailingParenNumber in clipboard/content.js.
-function stripTrailingParenNumber(s) {
-  if (!s) return s;
-  let prev;
-  do {
-    prev = s;
-    s = s.replace(/\s*(?:\(\s*\d[\d\s.,\-]*\)|[-–—]\s*\d[\d\s.,]*)\s*$/, '').trim();
-  } while (s !== prev);
-  return s;
-}
-
 // The agenda day (single-day view) from the URL's ?day= param, normalized.
 function agendaDay() {
   try { return normDate(new URLSearchParams(location.search).get('day') || ''); } catch (_) { return ''; }
-}
-
-function fetchWithTimeout(url, ms) {
-  return Promise.race([
-    fetch(url, { credentials: 'include' }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
-  ]);
 }
 
 // Cell text with spaces preserved across markup line breaks. A hearing name
@@ -921,19 +883,169 @@ let __agendaBatching = false;
 // Apply renames + native sort + colorize + green-float as ONE guarded batch, so
 // the page reflows a single time to the final version instead of jumping once
 // per async name expansion.
-function applyAgendaChanges(swaps) {
+// Runs `fn`'s DOM writes with the observer guard raised, released on the next
+// frame: the observer callbacks queued by those mutations run as microtasks
+// (before the rAF), so they see the guard still set and skip; genuine later
+// mutations resume normally.
+function withAgendaBatch(fn) {
   __agendaBatching = true;
-  try {
+  try { fn(); } finally { requestAnimationFrame(() => { __agendaBatching = false; }); }
+}
+
+function applyAgendaChanges(swaps) {
+  withAgendaBatch(() => {
     applyHearingNameSwaps(swaps);
     try { stripHearingLabelNumbers(); } catch (_) {}
     try { applyHearingDocsSort(); } catch (_) {}
     try { colorizeAgendaRows(); } catch (_) {}
     try { floatGreenRowsToTop(); } catch (_) {}
+  });
+}
+
+/* -------------------------------------------------
+   CASE STATUS BESIDE THE CASE NAME
+
+   An agenda row's hearing is the same event the case page's "Next" header
+   reports on, so the row can carry the same line: Motion / Opposition / Reply
+   due dates coloured by what's actually on file, a first amended complaint filed
+   in lieu of opposition, a Notice of Non-Opposition — or, for an OSC Re: Failure
+   to Prosecute Default Judgment, the default/dismissal status and whether the
+   prove-up packet is in. The figures come from lib/case-status.js, the engine
+   the case page itself uses, so a case reads the same in both places.
+
+   The status sits after the case link inside the case cell, so it runs on from
+   the case name and wraps underneath it when the line doesn't fit.
+
+   It costs case fetches, so: only rows carrying a hearing we'd work up are
+   computed (the same test the case page applies to its Next event), no more than
+   CASE_STATUS_MAX of them per day, CASE_STATUS_LANES cases at a time, and every
+   answer is cached for the browser session — paging back to a day repaints it
+   without a single request.
+------------------------------------------------- */
+
+const STATUS_CLASS = '__lacourt_case_status__';
+const STATUS_KEY_ATTR = 'data-lac-status-key';
+const CASE_STATUS_MAX = 40;
+const CASE_STATUS_LANES = 3;
+
+const MONTH_NAMES = ['january', 'february', 'march', 'april', 'may', 'june', 'july',
+  'august', 'september', 'october', 'november', 'december'];
+
+// The day the agenda is showing, as M/D/YYYY. Normally the ?day= param; when the
+// view carries no param, the page header spells it out ("Stanley Mosk:
+// Wednesday, August 5, 2026").
+let __agendaDayCache = null;
+function agendaDayDate() {
+  if (__agendaDayCache !== null) return __agendaDayCache;
+  let day = agendaDay();
+  if (!day) {
+    const text = (document.body ? document.body.textContent || '' : '').slice(0, 4000);
+    const m = text.match(new RegExp('\\b(' + MONTH_NAMES.join('|') + ')\\s+(\\d{1,2}),\\s*(\\d{4})', 'i'));
+    if (m) day = (MONTH_NAMES.indexOf(m[1].toLowerCase()) + 1) + '/' + (+m[2]) + '/' + m[3];
+  }
+  __agendaDayCache = day || '';
+  return __agendaDayCache;
+}
+
+// One job per row that has a case and a hearing we work up: the case cell to
+// paint, the case id to fetch, and the hearing the figures are for.
+function caseStatusJobs() {
+  const table = document.getElementById('day-table');
+  const day = agendaDayDate();
+  if (!table || !day) return [];
+  const jobs = [];
+  for (const row of table.querySelectorAll('tr.js-row')) {
+    if (row.style.display === 'none') continue;
+    const cells = row.querySelectorAll('td');
+    if (cells.length < 7) continue;
+    const caseA = cells[6].querySelector('a[href*="/ecourt/ecms/case"]');
+    const idm = (caseA ? (caseA.getAttribute('href') || caseA.href || '') : '').match(/[?&]id=(\d+)/);
+    if (!idm) continue;
+    // A row can list several hearings; the status is for the first one we'd work
+    // up — a motion or a default-judgment OSC, skipping conferences and trials.
+    let hearing = '';
+    for (const a of cells[5].querySelectorAll('a')) {
+      const b = a.querySelector('b');
+      const txt = stripTrailingParenNumber(((b || a).textContent || '').replace(/\s+/g, ' ').trim());
+      if (txt && isWorkableHearing(txt)) { hearing = txt; break; }
+    }
+    if (!hearing) continue;
+    jobs.push({ cell: cells[6], link: caseA, caseId: idm[1], hearing, day, key: idm[1] + '|' + day + '|' + hearing });
+  }
+  return jobs;
+}
+
+// The status line for one row, as HTML ('' when the hearing turns out not to be
+// briefed on the hearing date, e.g. a new-trial or reconsideration motion).
+async function caseStatusHtmlFor(job) {
+  const c = computeDueDatesFor({
+    hearingType: job.hearing,
+    // The agenda drops the "Hearing on " prefix the case header carries; the
+    // motion type is whatever is left either way.
+    motionType: stripHearingOnPrefix(job.hearing),
+    hearingDate: job.day,
+  });
+  if (!c || c.skip) return '';
+  const ctx = caseCtxForId(job.caseId);
+  if (c.osc) return statusHtml(c, null, await computeOscStatus(ctx));
+  return statusHtml(c, await computeFiledStatus(ctx, c), null);
+}
+
+function paintCaseStatus(job, html) {
+  if (!html || !job.cell.isConnected) return;
+  withAgendaBatch(() => {
+    let el = job.cell.querySelector('.' + STATUS_CLASS);
+    if (!el) {
+      el = document.createElement('span');
+      el.className = STATUS_CLASS;
+      // Inline, so it starts beside the case name and wraps under it when long.
+      // Copy All reads the case cell's <a> only, so this never reaches the
+      // clipboard output.
+      el.setAttribute('style', 'display:inline;margin-left:10px;font-weight:600;white-space:normal;font-family:inherit;');
+      // Directly after the case link, so it sits beside the NAME rather than
+      // after whatever else the cell carries.
+      if (job.link && job.link.parentNode === job.cell) job.link.insertAdjacentElement('afterend', el);
+      else job.cell.appendChild(el);
+    }
+    if (el.getAttribute(STATUS_KEY_ATTR) === job.key && el.innerHTML === html) return;
+    el.setAttribute(STATUS_KEY_ATTR, job.key);
+    el.innerHTML = html;
+  });
+}
+
+let __statusPassRunning = false;
+async function paintCaseStatuses() {
+  if (__statusPassRunning) return;
+  __statusPassRunning = true;
+  try {
+    await loadExcludedTerms(); // so "a hearing we work up" honours the user's list
+    let jobs = caseStatusJobs().filter(job => {
+      const el = job.cell.querySelector('.' + STATUS_CLASS);
+      return !el || el.getAttribute(STATUS_KEY_ATTR) !== job.key; // already showing this hearing
+    });
+    if (!jobs.length) return;
+    if (jobs.length > CASE_STATUS_MAX) {
+      console.log('[LACourt-Agenda] case status: computing the first', CASE_STATUS_MAX,
+        'of', jobs.length, 'workable rows; the rest are left blank');
+      jobs = jobs.slice(0, CASE_STATUS_MAX);
+    }
+    // Session-cached answers first: they paint without a request.
+    const cold = [];
+    for (const job of jobs) {
+      const hit = await sessGet('caseStatus:' + job.key);
+      if (hit) paintCaseStatus(job, hit); else cold.push(job);
+    }
+    await runWithConcurrency(cold, CASE_STATUS_LANES, async job => {
+      const html = await caseStatusHtmlFor(job);
+      if (!html) return;
+      sessSet('caseStatus:' + job.key, html);
+      paintCaseStatus(job, html);
+    });
+    dlLog('agenda case status painted:', jobs.length - cold.length, 'cached,', cold.length, 'fetched');
+  } catch (e) {
+    try { console.log('[LACourt-Agenda] case status failed:', (e && e.message) || e); } catch (_) {}
   } finally {
-    // Release on the next frame: the observer callbacks queued by the mutations
-    // above run as microtasks (before this rAF), so they see the guard still set
-    // and skip; genuine later mutations resume normally.
-    requestAnimationFrame(() => { __agendaBatching = false; });
+    __statusPassRunning = false;
   }
 }
 
@@ -960,6 +1072,9 @@ function applyAgendaChanges(swaps) {
         running = false;
         // Pre-copy the cleaned agenda to the clipboard once the page has settled.
         try { autoCopyAgenda(); } catch (_) {}
+        // Then fill in each case's briefing/default status beside its name. Runs
+        // after the renames so the status is keyed to the FULL hearing name.
+        try { paintCaseStatuses(); } catch (_) {}
       });
   };
   const schedule = () => {

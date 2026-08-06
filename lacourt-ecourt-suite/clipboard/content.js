@@ -32,6 +32,21 @@
 (function () {
   'use strict';
 
+  // The case-status engine (lib/case-status.js, loaded first) — the deadline
+  // maths, document/party parsing, and background case fetches, shared with the
+  // agenda page so both show the same figures from one implementation.
+  const {
+    makeCaseCtx, emptyDoc, caseTabUrlFrom, fetchCaseDoc, fetchAllDocuments,
+    parsePartiesTable, parseFutureHearings, parseHearingDateTime,
+    computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
+    isOscDefaultJudgment, isWorkableHearing, loadExcludedTerms,
+    isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
+    docWordOverlap, docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
+    isDemurrerOrMotionToStrikeDoc, isPetitionDoc, latestDoc, findDefaultProveUp,
+    sameCalendarDay, stripEventId, stripTrailingParenNumber, stripHearingOnPrefix,
+    movantNormName, fmtShortDate, dlLog,
+  } = LACCaseStatus;
+
   /* ------------------------------------------------------------------ */
   /* Default judgment (OSC Re: Failure to Prosecute / Prove-Up) flow     */
   /* ------------------------------------------------------------------ */
@@ -49,18 +64,6 @@
   // authenticated context (the Auto-Export companion extension needs this
   // session to call the owner-API; the public ResponsePage URL returns 401).
   const REGULAR_FORM_URL = 'https://forms.office.com/Pages/DesignPageV2.aspx?prevorigin=rbf&origin=NeoPortalPage&rpring=UsGovGccProduction&subpage=design&id=x8OU3Ei7_0CTBeRz_W9qFt74YgjxwElOsa89AoRCn9FUQzNGQ0NPWVpUMDBVTzcwN1I2Q0JFOVFZVi4u&analysis=false&tab=0&topview=Preview';
-
-  // Triggers the default-judgment flow: either an OSC Re: Failure to Prosecute
-  // Default Judgment, or a Default Prove-Up Hearing — both are worked up the same
-  // way (prove-up packet documents, recommendation email, fee calculator). The
-  // OSC branch must include "Default Judgment"; the OSC for other reasons
-  // (sanctions, etc.) doesn't go through this flow.
-  const OSC_DEFAULT_JUDGMENT_RE = /\border\s+to\s+show\s+cause\s+re:?\s+failure\s+to\s+prosecute\s+default\s+judgment\b|\bprove\s*-?\s*up\b/i;
-
-  function isOscDefaultJudgment(hearingType) {
-    if (!hearingType) return false;
-    return OSC_DEFAULT_JUDGMENT_RE.test(hearingType);
-  }
 
   /**
    * Builds the mailto: URL fired automatically when Fill Microsoft Form is
@@ -1178,208 +1181,6 @@ function formatCombinedList(names, roleType, shortNameMap) {
   return result;
 }
 
-/**
- * Parses the parties table.
- * Rows in the parties section each contain an a[title='UPDATE PARTY'] anchor.
- * The party name and role are in nearby cells. Structure may vary, so we walk
- * up to the row, then read its text cells.
- */
-function parsePartiesTable(root) {
-  root = root || document;
-  const anchors = root.querySelectorAll('a[title="UPDATE PARTY"]');
-  if (anchors.length === 0) return [];
-
-  // Pattern that marks a party as removed and no-longer-named on the case.
-  // Such parties are excluded from the paste output. Match is case-
-  // insensitive. Variants observed in the wild:
-  //   "Removed - No Longer Named 03/11/2026"  (Removed + dash + phrase)
-  //   "Removed-No Longer Named 03/11/2026"    (no spaces around dash)
-  //   "REMOVED \u2013 NO LONGER NAMED 03/11/2026" (en-dash, all caps)
-  //   "No Longer Named 01/24/2025"            (bare; observed on cross-
-  //                                            defendant rows that were
-  //                                            dropped from the case without
-  //                                            a "Removed -" prefix)
-  // We match either form: the bare "no longer named" phrase suffices since
-  // it's specific enough to avoid false positives.
-  const REMOVED_RE = /\bno\s+longer\s+named\b/i;
-
-  // Heading rows in the parties table introduce a "section" — the original
-  // complaint, an amended complaint, or one of potentially several cross-
-  // complaints. We only want parties from the original/amended complaint
-  // section AND from the FIRST cross-complaint section. Any subsequent
-  // cross-complaints are dropped (the user will splice those into the mail
-  // merge document by hand).
-  //
-  // Sample heading row texts:
-  //   "Complaint filed by Fuxin Sun on 03/11/2026"
-  //   "Amended Complaint (2nd) filed by Fuxin Sun on 03/11/2026"
-  //   "Cross-Complaint filed by Try Touch Service on 04/12/2026"
-  //
-  // The headings are anchored with ^ because some E-court tables include a
-  // giant outer "container" row whose textContent concatenates every cell in
-  // the table, including the heading text from real heading rows further
-  // down. Without the anchor, that container row would falsely match
-  // HEADING_CROSS_RE (consuming the "first cross-complaint" slot) and the
-  // genuine cross-complaint heading would then be treated as the SECOND one
-  // and have its parties dropped. The combination of an anchored regex +
-  // requiring the row to have no UPDATE PARTY anchor (real heading rows
-  // never do) reliably excludes the container row.
-  const HEADING_COMPLAINT_RE = /^\s*(amended\s+)?complaint\s+filed\s+by\b/i;
-  const HEADING_CROSS_RE     = /^\s*cross[-\s]?complaint\s+filed\s+by\b/i;
-  // An appeal opens its own subcase section, e.g.
-  //   "Appeal filed by Adam Roe on 05/14/2026"
-  // whose rows re-list parties under their APPELLATE designations —
-  // "Appellant (Appellant)" and "Respondent (Respondent)". Those designations
-  // are carried IN ADDITION to the party's trial-court role, and the party is
-  // already listed under that role in the complaint section above. This is a
-  // trial court, so the appellate rows are dropped: keeping them would file the
-  // plaintiff/appellate respondent under the defendant/respondent side (wrong
-  // caption on export, and a false "not in default/dismissed" defendant on the
-  // OSC Re: Failure to Prosecute Default Judgment status line).
-  const HEADING_APPEAL_RE    = /^\s*(notice\s+of\s+)?(cross[-\s]?)?appeal\s+filed\s+by\b/i;
-
-  // Locate the parties table. The UPDATE PARTY anchors live inside it; walk
-  // up from the first anchor to its enclosing <table>.
-  const firstRow = anchors[0].closest('tr');
-  const partiesTable = firstRow && firstRow.closest('table');
-  if (!partiesTable) return [];
-
-  // Iterate every <tr> in document order so heading rows can be detected
-  // and the per-row "section" tracked. anchors-based iteration alone would
-  // miss the heading rows entirely.
-  const allRows = Array.from(partiesTable.querySelectorAll('tr'));
-
-  const parties = [];
-  // Section enum:
-  //   'primary'  → original/amended complaint (always included)
-  //   'cross-1'  → first cross-complaint (included)
-  //   'cross-N'  → subsequent cross-complaints (excluded)
-  //   'appeal'   → an appeal subcase (excluded; see HEADING_APPEAL_RE)
-  let currentSection = 'primary';
-  let crossSectionsSeen = 0;
-
-  for (const row of allRows) {
-    const rowText = (row.textContent || '').trim().replace(/\s+/g, ' ');
-    if (!rowText) continue;
-
-    // Real heading rows never contain an UPDATE PARTY anchor. Requiring the
-    // absence of one is a defense-in-depth guard against rows whose text
-    // happens to start with a heading-shaped phrase (e.g. a party-row whose
-    // name begins with "Complaint" or similar).
-    const hasUpdateAnchor = !!row.querySelector('a[title="UPDATE PARTY"]');
-
-    // Heading-row detection. Cross- check goes first because the cross
-    // pattern is a more specific superset (the primary pattern's "complaint
-    // filed by" substring also appears inside "Cross-Complaint filed by").
-    if (!hasUpdateAnchor && HEADING_APPEAL_RE.test(rowText)) {
-      currentSection = 'appeal-skip';
-      continue;
-    }
-    if (!hasUpdateAnchor && HEADING_CROSS_RE.test(rowText)) {
-      crossSectionsSeen += 1;
-      currentSection = (crossSectionsSeen === 1) ? 'cross-1' : 'cross-skip';
-      continue;
-    }
-    if (!hasUpdateAnchor && HEADING_COMPLAINT_RE.test(rowText)) {
-      currentSection = 'primary';
-      continue;
-    }
-
-    // Party-row detection: must contain an UPDATE PARTY anchor.
-    if (!hasUpdateAnchor) continue;
-
-    // Drop any parties belonging to a 2nd+ cross-complaint section, or to an
-    // appeal subcase (the party's substantive role comes from the complaint
-    // section; the appellate designation is not a caption role here).
-    if (currentSection === 'cross-skip' || currentSection === 'appeal-skip') continue;
-
-    // Read each cell's trimmed text.
-    const cells = Array.from(row.querySelectorAll('td')).map(td => {
-      return (td.textContent || '').trim().replace(/\s+/g, ' ');
-    }).filter(Boolean);
-
-    // If any cell on this row indicates the party has been removed, skip
-    // the row entirely. The "Party Status" column is column 5 by header
-    // order, but empty cells get filtered out above so positional indexing
-    // isn't reliable — text-matching across all cells is more robust and
-    // there are no other columns whose values would collide with this
-    // phrase.
-    if (cells.some(c => REMOVED_RE.test(c))) continue;
-
-    // Detect "Dismissed MM/DD/YYYY" in the Party Status column. Unlike
-    // "No Longer Named", a dismissed party may still be a party to certain
-    // post-judgment motions (attorney fees, costs, sanctions). We keep
-    // these parties in the parsed output and flag them as dismissed so the
-    // caller can decide whether to drop them based on motion type.
-    const DISMISSED_RE = /\bdismissed\b/i;
-    const dismissed = cells.some(c => DISMISSED_RE.test(c));
-
-    // Detect an entered default and its date from the status column, e.g.
-    // "Defaulted 01/29/2025" / "Default 05/12/2026" / "Default Entered 05/12/2026".
-    // Match "default" or "defaulted" (the plain \bdefault\b boundary fails on the
-    // "-ed" form eCourt actually uses). Used by the OSC Re: Failure to Prosecute
-    // Default Judgment status indicator.
-    let defaultDate = null;
-    for (const c of cells) {
-      if (!/\bdefault(?:ed)?\b/i.test(c)) continue;
-      const dm = c.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
-      defaultDate = dm ? parseHearingDateTime(dm[1]) : new Date(0); // date if present, else epoch sentinel
-      break;
-    }
-
-    // Identify the role cell (one of the cells starts with a known role keyword).
-    // Note: cross-* alternatives are listed first so the regex engine matches
-    // them as a single token rather than letting "Defendant" match the start
-    // of "Cross-Defendant" (it can't anyway because of the ^ anchor, but this
-    // keeps the intent explicit).
-    let role = '';
-    let roleIdx = -1;
-    const roleRe = /^(cross[-\s]?complainant|cross[-\s]?defendant|plaintiff|defendant|petitioner|respondent)\b/i;
-    for (let i = 0; i < cells.length; i++) {
-      if (roleRe.test(cells[i])) {
-        role = cells[i];
-        roleIdx = i;
-        break;
-      }
-    }
-
-    // The name is the first non-role, non-action-button cell.
-    let name = '';
-    for (let i = 0; i < cells.length; i++) {
-      if (i === roleIdx) continue;
-      const text = cells[i];
-      if (/^(update\s*party|edit|delete|view|action)$/i.test(text)) continue;
-      // Skip cells that are purely numeric (party index).
-      if (/^\d+\.?$/.test(text)) continue;
-      name = text;
-      break;
-    }
-
-    // Strip parenthetical content from name.
-    if (name) {
-      // For a defendant / cross-defendant, preserve a "(Doe N)" / "(Does 1-10)"
-      // designation — it identifies which fictitious defendant the party was
-      // named as — even though the role and entity-type parentheticals are
-      // stripped.
-      let doe = '';
-      if (/\b(?:cross[-\s]?defendant|defendant)\b/i.test(role)) {
-        const dm = name.match(/\(\s*does?\b[^)]*\)/i);
-        if (dm) doe = dm[0].replace(/\s+/g, ' ').trim();
-      }
-      const parenIdx = name.indexOf('(');
-      if (parenIdx !== -1) name = name.substring(0, parenIdx).trim();
-      // Also strip trailing "Update Party" if it leaked in.
-      name = name.replace(/\s*update\s*party\s*$/i, '').trim();
-      if (doe) name = (name + ' ' + doe).trim();
-    }
-
-    if (name) {
-      parties.push({ name, role, dismissed, defaultDate });
-    }
-  }
-
-  return parties;
-}
 
 /**
  * Collects every NON-party name on the Parties page — attorneys, law firms, and
@@ -1517,41 +1318,7 @@ function parseCaseNumber(root) {
   return m ? m[0] : '';
 }
 
-/**
- * Strips a trailing system event id from a Next-event description.
- *
- * e-court appends an event id to the end of the Next-event text. The format
- * has drifted over time — seen both without and with a space after the hyphen:
- *   "Hearing on Motion to Compel Discovery ID-148870297793"
- *   "Hearing on Motion for Summary Judgment ID- 396523215423"
- * The user wants "ID" and everything after it dropped from the motion type /
- * hearing type. We match a standalone "ID" token followed by any mix of
- * separators (hyphen / colon / hash / spaces) and then digits, through end of
- * string. Requiring the trailing digits (and the \b before "ID") keeps real
- * words like "grid-5" or "...Valid" from being clipped.
- */
-function stripEventId(desc) {
-  if (!desc) return desc;
-  return desc.replace(/\s*\bID\b[\s:#-]*\d[\d\s]*$/i, '').trim();
-}
 
-/**
- * Drops trailing number-only decorations from a motion type: a purely numeric
- * parenthetical ("Motion to Compel Discovery (12345)", "Demurrer (2)") or a
- * dash-number ("Motion to Compel - 3891"). Repeats so stacked forms
- * ("X (123) - 456") fully strip. Alphanumeric parentheticals such as
- * "(CCP 437c)" / "(Set One)" and worded dashes ("Demurrer - without Motion to
- * Strike") are kept. KEEP IN SYNC with agenda/content.js.
- */
-function stripTrailingParenNumber(s) {
-  if (!s) return s;
-  let prev;
-  do {
-    prev = s;
-    s = s.replace(/\s*(?:\(\s*\d[\d\s.,\-]*\)|[-–—]\s*\d[\d\s.,]*)\s*$/, '').trim();
-  } while (s !== prev);
-  return s;
-}
 
 /**
  * Finds the motion type from the "Next Event" indicator. Returns the text
@@ -1720,88 +1487,14 @@ function parseHearingDate(root) {
 // Everything degrades to '' (blank, manual) on any failure so Export never
 // breaks.
 
-function movantNormName(s) {
-  return (s || '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
-}
 
-// "motion"/"hearing" appear in nearly every motion type and doc name, so they
-// carry no signal for matching a hearing to its moving paper — treat them as
-// stopwords so the discriminating terms (demurrer, compel, strike, …) decide.
-const MOVANT_STOPWORDS = new Set(['the', 'of', 'for', 'and', 'to', 'a', 'an', 'on', 'in', 're', 'with', 'by', 'motion', 'hearing']);
 
-function movantSigTokens(s) {
-  return (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
-    .split(' ').filter(t => t.length > 1 && !MOVANT_STOPWORDS.has(t));
-}
 
-// eCourt document names carry standardized qualifiers that describe what a paper
-// does NOT include and inject tokens absent from the hearing description, e.g.
-// "Motion to Strike (not anti-SLAPP) - without Demurrer" or "Demurrer - without
-// Motion to Strike". Strip parentheticals and any trailing dash-prefixed
-// "with/without …" clause so matching keys on the core motion phrase.
-function stripMotionQualifiers(s) {
-  return (s || '')
-    .replace(/\([^)]*\)/g, ' ')
-    .replace(/\s[-–—]\s*(?:with|without)\b.*$/i, ' ')
-    .replace(/\s+/g, ' ').trim();
-}
 
-function movantTokenHit(a, b) {
-  if (a === b) return true;
-  if (a.length >= 4 && b.length >= 4 && (b.startsWith(a) || a.startsWith(b))) return true;
-  return false;
-}
 
-function movantMatchScore(motionType, docName) {
-  const mt = [...new Set(movantSigTokens(stripMotionQualifiers(motionType)))];
-  const dn = [...new Set(movantSigTokens(stripMotionQualifiers(docName)))];
-  if (!mt.length || !dn.length) return 0;
-  let mtHit = 0;
-  for (const t of mt) if (dn.some(d => movantTokenHit(t, d))) mtHit++;
-  let dnHit = 0;
-  for (const d of dn) if (mt.some(t => movantTokenHit(t, d))) dnHit++;
-  // Bidirectional: a concise doc name that fully matches the motion type's key
-  // terms scores high even when the motion type carries extra descriptors
-  // (e.g. "Demurrer - without Motion to Strike" vs a doc named "Demurrer").
-  return Math.max(mtHit / mt.length, dnHit / dn.length);
-}
 
-// Is this document Name an actual moving paper (motion/demurrer/etc.), not a
-// response, order, minute order, declaration, etc. that rides alongside it?
-function isMovingPaper(name) {
-  if (!name) return false;
-  const n = name.trim();
-  if (/^(Opposition|Reply|Response|Declaration|Proof of (Personal )?Service|Order\b|Minute Order|Notice\b|Brief|Request\b|Certificate|Summons|Appeal\b|Case Management|Ex Parte Proposed Order|Points and Authorities|Memorandum|Stipulation|Objection|Separate Statement)/i.test(n)) {
-    return false;
-  }
-  return /^(Motion|Demurrer|Petition|Application|Ex Parte Application|Anti-SLAPP|Special Motion|Amended Motion|Renewed Motion|Cross-?Motion)/i.test(n);
-}
 
-function bestFilingMatch(motionType, filings) {
-  let best = null, bestScore = 0;
-  for (const f of filings) {
-    if (!isMovingPaper(f.name)) continue;
-    const s = movantMatchScore(motionType, f.name);
-    if (s > bestScore) { bestScore = s; best = f; }
-  }
-  return bestScore >= 0.5 ? best : null;
-}
 
-// Parse a "Filed By" cell into { parties:[{name,role}], truncated }.
-function parseFiledByParties(text) {
-  if (!text) return { parties: [], truncated: false };
-  let s = text.replace(/\s+/g, ' ').trim();
-  let truncated = false;
-  if (/\bet al\.?\s*$/i.test(s)) { truncated = true; s = s.replace(/\s*\bet al\.?\s*$/i, '').trim(); }
-  const parts = s.split(';').map(x => x.trim()).filter(Boolean);
-  const parties = [];
-  for (const p of parts) {
-    const m = p.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
-    if (m) parties.push({ name: m[1].trim(), role: m[2].trim() });
-    else parties.push({ name: p, role: '' });
-  }
-  return { parties, truncated };
-}
 
 function pluralizeRole(role, count) {
   if (!role) return role;
@@ -1956,13 +1649,7 @@ function formatMovant(parties, truncated, roster) {
 // Finds a case tab's URL by its visible link text (e.g. "Documents",
 // "Parties"). The case sub-nav is present on every case page.
 function getCaseTabUrl(label) {
-  try {
-    const links = document.querySelectorAll('a[href*="/ecourt/ecms/case"]');
-    for (const a of links) {
-      if ((a.textContent || '').trim().toLowerCase() === label && a.href) return a.href;
-    }
-  } catch (_) {}
-  return null;
+  return caseTabUrlFrom(document, label);
 }
 
 // Documents-page URL: the "Documents" tab link, else swap formId=279 in.
@@ -2007,146 +1694,11 @@ function getHearingsUrl() {
 // hearing instead. The exclusion list is the same `excludedTerms` the agenda
 // cleaner uses (chrome.storage.sync), so editing it in options affects both.
 
-// Keep in sync with agenda/content.js DEFAULT_EXCLUDED_TERMS.
-const DEFAULT_EXCLUDED_TERMS = [
-  'conference',
-  'non-appearance case revie',
-  'non-jury trial',
-  'order to show cause re: d',
-  'ex parte',
-  'application for order for',
-  'jury trial',
-  'post-arbitration status c',
-  'post-mediation status con',
-  'order to show cause re: s',
-  'informal discovery confer',
-];
 
-let EXCLUDED_TERMS_CACHE = null;
 
-function loadExcludedTerms() {
-  return new Promise(resolve => {
-    if (EXCLUDED_TERMS_CACHE) { resolve(EXCLUDED_TERMS_CACHE); return; }
-    try {
-      chrome.storage.sync.get(['excludedTerms'], r => {
-        const terms = (r && Array.isArray(r.excludedTerms) && r.excludedTerms.length)
-          ? r.excludedTerms : DEFAULT_EXCLUDED_TERMS;
-        EXCLUDED_TERMS_CACHE = terms;
-        resolve(terms);
-      });
-    } catch (_) {
-      EXCLUDED_TERMS_CACHE = DEFAULT_EXCLUDED_TERMS;
-      resolve(DEFAULT_EXCLUDED_TERMS);
-    }
-  });
-}
 
-try {
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'sync' && changes.excludedTerms) {
-      EXCLUDED_TERMS_CACHE = Array.isArray(changes.excludedTerms.newValue) && changes.excludedTerms.newValue.length
-        ? changes.excludedTerms.newValue : DEFAULT_EXCLUDED_TERMS;
-    }
-  });
-} catch (_) {}
 
-// Case-insensitive substring match against the exclusion terms, mirroring the
-// agenda cleaner's isExcluded().
-// Match one excluded term against a hearing text. A term wrapped in double
-// quotes ("...") requires the whole text to equal it exactly (trimmed); an
-// unquoted term matches as a substring. Terms are already stored lowercased.
-// KEEP IN SYNC with agenda/content.js excludedTermMatches().
-function excludedTermMatches(term, lower) {
-  if (!term) return false;
-  const quoted = term.match(/^"(.*)"$/);
-  if (quoted) return lower.trim() === quoted[1].trim();
-  return lower.includes(term);
-}
 
-function isHearingExcluded(text) {
-  if (!text) return false;
-  const lower = text.toLowerCase();
-  const terms = EXCLUDED_TERMS_CACHE || DEFAULT_EXCLUDED_TERMS;
-  return terms.some(t => excludedTermMatches(t, lower));
-}
-
-function stripHearingOnPrefix(s) {
-  return (s || '').replace(/^\s*Hearing on\s+/i, '').trim();
-}
-
-// Parses "MM/DD/YYYY HH:MM AM/PM" into a Date (local). Returns null on failure.
-function parseHearingDateTime(s) {
-  const m = (s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})\s*(AM|PM)?)?/i);
-  if (!m) return null;
-  const mo = +m[1], d = +m[2], y = +m[3];
-  let hh = m[4] ? +m[4] : 0;
-  const mm = m[5] ? +m[5] : 0;
-  if (m[6]) {
-    const up = m[6].toUpperCase();
-    if (up === 'PM' && hh < 12) hh += 12;
-    if (up === 'AM' && hh === 12) hh = 0;
-  }
-  return new Date(y, mo - 1, d, hh, mm);
-}
-
-// Parses future scheduled hearings from a Hearings-tab document: rows in tables
-// whose header has Name / Date/Time / Status columns, kept when Status is
-// "Scheduled" and the date is today or later. Returns them soonest-first,
-// deduped by type+date. Each: { type, date, when }.
-function parseFutureHearings(doc) {
-  const rows = [];
-  const tables = doc.querySelectorAll('table');
-  for (const table of tables) {
-    let headerRow = null, nameIdx = -1, dateIdx = -1, statusIdx = -1;
-    for (const tr of table.querySelectorAll('tr')) {
-      const texts = Array.from(tr.children).map(td => (td.textContent || '').replace(/\s+/g, ' ').trim());
-      const ni = texts.indexOf('Name'), di = texts.indexOf('Date/Time'), si = texts.indexOf('Status');
-      if (ni !== -1 && di !== -1 && si !== -1) { headerRow = tr; nameIdx = ni; dateIdx = di; statusIdx = si; break; }
-    }
-    if (!headerRow) continue;
-
-    let started = false;
-    const maxIdx = Math.max(nameIdx, dateIdx, statusIdx);
-    for (const tr of table.querySelectorAll('tr')) {
-      if (tr === headerRow) { started = true; continue; }
-      if (!started) continue;
-      const cells = Array.from(tr.children);
-      if (cells.length <= maxIdx) continue; // skip the continuance sub-rows
-      const name = (cells[nameIdx] ? cells[nameIdx].textContent : '').replace(/\s+/g, ' ').trim();
-      const dateTime = (cells[dateIdx] ? cells[dateIdx].textContent : '').replace(/\s+/g, ' ').trim();
-      const status = (cells[statusIdx] ? cells[statusIdx].textContent : '').replace(/\s+/g, ' ').trim();
-      if (!name || !dateTime) continue;
-      if (!/^scheduled$/i.test(status)) continue; // only genuinely upcoming
-      const when = parseHearingDateTime(dateTime);
-      const dm = dateTime.match(/\d{1,2}\/\d{1,2}\/\d{4}/);
-      if (!when || !dm) continue;
-      rows.push({ type: stripTrailingParenNumber(stripEventId(name)), date: dm[0], when });
-    }
-  }
-
-  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
-  const seen = new Set();
-  return rows
-    .filter(h => h.when >= startOfToday)
-    .filter(h => { const k = h.type + '@' + h.date; if (seen.has(k)) return false; seen.add(k); return true; })
-    .sort((a, b) => a.when - b.when);
-}
-
-// A hearing we "work up": a motion (a "Hearing on <motion>" event, minus the
-// few excluded types like ex parte) or an OSC Re: Failure to Prosecute Default
-// Judgment. Case management conferences, trials, status conferences, reviews,
-// and other OSCs are NOT worked up, so anything keyed on the Next event should
-// skip past them to the next workable hearing.
-// A motion we work up, named either as the "Next:" banner form ("Hearing on
-// <motion>") or as a Hearings-tab entry that names the motion directly
-// ("Motion …", "Demurrer …", "Anti-SLAPP …", "Petition …", "Application …").
-const MOTION_HEARING_RE = /\bhearing on\b|^(?:amended\s+|renewed\s+|cross-?\s*|special\s+)?motion\b|^demurrer\b|^anti-?slapp\b|^petition\b|^application\b/i;
-function isWorkableHearing(type) {
-  if (!type) return false;
-  if (isOscDefaultJudgment(type)) return true;
-  if (isHearingExcluded(type)) return false;
-  return MOTION_HEARING_RE.test(type);
-}
 
 // Resolves the effective hearing: the Next event when it's something we work up,
 // otherwise the soonest future scheduled hearing on the Hearings tab that IS a
@@ -2225,25 +1777,7 @@ function parseDocumentsFilingsFrom(doc) {
   return [];
 }
 
-function fetchWithTimeout(url, ms) {
-  return Promise.race([
-    fetch(url, { credentials: 'include' }),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms)),
-  ]);
-}
 
-// Fetch a case page (same authenticated origin) and parse it into a Document.
-// Returns null on any failure.
-async function fetchCaseDoc(url) {
-  try {
-    const res = await fetchWithTimeout(url, 6000);
-    if (!res || !res.ok) return null;
-    const html = await res.text();
-    return new DOMParser().parseFromString(html, 'text/html');
-  } catch (_) {
-    return null;
-  }
-}
 
 // Async: resolves to the Movant string, or '' on any failure / no match.
 // `partiesRoot` is the document the party roster is read from (the live page
@@ -2321,150 +1855,8 @@ async function getExportContext() {
 //     meaningful word with the motion type, plus each Opposition/Reply and its
 //     same-day co-filings.
 
-const DOC_STOP = new Set(['motion','opposition','reply','response','notice','declaration',
-  'memorandum','points','authorities','support','order','proposed','hearing','plaintiff',
-  'defendant','plaintiffs','defendants','exhibit','proof','service','with','from','that',
-  'this','case','court','filed','amended']);
 
-function docSigTokens(s) {
-  return (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
-    .filter(t => t.length >= 4 && !DOC_STOP.has(t));
-}
-function docWordOverlap(name, motionType) {
-  const a = new Set(docSigTokens(motionType));
-  if (!a.size) return false;
-  return docSigTokens(name).some(t => a.has(t));
-}
-// Common motion abbreviations, so a filing that names the motion by its shorthand
-// ("Reply ISO Ford's MSA") still links to the spelled-out motion type ("Motion
-// for Summary Adjudication") even though no full word overlaps.
-const MOTION_ABBREV_RE = /\bms[ja]\b|summary\s+(?:judgment|adjudication)|\bmil\b|motion\s+in\s+limine|\bmtc\b|motion\s+to\s+compel|\bmtq\b|motion\s+to\s+quash/i;
-function motionAbbrevMatch(name, motionType) {
-  return MOTION_ABBREV_RE.test(name || '') && MOTION_ABBREV_RE.test(motionType || '');
-}
-// A filing links to the upcoming motion if it shares a significant word or a
-// known abbreviation with the motion type.
-function docLinksToMotion(name, motionType) {
-  return docWordOverlap(name, motionType) || motionAbbrevMatch(name, motionType);
-}
-// A real opposition — NOT a "Notice of Non-Opposition", which the moving party
-// files to note the ABSENCE of an opposition and must not count as one.
-function isOppositionDoc(name) {
-  return /\bopposition\b/i.test(name || '') && !/\bnon-?\s*opposition\b/i.test(name || '');
-}
-// A "Notice of Non-Opposition" / "Statement of No Opposition" — a filing that
-// affirmatively notes the ABSENCE of any opposition, rather than opposing on the
-// merits. Depending on who filed it, it stands in for a Reply (moving party) or
-// for the Opposition (non-moving party). See fetchNextDeadlineFilings.
-function isNonOppositionDoc(name) {
-  return /\bnon-?\s*opposition\b/i.test(name || '') || /\bno\s+opposition\b/i.test(name || '');
-}
-function docPartyNames(filedBy) {
-  return parseFiledByParties(filedBy).parties.map(p => movantNormName(p.name)).filter(Boolean);
-}
-function docSharesParty(a, b) { const A = new Set(a); return b.some(x => A.has(x)); }
-function sameCalendarDay(x, y) { return !!(x && y && x.getTime() === y.getTime()); }
 
-function isComplaintDoc(name) {
-  const n = (name || '').trim();
-  if (/^amendment to /i.test(n)) return false;              // "Amendment to Complaint (Fictitious/Incorrect Name)"
-  if (/fictitious|incorrect\s+name/i.test(n)) return false;
-  return /^(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+)?amended\s+complaint\b/i.test(n)
-      || /^complaint\b/i.test(n);
-}
-function isCrossComplaintDoc(name) {
-  const n = (name || '').trim();
-  if (/^amendment to /i.test(n)) return false;
-  return /^(?:(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+)?(?:amended\s+)?cross-?complaint\b/i.test(n);
-}
-// An AMENDED complaint (not the original, not a cross-complaint). The
-// "\bamended complaint\b" test won't match "amended cross-complaint" (the
-// "cross-" breaks adjacency) or the original complaint.
-function isAmendedComplaintDoc(name) {
-  const n = (name || '').trim();
-  if (/^amendment to /i.test(n)) return false;               // "Amendment to Complaint (Fictitious/Incorrect Name)"
-  if (/fictitious|incorrect\s+name/i.test(n)) return false;
-  return /\bamended\s+complaint\b/i.test(n);
-}
-// The ordinal of an amended complaint: 1 for "First"/"1st"/"(1st)" or a bare
-// "Amended Complaint" (the first amendment is often titled without an ordinal),
-// 2 for "Second"/"2nd", etc. Returns null when it isn't an amended complaint.
-function amendedComplaintOrdinal(name) {
-  if (!isAmendedComplaintDoc(name)) return null;
-  const n = name || '';
-  const WORDS = ['first','second','third','fourth','fifth','sixth','seventh','eighth','ninth','tenth'];
-  const w = n.match(/\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\b/i);
-  if (w) return WORDS.indexOf(w[1].toLowerCase()) + 1;
-  const num = n.match(/\b(\d+)\s*(?:st|nd|rd|th)\b/i);
-  if (num) return parseInt(num[1], 10);
-  return 1; // bare "Amended Complaint" — the first amendment
-}
-// A plaintiff may amend once as a matter of course in response to a demurrer
-// (CCP 472). That single amendment is the FIRST amended complaint — a Second (or
-// later) Amended Complaint is NOT of right and cannot moot a demurrer to the FAC.
-// So only a first amended complaint counts as the "in lieu of opposition"
-// response. Titled a few ways: "First Amended Complaint", "1st Amended
-// Complaint", "Amended Complaint (1st)", or a bare "Amended Complaint".
-function isFirstAmendedComplaintDoc(name) { return amendedComplaintOrdinal(name) === 1; }
-// A demurrer or motion to strike — the challenges a plaintiff can moot by amending
-// once as a matter of course (CCP 472). isMovingPaper excludes the oppositions,
-// replies, notices, and orders that merely mention "demurrer"/"motion to strike".
-function isDemurrerOrMotionToStrikeDoc(name) {
-  return isMovingPaper(name) && (/\bdemurrer\b/i.test(name) || /\bmotion to strike\b/i.test(name));
-}
-// True when the hearing on calendar is itself a demurrer or motion to strike — a
-// first amended complaint filed in lieu of opposition moots either one.
-function isDemurrerOrStrikeMotion(motionType) {
-  return /\bdemurrer\b|\bmotion to strike\b/i.test(motionType || '');
-}
-// A challenge whose Result column shows it's already been ruled on / disposed of,
-// so it's not the moving paper for an upcoming hearing.
-function isResolvedChallengeResult(result) {
-  return /sustain|overrul|grant|deni|off[\s-]?calendar|moot|withdrawn|taken off/i.test(result || '');
-}
-// Resolve the moving paper for a given hearing. bestFilingMatch alone can't tell
-// identically-named challenges apart — e.g. a demurrer to the complaint AND a
-// demurrer to a cross-complaint, both "Demurrer - without Motion to Strike" — and
-// grabs the newest. When the pending challenge docs line up one-to-one with the
-// upcoming challenge hearings, pair them by date instead: the Nth challenge
-// hearing (soonest first) is answered by the Nth pending challenge (earliest
-// first). Falls back to bestFilingMatch whenever that clean pairing doesn't hold,
-// so ordinary single-motion cases are unchanged.
-function resolveMovingPaper(motionType, hearingWhen, hearings, docs) {
-  let md = bestFilingMatch(motionType, docs);
-  if (isDemurrerOrStrikeMotion(motionType) && hearingWhen) {
-    const challengeHearings = (hearings || []).filter(h => isDemurrerOrStrikeMotion(h.type));
-    const pendingChallenges = docs
-      .filter(d => d.when && isDemurrerOrMotionToStrikeDoc(d.name) && !isResolvedChallengeResult(d.result))
-      .sort((a, b) => a.when - b.when);
-    const idx = challengeHearings.findIndex(h => dayMs(h.when) === dayMs(hearingWhen));
-    if (idx >= 0 && challengeHearings.length === pendingChallenges.length && pendingChallenges[idx]) {
-      md = pendingChallenges[idx];
-    }
-  }
-  return md;
-}
-// A petition is another kind of initial pleading (probate, family, writ, etc.),
-// used as the operative pleading only when the case has no complaint. Match the
-// pleading ITSELF — a name that starts with "Petition" (optionally prefixed by
-// "Verified"/"Amended"/an ordinal) — NOT documents that merely reference one
-// ("Notice of Hearing on Petition", "Proof of Service of Petition", "Order on
-// Petition").
-function isPetitionDoc(name) {
-  const n = (name || '').trim();
-  if (/^amendment to /i.test(n)) return false;
-  if (/fictitious|incorrect\s+name/i.test(n)) return false;
-  return /^(?:(?:verified|amended|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+)*petition\b/i.test(n);
-}
-// Latest openable doc in a list (operative pleading).
-function latestDoc(list) {
-  let best = null;
-  for (const d of list) {
-    if (!d.openUrl) continue;
-    if (!best || (d.when && best.when && d.when > best.when) || (!best.when && d.when)) best = d;
-  }
-  return best;
-}
 
 function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearing, movingPaper) {
   const rel = new Map();
@@ -2597,124 +1989,10 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
 //     an administrative fee posting, not substantive to any hearing.
 const ALWAYS_IRRELEVANT_RE = /request to waive (additional )?court fees|\[?\s*proposed\s*\]?\s+order\b|jury fees/i;
 
-function absoluteDocUrl(u) { try { return new URL(u, location.origin).href; } catch (_) { return u; } }
 
-// Parses openable document rows from a Documents-tab document or paged fragment:
-// each openInNewWindow anchor yields
-// { docId, openUrl, name, dateStr, when, filedBy, status, result }.
-// Columns (by header order): Filed/Status Date(1) Name(2) Status(3) Result(4)
-// Result Date(5) Filed By(6). The default prove-up check reads Result.
-function parseDocRows(root) {
-  const rows = [], seen = new Set();
-  const anchors = root.querySelectorAll('a[onclick*="openInNewWindow"]');
-  for (const a of anchors) {
-    const oc = a.getAttribute('onclick') || '';
-    const um = oc.match(/openInNewWindow\('((?:[^'\\]|\\.)*)'\s*,\s*'((?:[^'\\]|\\.)*)'/);
-    if (!um) continue;
-    const url = um[1].replace(/\\\//g, '/');
-    if (!/\/ecourt\/ecms\/doc\?docId=/.test(url)) continue;
-    const idm = url.match(/docId=(\d+)/); if (!idm) continue;
-    const docId = idm[1]; if (seen.has(docId)) continue; seen.add(docId);
-    const title = um[2].replace(/\\\//g, '/').replace(/&#39;/g, "'").replace(/&amp;/g, '&');
-    const tm = title.match(/^[^:]*:\s*([\s\S]*?)\s+on\s+(\d{1,2}\/\d{1,2}\/\d{4})\s*$/);
-    const name = tm ? tm[1].trim() : title;
-    const dateStr = tm ? tm[2] : '';
-    let filedBy = '', status = '', result = ''; const tr = a.closest('tr');
-    if (tr) {
-      const cells = Array.from(tr.children);
-      const cellText = i => (cells[i] ? (cells[i].textContent || '').replace(/\s+/g, ' ').trim() : '');
-      if (cells.length > 6) filedBy = cellText(6);
-      status = cellText(3);
-      result = cellText(4);
-    }
-    rows.push({ docId, openUrl: absoluteDocUrl(url), name, dateStr, when: dateStr ? parseHearingDateTime(dateStr) : null, filedBy, status, result });
-  }
-  return rows;
-}
 
-// The default prove-up packet for an OSC Re: Failure to Prosecute Default
-// Judgment. eCourt files two "Request for Entry of Default / Judgment" papers:
-// the first (Result = "Entered") is the request that entered the default; a
-// second one filed afterward is the request for default JUDGMENT (the prove-up).
-// Returns { base, proveUp } — base is the most recent entered request, proveUp
-// is the earliest later request (or null if the judgment request isn't filed
-// yet). Returns null when no entered default request exists at all.
-const DEFAULT_REQUEST_RE = /request for entry of default/i;
-function findDefaultProveUp(docs) {
-  const reqs = (docs || []).filter(d => d && DEFAULT_REQUEST_RE.test(d.name || ''));
-  if (!reqs.length) return null;
-  // base = most recent request whose Result column reads "Entered".
-  let base = null;
-  for (const d of reqs) {
-    if (!d.when || !/\bentered\b/i.test(d.result || '')) continue;
-    if (!base || (base.when && d.when > base.when)) base = d;
-  }
-  if (!base) return null;
-  // proveUp = earliest Request for Entry of Default filed after the entered one.
-  let proveUp = null;
-  for (const d of reqs) {
-    if (!d.when || !d.openUrl || d.docId === base.docId) continue;
-    if (d.when > base.when && (!proveUp || d.when < proveUp.when)) proveUp = d;
-  }
-  return { base, proveUp };
-}
 
-// POSTs the eCourt tree-table pager to fetch a page of documents at `offset`,
-// using the pageData token read from the live Documents page. Returns a parsed
-// fragment (wrapped in a table so rows survive) or null.
-async function postPanelPage(offset, pageData) {
-  try {
-    const body = 'offset=' + offset + '&pageData=' + encodeURIComponent(pageData);
-    const res = await Promise.race([
-      fetch('/ecourt/ecms/forms/support/onPanelPage', {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
-        body,
-      }),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
-    ]);
-    if (!res || !res.ok) return null;
-    const html = await res.text();
-    return new DOMParser().parseFromString('<table><tbody>' + html + '</tbody></table>', 'text/html');
-  } catch (_) { return null; }
-}
 
-// Fetches ALL documents for a case: page 1 plus every subsequent page via the
-// pager (so old pleadings like the complaint are included, not just the newest).
-async function fetchAllDocuments(docsUrl) {
-  const doc1 = await fetchCaseDoc(docsUrl);
-  if (!doc1) return [];
-  const rows = parseDocRows(doc1);
-  const seen = new Set(rows.map(r => r.docId));
-
-  let pageData = null, count = 0;
-  const pgEl = doc1.querySelector('[data-ec-pagedata]');
-  if (pgEl) { pageData = pgEl.getAttribute('data-ec-pagedata'); try { count = (JSON.parse(pageData) || {}).count || 0; } catch (_) {} }
-
-  if (pageData && count > rows.length) {
-    // Known total: fetch every remaining page in parallel.
-    const offsets = [];
-    for (let o = 50; o < count && o <= 2000; o += 50) offsets.push(o);
-    const results = await Promise.all(offsets.map(o => postPanelPage(o, pageData)));
-    for (const frag of results) {
-      if (!frag) continue;
-      for (const r of parseDocRows(frag)) if (!seen.has(r.docId)) { seen.add(r.docId); rows.push(r); }
-    }
-  } else if (pageData && count < 0 && rows.length > 0) {
-    // Unknown total: eCourt returns count: -1 for lazily-counted lists, so the
-    // "count > rows.length" test above never fires and older filings (e.g. the
-    // original complaint) on later pages are missed. Page forward sequentially
-    // until a page adds nothing new, with a safety cap.
-    for (let o = 50; o <= 2000; o += 50) {
-      const frag = await postPanelPage(o, pageData);
-      if (!frag) break;
-      let added = 0;
-      for (const r of parseDocRows(frag)) if (!seen.has(r.docId)) { seen.add(r.docId); rows.push(r); added++; }
-      if (!added) break; // reached the end (or the pager stopped advancing)
-    }
-  }
-  return rows;
-}
 
 // From a Hearings-tab document, returns the "Document" column text of the
 // hearing matching the motion type (used to mark those documents relevant).
@@ -3536,67 +2814,8 @@ window.addEventListener('pageshow', scheduleButtonCollapse);
 // under personal service (no notice extension) — a cue to check the proof of
 // service.
 
-// California motion-deadline engine, inlined so the content script is
-// self-contained (no dependency on a separate file loading first).
-// KEEP IN SYNC with lib/deadlines.js, which the Deadline Calculator page uses.
-const DL = (function () {
-  const holidayCache = {};
-  function getHolidays(year) {
-    if (holidayCache[year]) return holidayCache[year];
-    const h = new Set();
-    const obs = d => { const day = d.getDay();
-      if (day === 6) { const f = new Date(d); f.setDate(f.getDate() - 1); return f; }
-      if (day === 0) { const m = new Date(d); m.setDate(m.getDate() + 1); return m; }
-      return d; };
-    const fixed = (mo, da) => obs(new Date(year, mo, da));
-    const nth = (mo, wd, n) => { let d = new Date(year, mo, 1), c = 0;
-      while (d.getMonth() === mo) { if (d.getDay() === wd && ++c === n) return d; d.setDate(d.getDate() + 1); } };
-    const last = (mo, wd) => { let d = new Date(year, mo + 1, 0); while (d.getDay() !== wd) d.setDate(d.getDate() - 1); return d; };
-    const key = d => d ? `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` : null;
-    const add = d => { if (d) h.add(key(d)); };
-    add(fixed(0, 1)); add(nth(0, 1, 3)); add(fixed(1, 12)); add(nth(1, 1, 3)); add(fixed(2, 31));
-    add(last(4, 1)); add(fixed(5, 19)); add(fixed(6, 4)); add(nth(8, 1, 1)); add(nth(8, 5, 4));
-    add(fixed(10, 11)); const tg = nth(10, 4, 4); add(tg);
-    if (tg) { const da = new Date(tg); da.setDate(da.getDate() + 1); add(da); }
-    add(fixed(11, 25));
-    const nyNext = obs(new Date(year + 1, 0, 1)); if (nyNext.getFullYear() === year) add(nyNext);
-    holidayCache[year] = h; return h;
-  }
-  function isCourtDay(d) { const dow = d.getDay(); if (dow === 0 || dow === 6) return false;
-    return !getHolidays(d.getFullYear()).has(`${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`); }
-  function nextCourtDay(d) { const r = new Date(d); while (!isCourtDay(r)) r.setDate(r.getDate() + 1); return r; }
-  function prevCourtDay(d) { const r = new Date(d); while (!isCourtDay(r)) r.setDate(r.getDate() - 1); return r; }
-  function addCD(d, n) { const r = new Date(d), step = n >= 0 ? 1 : -1; let rem = Math.abs(n);
-    while (rem > 0) { r.setDate(r.getDate() + step); if (isCourtDay(r)) rem--; } return r; }
-  function addCAL(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
-  function stdMotion(hearing, svc) { let d = addCD(hearing, -16);
-    if (svc === 'electronic') d = addCD(d, -2); else if (svc === 'mail_ca') d = addCAL(d, -5);
-    else if (svc === 'mail_state') d = addCAL(d, -10); else if (svc === 'mail_conf') d = addCAL(d, -12);
-    else if (svc === 'mail_intl') d = addCAL(d, -20); else if (svc === 'fax') d = addCAL(d, -2);
-    return prevCourtDay(d); }
-  function msjMotion(hearing, svc) { let d = addCAL(hearing, -81);
-    if (svc === 'electronic') d = addCD(d, -2); else if (svc === 'mail_ca') d = addCAL(d, -5);
-    else if (svc === 'mail_state') d = addCAL(d, -10); else if (svc === 'mail_conf') d = addCAL(d, -5);
-    else if (svc === 'mail_intl') d = addCAL(d, -20); else if (svc === 'fax') d = addCD(d, -2);
-    return prevCourtDay(d); }
-  function stdOpp(h)   { return prevCourtDay(addCD(h, -9));  }
-  function msjOpp(h)   { return prevCourtDay(addCAL(h, -20)); }
-  function stdReply(h) { return prevCourtDay(addCD(h, -5));  }
-  function msjReply(h) { return prevCourtDay(addCAL(h, -11)); }
-  function classifyMotion(mt) { const s = (mt || '').toLowerCase();
-    if (/summary\s+judgment|summary\s+adjudication|\bmsj\b|\bmsa\b/.test(s)) return 'msj';
-    if (/new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/.test(s)) return 'new_trial';
-    if (/reconsideration|renewed?\s+motion|\bccp?\s*1008\b|\b1008\b/.test(s)) return 'recon';
-    return 'standard'; }
-  return { classifyMotion, stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply };
-})();
 
-const DL_DEBUG = true;
-function dlLog() { if (DL_DEBUG) { try { console.log.apply(console, ['[LACourt-DL]'].concat([].slice.call(arguments))); } catch (_) {} } }
 
-function fmtShortDate(d) {
-  return (!d || isNaN(d)) ? '' : d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: '2-digit' });
-}
 // Finds the element that visibly shows the "Next: <date> ... Hearing on ..."
 // indicator, to anchor the inline deadlines. Tries span[title] first (what the
 // parsers use), then falls back to scanning for the smallest visible element
@@ -3630,9 +2849,7 @@ function findNextHeaderSpan() {
   }
   return null;
 }
-function dayMs(d) { return (d && !isNaN(d)) ? new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() : null; }
 
-const NEXT_DL_GAP = '<span style="display:inline-block;width:20px"></span>';
 // Computed once per page: { osc } or { skip } or { motionType, cat, motionDue, oppDue, replyDue }.
 let __nextDlComputed = null;
 // Filing status once the Documents fetch resolves: { filedKnown, motion, opp, reply }.
@@ -3642,165 +2859,61 @@ let __nextDlFetchStarted = false;
 let __oscStatus = null;
 
 let __dlNoMotionLogged = 0;
-// `eff` is an optional resolved hearing { motionType, hearingType, hearingDate,
-// lookedAhead } from resolveEffectiveHearing; when omitted, reads the Next event
-// off the page. Returns { osc } / { skip } / { motionType, cat, dates }, with
-// `eff` attached when a looked-ahead hearing was used (so the widget can label
-// which hearing the deadlines belong to).
+
+// This case, as the shared engine reaches its Documents / Hearings / Parties.
+// Documents and Hearings reuse the page's own memoized fetches, so the widget
+// and the Documents button share one round trip; Parties reads the live DOM when
+// we're already on that tab.
+let __pageCaseCtx = null;
+function pageCaseCtx() {
+  if (__pageCaseCtx) return __pageCaseCtx;
+  __pageCaseCtx = makeCaseCtx({
+    docs: getAllDocumentsCached,
+    hearings: getFutureHearingsCached,
+    parties: async () => {
+      if (document.querySelector('a[title="UPDATE PARTY"]')) return document;
+      const url = getPartiesUrl();
+      const doc = url ? await fetchCaseDoc(url) : null;
+      return doc || emptyDoc();
+    },
+  });
+  return __pageCaseCtx;
+}
+
+// Deadlines for the Next event (or for `eff`, a hearing resolved by looking past
+// it). Reads the hearing off the page, then hands it to the shared engine.
 function computeDueDates(eff) {
-  const D = DL;
-  const hearingType = eff ? eff.hearingType : parseHearingType(document);
-  const tag = (eff && eff.lookedAhead) ? { eff } : {};
-  // An OSC Re: Failure to Prosecute Default Judgment gets a default/dismissal
-  // status indicator instead of briefing deadlines.
-  if (isOscDefaultJudgment(hearingType)) return Object.assign({ osc: true }, tag);
-  // Only "Hearing on <motion>" events are §1005/§437c-briefed. Non-motion
-  // events (CMC, OSC, trial, status conference) have no "Hearing on" prefix.
-  const motionType = eff ? eff.motionType : parseMotionType(document);
-  if (!motionType) {
-    if (!eff && __dlNoMotionLogged++ < 2) dlLog('parseMotionType empty (no "Hearing on <motion>" yet). hearingType=', hearingType);
-    return null; // header not rendered yet (or not a motion)
+  const resolved = eff || {
+    hearingType: parseHearingType(document),
+    motionType: parseMotionType(document),
+    hearingDate: parseHearingDate(document),
+  };
+  const c = computeDueDatesFor(resolved);
+  if (!c && !eff && __dlNoMotionLogged++ < 2) {
+    dlLog('parseMotionType empty (no "Hearing on <motion>" yet). hearingType=', resolved.hearingType);
   }
-  const cat = D.classifyMotion(motionType);
-  if (cat !== 'standard' && cat !== 'msj') return Object.assign({ skip: true, reason: cat }, tag); // new trial / recon aren't hearing-based
-  const hearing = parseHearingDateTime(eff ? eff.hearingDate : parseHearingDate(document));
-  if (!hearing) { dlLog('no hearing date parsed for motion:', motionType); return null; }
-  return Object.assign({
-    skip: false, motionType, cat, hearingWhen: hearing,
-    motionDue: cat === 'msj' ? D.msjMotion(hearing, 'electronic') : D.stdMotion(hearing, 'electronic'),
-    // Same deadline assuming PERSONAL service, which carries no notice extension
-    // (electronic adds 2 court days). A motion filed after the electronic
-    // deadline but on/before this one would still be timely if personally served
-    // — the widget flags that in yellow so the proof of service can be checked.
-    motionDuePersonal: cat === 'msj' ? D.msjMotion(hearing, 'personal') : D.stdMotion(hearing, 'personal'),
-    oppDue:    cat === 'msj' ? D.msjOpp(hearing) : D.stdOpp(hearing),
-    replyDue:  cat === 'msj' ? D.msjReply(hearing) : D.stdReply(hearing),
-  }, tag);
-}
-
-const DL_YELLOW = '#b8860b'; // late for e-service but timely if personally served
-const DL_NEUTRAL = '#0a6e6e'; // not yet due / filing status not yet known
-
-// Colour: green = filed on time; red = overdue and not timely filed; neutral =
-// not yet due (or filing status not yet known / unavailable).
-function nextDlColor(due, filed) {
-  const dd = dayMs(due);
-  if (dd == null) return DL_NEUTRAL;
-  if (__nextDlFiled && __nextDlFiled.filedKnown) {
-    const fm = dayMs(filed);
-    if (fm != null && fm <= dd) return '#1a6b3a';
-  }
-  return dd < dayMs(new Date()) ? '#c0392b' : DL_NEUTRAL;
-}
-
-// Motion-specific colour. Like nextDlColor, but when a filed motion missed the
-// electronic-service deadline yet lands on/before the (more lenient) personal-
-// service deadline, it shows YELLOW instead of red — a cue to check the proof of
-// service, since personal service (no notice extension) would make it timely.
-function motionDlColor(elecDue, personalDue, filed) {
-  const dd = dayMs(elecDue);
-  if (dd == null) return DL_NEUTRAL;
-  if (__nextDlFiled && __nextDlFiled.filedKnown) {
-    const fm = dayMs(filed);
-    if (fm != null) {
-      if (fm <= dd) return '#1a6b3a';                       // timely for electronic service
-      const pd = dayMs(personalDue);
-      if (pd != null && fm <= pd) return DL_YELLOW;          // timely only if personally served
-      return '#c0392b';                                      // late even for personal service
-    }
-  }
-  return dd < dayMs(new Date()) ? '#c0392b' : DL_NEUTRAL;
-}
-
-// When the deadlines/OSC belong to a later hearing (the Next event wasn't one we
-// work up), lead with that hearing's type + date so it's clear which hearing
-// these figures are for.
-function effHearingPrefix() {
-  const c = __nextDlComputed;
-  const eff = c && c.eff;
-  if (!eff) return '';
-  const when = eff.hearingDate ? parseHearingDateTime(eff.hearingDate) : null;
-  const label = stripHearingOnPrefix(eff.hearingType || '') + (when ? ' ' + fmtShortDate(when) : '');
-  return '<span style="color:#0a6e6e">▸ ' + dlEsc(label.trim()) + ':</span>' + NEXT_DL_GAP;
+  return c;
 }
 
 function nextDlHtml() {
-  const c = __nextDlComputed;
-  const prefix = effHearingPrefix();
-  if (c.osc) {
-    const st = __oscStatus;
-    if (!st) return prefix + '<span style="color:#0a6e6e">Checking defaults…</span>';
-    let html = prefix + '<span style="color:' + st.color + '">' + st.text + '</span>';
-    if (st.packetText) {
-      html += NEXT_DL_GAP + '<span style="color:' + st.packetColor + '">' + st.packetText + '</span>';
-    }
-    return html;
-  }
-  const f = __nextDlFiled || {};
-  const RED = '#c0392b';
-  const item = (label, key, due) =>
-    `<span style="color:${nextDlColor(due, f[key])}">${label} ${fmtShortDate(due)}</span>`;
-  // The reply is the one paper whose absence is routine until its date arrives —
-  // most motions never draw one. So while it isn't due yet it reads BLACK rather
-  // than the neutral teal the other papers use, keeping the widget's colour
-  // vocabulary for what's actually been filed (green), missed (red), or flagged
-  // (yellow). Once the date passes unfiled it becomes "No Reply (Due …)" in red.
-  const replyItem = due => {
-    const c0 = nextDlColor(due, f.reply);
-    const col = c0 === DL_NEUTRAL ? '#000000' : c0;
-    return `<span style="color:${col}">Reply Due ${fmtShortDate(due)}</span>`;
-  };
-  // A paper is "absent" (never filed) — as opposed to filed-but-late — only when
-  // the Documents fetch succeeded (filedKnown), found no matching filing, and the
-  // due date has already passed. A late filing keeps its "Due <date>" in red.
-  const absent = (due, filedDate) => {
-    if (!f.filedKnown || filedDate != null) return false;
-    const dd = dayMs(due);
-    return dd != null && dd < dayMs(new Date());
-  };
-  // An absent paper shows "No Opposition (Due <date>)" / "No Reply (Due <date>)".
-  const absentSpan = (noun, due) =>
-    `<span style="color:${RED}">No ${noun} (Due ${fmtShortDate(due)})</span>`;
-  const oppAbsent = absent(c.oppDue, f.opp);
-
-  // The Motion uses its own colour so a late-but-maybe-personally-served filing
-  // reads yellow (a cue to check the proof of service) rather than red.
-  const motionColor = motionDlColor(c.motionDue, c.motionDuePersonal, f.motion);
-  const motionTitle = motionColor === DL_YELLOW
-    ? ' title="Late for electronic service, but timely if personally served — check the proof of service."'
-    : '';
-  const motionSpan =
-    `<span style="color:${motionColor}"${motionTitle}>Motion Due ${fmtShortDate(c.motionDue)}</span>`;
-
-  const parts = [motionSpan];
-  const nonOpp = f.nonOpp || null;
-  const nonOppSpan = '<span style="color:#1a6b3a">Notice of Non-Opposition</span>';
-  // A demurrer or motion to strike answered by an amended complaint in lieu of
-  // opposition (CCP 472): the amended pleading moots the challenge, so show it in
-  // place of the Opposition/Reply slots rather than "No Opposition".
-  if (f.fac && isDemurrerOrStrikeMotion(c.motionType)) {
-    parts.push(`<span style="color:#1a6b3a">${dlEsc(f.fac.label)}</span>`);
-  } else if (nonOpp && nonOpp.slot === 'opp') {
-    // The non-moving party filed a Notice of Non-Opposition — it takes the place
-    // of (and is more meaningful than) its opposition, and moots the reply.
-    parts.push(nonOppSpan);
-  } else {
-    parts.push(oppAbsent
-      ? absentSpan('Opposition', c.oppDue)
-      : item('Opposition Due', 'opp', c.oppDue));
-    if (nonOpp && nonOpp.slot === 'reply') {
-      // The moving party filed a Notice of Non-Opposition noting the absence of
-      // any opposition — it takes the place of the reply.
-      parts.push(nonOppSpan);
-    } else if (!oppAbsent) {
-      // With no opposition on file, the reply deadline is irrelevant — drop it.
-      parts.push(absent(c.replyDue, f.reply)
-        ? absentSpan('Reply', c.replyDue)
-        : replyItem(c.replyDue));
-    }
-  }
-  return prefix + parts.join(NEXT_DL_GAP);
+  return statusHtml(__nextDlComputed, __nextDlFiled, __oscStatus);
 }
+
+// Fetch the case Documents once and recolour by whether each paper was filed on
+// time. Best-effort — the dates are already shown regardless.
+async function fetchNextDeadlineFilings() {
+  if (__nextDlFetchStarted || !__nextDlComputed || __nextDlComputed.skip) return;
+  __nextDlFetchStarted = true;
+  __nextDlFiled = await computeFiledStatus(pageCaseCtx(), __nextDlComputed);
+  dlCacheWrite();        // persist so the next sub-tab load paints final colours
+  injectNextDeadlines(); // recolour
+}
+
+function computeOscDefaultStatus() {
+  return computeOscStatus(pageCaseCtx());
+}
+
+
 
 // Idempotent: injects the widget if missing, else refreshes its colours. Re-finds
 // the header each time so it survives e-court's React re-renders.
@@ -3824,207 +2937,8 @@ function injectNextDeadlines() {
   dlLog('injected deadlines next to header:', (span.textContent || '').slice(0, 60));
 }
 
-// Fetch the case Documents once and recolour by whether each paper was filed on
-// time. Best-effort — the dates are already shown regardless.
-async function fetchNextDeadlineFilings() {
-  if (__nextDlFetchStarted || !__nextDlComputed || __nextDlComputed.skip) return;
-  __nextDlFetchStarted = true;
-  const c = __nextDlComputed;
-  const filed = { filedKnown: false, motion: null, opp: null, reply: null, nonOpp: null };
-  try {
-    {
-      const docs = await getAllDocumentsCached();
-      if (docs && docs.length) {
-        filed.filedKnown = true;
-        const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
-        const hearings = await getFutureHearingsCached();
 
-        // Identify the moving paper, disambiguating parallel same-named
-        // demurrers/motions to strike by pairing them to their hearings by date
-        // (see resolveMovingPaper). bestFilingMatch alone grabs the newest, which
-        // for a case with a demurrer to the complaint AND one to a cross-complaint
-        // mis-dates the motion and its timeliness.
-        const md = resolveMovingPaper(c.motionType, c.hearingWhen, hearings, docs);
-        filed.motion = md ? md.when : null;
-        const mw = md ? md.when : null;
-        const after = docs.filter(d => d.when && (!mw || d.when >= mw));
 
-        // When exactly one live motion has its moving papers on file, an
-        // Opposition/Reply on the docket can only belong to it — so match by
-        // title + position (Opposition after the motion, Reply after the
-        // Opposition) without needing the name to reference the motion. With
-        // multiple filed motions, require the name to link to THIS motion so we
-        // don't attribute the wrong paper.
-        const workable = hearings.filter(h => isWorkableHearing(h.type));
-        const filedMotions = workable.filter(h => bestFilingMatch(h.type, docs));
-        const singleMotion = !!md && filedMotions.length === 1;
-
-        // The movant files the reply, so a "Reply …" by the same party as the
-        // motion also counts (covers replies named only by party/abbreviation).
-        const movantParties = md ? docPartyNames(md.filedBy) : [];
-        const sharesMovant = d => movantParties.length && docSharesParty(docPartyNames(d.filedBy), movantParties);
-
-        let o, r;
-        if (singleMotion) {
-          o = earliest(after.filter(d => isOppositionDoc(d.name)));
-          const afterOpp = o ? o.when : mw;
-          r = earliest(docs.filter(d => d.when && (!afterOpp || d.when >= afterOpp) && /\breply\b/i.test(d.name)));
-        } else {
-          o = earliest(after.filter(d => isOppositionDoc(d.name) && docLinksToMotion(d.name, c.motionType)));
-          r = earliest(after.filter(d => /\breply\b/i.test(d.name) && (docLinksToMotion(d.name, c.motionType) || sharesMovant(d))));
-        }
-        filed.opp = o ? o.when : null;
-        filed.reply = r ? r.when : null;
-
-        // A "Notice of Non-Opposition" / "No Opposition" stands in for a briefing
-        // paper, matched by WHO filed it (only meaningful when no real opposition
-        // is on the docket):
-        //   - filed by the NON-moving party, it affirmatively states that party
-        //     does not oppose — more meaningful than, and taking the place of, its
-        //     Opposition, so it fills the Opposition slot (and moots the reply);
-        //   - filed by the MOVING party, it notes the absence of any opposition
-        //     and takes the place of the reply.
-        // Multi-motion cases still require the notice to link to THIS motion (or,
-        // for the movant's, be filed by the movant) so it isn't misattributed.
-        if (!o) {
-          const nonOpps = after.filter(d => isNonOppositionDoc(d.name)
-            && (singleMotion || docLinksToMotion(d.name, c.motionType) || sharesMovant(d)));
-          const byNonMovant = earliest(nonOpps.filter(d => {
-            const p = docPartyNames(d.filedBy);
-            return p.length && !docSharesParty(p, movantParties);
-          }));
-          if (byNonMovant) {
-            filed.nonOpp = { slot: 'opp', when: byNonMovant.when };
-          } else {
-            // The movant's own notice (or one whose filer we can't identify).
-            const byMovant = earliest(nonOpps.filter(d => {
-              const p = docPartyNames(d.filedBy);
-              return !p.length || docSharesParty(p, movantParties);
-            }));
-            if (byMovant) filed.nonOpp = { slot: 'reply', when: byMovant.when };
-          }
-        }
-
-        // Demurrer or motion to strike answered by a first amended complaint in
-        // lieu of opposition (CCP 472): the of-right amendment moots the
-        // challenge, so show it in place of the opposition. Three conditions:
-        //   - the current hearing is a demurrer / motion to strike;
-        //   - the plaintiff did NOT oppose (in lieu = INSTEAD of opposition) — if
-        //     an opposition is on file, that's what we show, not the amendment;
-        //   - a FIRST amended complaint (only the one of-right amendment, never an
-        //     SAC) was filed AFTER the current challenge (mw). One filed on/before
-        //     mw is the challenged pleading, not a response — e.g. a demurrer to
-        //     the FAC, whose FAC predates it. Pairing mw to the right challenge
-        //     above is what keeps a cross-complaint's demurrer from polluting this.
-        if (isDemurrerOrStrikeMotion(c.motionType) && !filed.opp && mw) {
-          const fac = earliest(docs.filter(d => d.when && d.when > mw && isFirstAmendedComplaintDoc(d.name)));
-          filed.fac = fac ? { label: 'First Amended Complaint', when: fac.when } : null;
-        }
-      }
-    }
-  } catch (_) { /* keep date-only colours */ }
-  __nextDlFiled = filed;
-  dlCacheWrite();        // persist so the next sub-tab load paints final colours
-  injectNextDeadlines(); // recolour
-}
-
-function dlEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-
-// For an OSC Re: Failure to Prosecute Default Judgment, report whether every
-// (non-cross) defendant is either in default or dismissed. A default counts
-// only if it was entered on/after the operative (latest) complaint — an earlier
-// default was superseded by the amended complaint and must be re-taken.
-async function computeOscDefaultStatus() {
-  try {
-    // Read the roster from the live page when it has the parties table, else
-    // background-fetch the Parties page so the status shows on any tab.
-    let partiesRoot = document;
-    if (!document.querySelector('a[title="UPDATE PARTY"]')) {
-      const url = getPartiesUrl();
-      if (url) { const doc = await fetchCaseDoc(url); if (doc) partiesRoot = doc; }
-    }
-    const parties = parsePartiesTable(partiesRoot);
-    // A party on the claimant side is never a defendant who could be in
-    // default, even if some other row labels it "Respondent" — the plaintiff of
-    // a case on appeal is listed as the appellate Respondent, and a "Respondent"
-    // row is otherwise a writ/petition defendant. Appeal-subcase rows are
-    // already dropped by parsePartiesTable; this also covers a subcase heading
-    // we don't recognize.
-    const claimants = new Set(parties
-      .filter(p => /^\s*(plaintiff|petitioner|cross[-\s]?complainant)\b/i.test(p.role || ''))
-      .map(p => movantNormName(p.name)));
-    const defendants = parties.filter(p => {
-      const r = p.role || '';
-      if (/cross[-\s]?defendant/i.test(r) || !/^\s*(defendant|respondent)\b/i.test(r)) return false;
-      return !claimants.has(movantNormName(p.name));
-    });
-    if (!defendants.length) return { text: 'No defendants found', color: '#0a6e6e' };
-
-    const docs = await getAllDocumentsCached();
-    // Operative pleading = latest complaint, falling back to the latest petition
-    // when the case has no complaint (mirrors computeRelevantDocuments).
-    let op = latestDoc((docs || []).filter(d => isComplaintDoc(d.name)));
-    if (!op) op = latestDoc((docs || []).filter(d => isPetitionDoc(d.name)));
-    const opWhen = op ? op.when : null;
-
-    // Default prove-up packet: a request for default judgment (second Request
-    // for Entry of Default, filed after the one that entered the default).
-    const pu = findDefaultProveUp(docs);
-    const hasPacket = !!(pu && pu.proveUp);
-    const packet = {
-      packetText: hasPacket ? '✓ Default Packet' : '⚠ No Default Packet',
-      packetColor: hasPacket ? '#1a6b3a' : '#c0392b',
-    };
-    dlLog('OSC default packet:', {
-      hasPacket,
-      base: pu && pu.base && { name: pu.base.name, when: fmtShortDate(pu.base.when), result: pu.base.result },
-      proveUp: pu && pu.proveUp && { name: pu.proveUp.name, when: fmtShortDate(pu.proveUp.when) },
-    });
-
-    const notAccounted = [];
-    let dismissed = 0, defaulted = 0, stale = 0;
-    for (const d of defendants) {
-      if (d.dismissed) { dismissed++; continue; }
-      const dd = d.defaultDate;
-      if (dd && opWhen && dd >= opWhen) { defaulted++; continue; }
-      if (dd && opWhen && dd < opWhen) stale++;
-      notAccounted.push(d.name);
-    }
-    const N = defendants.length, plural = N === 1 ? '' : 's';
-    dlLog('OSC default status:', {
-      N, defaulted, dismissed, stale, opWhen: opWhen && fmtShortDate(opWhen), notAccounted,
-      defendants: defendants.map(d => ({ name: d.name, dismissed: d.dismissed, defaultDate: d.defaultDate && fmtShortDate(d.defaultDate) })),
-    });
-
-    if (!notAccounted.length) {
-      return {
-        text: '✓ All ' + N + ' defendant' + plural + ' in default or dismissed (' + defaulted + ' default, ' + dismissed + ' dismissed)',
-        color: '#1a6b3a',
-        ...packet,
-      };
-    }
-    // Nothing has been defaulted at all: no defendant carries an entered
-    // default, superseded or otherwise. Naming every defendant as "not in
-    // default/dismissed" adds nothing — the single fact that matters is that
-    // the default itself was never entered, so say only that. (A default that
-    // predates the operative complaint WAS entered, just superseded, so those
-    // cases keep the detailed listing and its caveat below.)
-    if (!defendants.some(d => d.defaultDate)) {
-      return { text: '⚠ Default Not Entered', color: '#c0392b', ...packet };
-    }
-    let caveat = '';
-    if (!opWhen) caveat = ' — operative complaint not found, cannot verify default dates';
-    else if (stale) caveat = ' (' + stale + ' default' + (stale === 1 ? '' : 's') + ' predate the operative complaint of ' + fmtShortDate(opWhen) + ')';
-    return {
-      text: '⚠ ' + notAccounted.length + ' of ' + N + ' defendant' + plural + ' not in default/dismissed: ' + notAccounted.map(dlEsc).join(', ') + caveat,
-      color: '#c0392b',
-      ...packet,
-    };
-  } catch (e) {
-    dlLog('OSC status error:', e && e.message || e);
-    return { text: 'Default status unavailable', color: '#0a6e6e' };
-  }
-}
 
 // Session-scoped cache for the OSC status, keyed by case number, so it is
 // computed once per browser session instead of re-fetched on every tab change.

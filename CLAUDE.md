@@ -59,12 +59,13 @@ scraping the current tab.
 |---|---|
 | `manifest.json` | MV3 manifest; single source of the version number. |
 | `service-worker.js` | Background worker: opens PDFs/forms on the opposite display, relays native-host clipboard events to agenda auto-advance. |
-| `clipboard/content.js` | **The big one.** Case-page script: floating Copy/Deadlines/Documents/Export buttons, movant detection, relevant-document opening, the inline "Next"-header briefing-deadline widget, OSC default-judgment flow. |
+| `lib/case-status.js` | **The engine.** Shared by both content scripts: the deadline maths, document/party parsing, background case fetches (via a per-case "context", so it can run against the live page or any case id), the filing-status and OSC default-status computations, and the status HTML. |
+| `clipboard/content.js` | Case-page script: floating Copy/Deadlines/Documents/Export buttons, movant detection, relevant-document opening, the inline "Next"-header briefing-deadline widget, OSC default-judgment flow. Pulls the status engine out of `LACCaseStatus`. |
 | `clipboard/paste-rotator.js` | Fills the order-template values into forms (rotating paste). |
-| `agenda/content.js` | Agenda/calendar page: Copy All (cleaned two-column output), auto-copy on load, name expansion + sort + green-rows-to-top batching, auto-advance to next day, next-day prefetch. |
+| `agenda/content.js` | Agenda/calendar page: Copy All (cleaned two-column output), auto-copy on load, name expansion + sort + green-rows-to-top batching, auto-advance to next day, next-day prefetch, and the per-case status shown beside each case name (same engine as the case page). |
 | `order-template/` | In-extension Order Template Input popup (replaced the old Microsoft Form) + spreadsheet export. |
 | `deadline-calculator/` | Standalone CA motion-deadline calculator page. |
-| `lib/deadlines.js` | The deadline engine. **KEEP IN SYNC** with the inlined copy `DL` inside `clipboard/content.js`. |
+| `lib/deadlines.js` | The deadline engine as the standalone calculator page uses it. **KEEP IN SYNC** with the `DL` copy inside `lib/case-status.js`. |
 | `default-judgment-fees/` | LASC Local Rule 3.214 attorney-fee calculator (button on DJ pages). |
 | `native-host/` | Python native-messaging host + Word/Excel VBA. Fires the Word mail merge after Export and watches the OS clipboard for agenda auto-advance. See its `README.md`. |
 | `popup/`, `options/`, `pdf-focus/`, `icons/` | Toolbar popup, options page, background-tab PDF focus helper, icons. |
