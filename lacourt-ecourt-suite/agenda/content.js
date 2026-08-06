@@ -73,13 +73,12 @@ function colorizeAgendaRows() {
         if (b) b.style.removeProperty('color');
       }
     }
-    // Colour the case link green too when the row has a green (will-be-copied)
-    // hearing, so the case that corresponds to it matches.
-    const rowGreen = rowHasGreenHearing(row);
-    for (const a of cells[6].querySelectorAll('a')) {
-      if (rowGreen) a.style.setProperty('color', COPY_GREEN, 'important');
-      else a.style.removeProperty('color');
-    }
+    // The case link keeps eCourt's own link colour. It used to go green with its
+    // hearing, but now that the status line sits under the case name, a green
+    // case name ran together with the green "filed on time" dates beside it —
+    // leaving the case blue is what makes those dates readable. The hearing /
+    // documents column above still marks what Copy All takes.
+    for (const a of cells[6].querySelectorAll('a')) a.style.removeProperty('color');
   }
 }
 
@@ -913,8 +912,8 @@ function applyAgendaChanges(swaps) {
    prove-up packet is in. The figures come from lib/case-status.js, the engine
    the case page itself uses, so a case reads the same in both places.
 
-   The status sits after the case link inside the case cell, so it runs on from
-   the case name and wraps underneath it when the line doesn't fit.
+   The status sits after the case link inside the case cell as a block, so it
+   always starts on its own line directly under the case name.
 
    It costs case fetches, so: only rows carrying a hearing we'd work up are
    computed (the same test the case page applies to its Next event), no more than
@@ -998,12 +997,13 @@ function paintCaseStatus(job, html) {
     if (!el) {
       el = document.createElement('span');
       el.className = STATUS_CLASS;
-      // Inline, so it starts beside the case name and wraps under it when long.
-      // Copy All reads the case cell's <a> only, so this never reaches the
-      // clipboard output.
-      el.setAttribute('style', 'display:inline;margin-left:10px;font-weight:600;white-space:normal;font-family:inherit;');
-      // Directly after the case link, so it sits beside the NAME rather than
-      // after whatever else the cell carries.
+      // A block, so it always starts on its own line under the case name rather
+      // than running on from it — the case names vary enough in length that an
+      // inline status started in a different place on every row. Copy All reads
+      // the case cell's <a> only, so this never reaches the clipboard output.
+      el.setAttribute('style', 'display:block;margin-top:2px;font-weight:600;white-space:normal;font-family:inherit;');
+      // Directly after the case link, so it sits under the NAME rather than
+      // under whatever else the cell carries.
       if (job.link && job.link.parentNode === job.cell) job.link.insertAdjacentElement('afterend', el);
       else job.cell.appendChild(el);
     }
