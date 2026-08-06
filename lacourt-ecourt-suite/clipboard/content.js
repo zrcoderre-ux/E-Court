@@ -3992,6 +3992,15 @@ async function computeOscDefaultStatus() {
         ...packet,
       };
     }
+    // Nothing has been defaulted at all: no defendant carries an entered
+    // default, superseded or otherwise. Naming every defendant as "not in
+    // default/dismissed" adds nothing — the single fact that matters is that
+    // the default itself was never entered, so say only that. (A default that
+    // predates the operative complaint WAS entered, just superseded, so those
+    // cases keep the detailed listing and its caveat below.)
+    if (!defendants.some(d => d.defaultDate)) {
+      return { text: '⚠ Default Not Entered', color: '#c0392b', ...packet };
+    }
     let caveat = '';
     if (!opWhen) caveat = ' — operative complaint not found, cannot verify default dates';
     else if (stale) caveat = ' (' + stale + ' default' + (stale === 1 ? '' : 's') + ' predate the operative complaint of ' + fmtShortDate(opWhen) + ')';
