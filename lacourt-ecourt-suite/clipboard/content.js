@@ -3678,19 +3678,20 @@ function computeDueDates(eff) {
   }, tag);
 }
 
+const DL_YELLOW = '#b8860b'; // late for e-service but timely if personally served
+const DL_NEUTRAL = '#0a6e6e'; // not yet due / filing status not yet known
+
 // Colour: green = filed on time; red = overdue and not timely filed; neutral =
 // not yet due (or filing status not yet known / unavailable).
 function nextDlColor(due, filed) {
   const dd = dayMs(due);
-  if (dd == null) return '#0a6e6e';
+  if (dd == null) return DL_NEUTRAL;
   if (__nextDlFiled && __nextDlFiled.filedKnown) {
     const fm = dayMs(filed);
     if (fm != null && fm <= dd) return '#1a6b3a';
   }
-  return dd < dayMs(new Date()) ? '#c0392b' : '#0a6e6e';
+  return dd < dayMs(new Date()) ? '#c0392b' : DL_NEUTRAL;
 }
-
-const DL_YELLOW = '#b8860b'; // late for e-service but timely if personally served
 
 // Motion-specific colour. Like nextDlColor, but when a filed motion missed the
 // electronic-service deadline yet lands on/before the (more lenient) personal-
@@ -3698,7 +3699,7 @@ const DL_YELLOW = '#b8860b'; // late for e-service but timely if personally serv
 // service, since personal service (no notice extension) would make it timely.
 function motionDlColor(elecDue, personalDue, filed) {
   const dd = dayMs(elecDue);
-  if (dd == null) return '#0a6e6e';
+  if (dd == null) return DL_NEUTRAL;
   if (__nextDlFiled && __nextDlFiled.filedKnown) {
     const fm = dayMs(filed);
     if (fm != null) {
@@ -3708,7 +3709,7 @@ function motionDlColor(elecDue, personalDue, filed) {
       return '#c0392b';                                      // late even for personal service
     }
   }
-  return dd < dayMs(new Date()) ? '#c0392b' : '#0a6e6e';
+  return dd < dayMs(new Date()) ? '#c0392b' : DL_NEUTRAL;
 }
 
 // When the deadlines/OSC belong to a later hearing (the Next event wasn't one we
@@ -3739,6 +3740,16 @@ function nextDlHtml() {
   const RED = '#c0392b';
   const item = (label, key, due) =>
     `<span style="color:${nextDlColor(due, f[key])}">${label} ${fmtShortDate(due)}</span>`;
+  // The reply is the one paper whose absence is routine until its date arrives —
+  // most motions never draw one. So while it isn't due yet it reads BLACK rather
+  // than the neutral teal the other papers use, keeping the widget's colour
+  // vocabulary for what's actually been filed (green), missed (red), or flagged
+  // (yellow). Once the date passes unfiled it becomes "No Reply (Due …)" in red.
+  const replyItem = due => {
+    const c0 = nextDlColor(due, f.reply);
+    const col = c0 === DL_NEUTRAL ? '#000000' : c0;
+    return `<span style="color:${col}">Reply Due ${fmtShortDate(due)}</span>`;
+  };
   // A paper is "absent" (never filed) — as opposed to filed-but-late — only when
   // the Documents fetch succeeded (filedKnown), found no matching filing, and the
   // due date has already passed. A late filing keeps its "Due <date>" in red.
@@ -3785,7 +3796,7 @@ function nextDlHtml() {
       // With no opposition on file, the reply deadline is irrelevant — drop it.
       parts.push(absent(c.replyDue, f.reply)
         ? absentSpan('Reply', c.replyDue)
-        : item('Reply Due', 'reply', c.replyDue));
+        : replyItem(c.replyDue));
     }
   }
   return prefix + parts.join(NEXT_DL_GAP);
