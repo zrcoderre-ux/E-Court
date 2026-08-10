@@ -861,17 +861,24 @@ const NEXT_DL_GAP = '<span style="display:inline-block;width:20px"></span>';
 
 const DL_YELLOW = '#b8860b'; // late for e-service but timely if personally served
 
-const DL_NEUTRAL = '#0a6e6e'; // not yet due / filing status not yet known
+const DL_NEUTRAL = '#0a6e6e'; // due date not yet passed, nothing on file
+const DL_BLACK = '#000000';   // nothing to say yet: filing status unknown, or a reply not yet due
 
-// Colour: green = filed on time; red = overdue and not timely filed; neutral =
-// not yet due (or filing status not yet known / unavailable).
+// Colour: green = filed on time; red = overdue and nothing timely filed; neutral
+// = not yet due; black = we don't know yet.
+//
+// The dates paint as soon as they're computed, but whether a paper was FILED
+// takes a background fetch of the case Documents. Until that lands, a passed due
+// date says nothing about the paper — so it reads black, and turns red only once
+// the fetch confirms nothing timely is on file. (Colouring from the date alone
+// made every overdue-looking paper flash red on load, then go green a moment
+// later for the ones that had been filed on time.)
 function nextDlColor(due, filed, filedKnown) {
   const dd = dayMs(due);
   if (dd == null) return DL_NEUTRAL;
-  if (filedKnown) {
-    const fm = dayMs(filed);
-    if (fm != null && fm <= dd) return '#1a6b3a';
-  }
+  if (!filedKnown) return DL_BLACK;
+  const fm = dayMs(filed);
+  if (fm != null && fm <= dd) return '#1a6b3a';
   return dd < dayMs(new Date()) ? '#c0392b' : DL_NEUTRAL;
 }
 
@@ -882,14 +889,13 @@ function nextDlColor(due, filed, filedKnown) {
 function motionDlColor(elecDue, personalDue, filed, filedKnown) {
   const dd = dayMs(elecDue);
   if (dd == null) return DL_NEUTRAL;
-  if (filedKnown) {
-    const fm = dayMs(filed);
-    if (fm != null) {
-      if (fm <= dd) return '#1a6b3a';                       // timely for electronic service
-      const pd = dayMs(personalDue);
-      if (pd != null && fm <= pd) return DL_YELLOW;          // timely only if personally served
-      return '#c0392b';                                      // late even for personal service
-    }
+  if (!filedKnown) return DL_BLACK;                        // filing status not in yet
+  const fm = dayMs(filed);
+  if (fm != null) {
+    if (fm <= dd) return '#1a6b3a';                        // timely for electronic service
+    const pd = dayMs(personalDue);
+    if (pd != null && fm <= pd) return DL_YELLOW;          // timely only if personally served
+    return '#c0392b';                                      // late even for personal service
   }
   return dd < dayMs(new Date()) ? '#c0392b' : DL_NEUTRAL;
 }
@@ -1054,7 +1060,7 @@ function statusHtml(c, filed, osc) {
   // (yellow). Once the date passes unfiled it becomes "No Reply (Due …)" in red.
   const replyItem = due => {
     const c0 = nextDlColor(due, f.reply, f.filedKnown);
-    const col = c0 === DL_NEUTRAL ? '#000000' : c0;
+    const col = c0 === DL_NEUTRAL ? DL_BLACK : c0;
     return `<span style="color:${col}">Reply Due ${fmtShortDate(due)}</span>`;
   };
   // A paper is "absent" (never filed) — as opposed to filed-but-late — only when
@@ -1319,6 +1325,6 @@ return {
   stripEventId, stripTrailingParenNumber, stripHearingOnPrefix, movantNormName,
   fmtShortDate, dayMs, dlEsc, dlLog,
   // Deadline engine + palette
-  DL, NEXT_DL_GAP, DL_YELLOW, DL_NEUTRAL, nextDlColor, motionDlColor,
+  DL, NEXT_DL_GAP, DL_YELLOW, DL_NEUTRAL, DL_BLACK, nextDlColor, motionDlColor,
 };
 })();
