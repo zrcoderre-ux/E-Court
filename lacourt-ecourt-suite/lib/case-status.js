@@ -1084,9 +1084,11 @@ function statusHtml(c, filed, osc) {
   const nonOppSpan = '<span style="color:#1a6b3a">Notice of Non-Opposition</span>';
   // A demurrer or motion to strike answered by an amended complaint in lieu of
   // opposition (CCP 472): the amended pleading moots the challenge, so show it in
-  // place of the Opposition/Reply slots rather than "No Opposition".
+  // place of the Opposition/Reply slots rather than "No Opposition". RED, unlike
+  // the other "this paper is accounted for" entries — it isn't briefing to read,
+  // it's a hearing to take off calendar.
   if (f.fac && isDemurrerOrStrikeMotion(c.motionType)) {
-    parts.push(`<span style="color:#1a6b3a">${dlEsc(f.fac.label)}</span>`);
+    parts.push(`<span style="color:${RED}">${dlEsc(f.fac.label)}</span>`);
   } else if (nonOpp && nonOpp.slot === 'opp') {
     // The non-moving party filed a Notice of Non-Opposition — it takes the place
     // of (and is more meaningful than) its opposition, and moots the reply.
