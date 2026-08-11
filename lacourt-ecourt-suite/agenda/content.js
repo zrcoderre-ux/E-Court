@@ -634,7 +634,8 @@ function filterExcluded(text) {
    on the agenda's day whose name (minus a leading "Hearing on ") starts with
    the truncated text, and drop the full name back into the <b> in place — so
    both the on-page display and the copy output carry it, and the exclusion
-   check runs against the full name. Case fetches are cached by case id.
+   check runs against the full name. Compound captions are cut at the first
+   semicolon (see headBeforeSemicolon). Case fetches are cached by case id.
 ------------------------------------------------- */
 
 const CASE_HEARINGS_CACHE = new Map(); // caseId -> hearings array or in-flight Promise
@@ -679,7 +680,11 @@ function parseCaseHearings(doc) {
     if (dtIdx < 1) continue;
     let name = '';
     for (let i = dtIdx - 1; i >= 0; i--) { if (cells[i]) { name = cells[i]; break; } }
-    if (!name || name.length > 200 || !/[a-z]/i.test(name)) continue;
+    // Cap is only a sanity guard against grabbing a blob of page text — real
+    // hearing names run long when the caption strings the papers together
+    // ("...Restore Action To Active Civil Calendar; Memorandum Of Points And
+    // Authorities; Declaration Of ... In Support Thereof"), so keep it generous.
+    if (!name || name.length > 400 || !/[a-z]/i.test(name)) continue;
     let status = '';
     for (let i = dtIdx + 1; i < cells.length; i++) { if (cells[i]) { status = cells[i]; break; } }
     out.push({ name, dateTime: cells[dtIdx], status });
@@ -741,6 +746,19 @@ function fullNameForHearing(hearings, day, prefix) {
     return '';
   };
   return find(scheduled, true) || find(scheduled, false) || find(hearings, true) || '';
+}
+
+// A compound hearing caption strings every paper together after the motion
+// itself ("<motion>; Memorandum Of Points And Authorities; Declaration Of X In
+// Support Thereof"). Only the first clause names the motion, so the agenda
+// shows the name through the first semicolon. Falls back to the whole name when
+// the head would be shorter than what the agenda already displays (a
+// server-side truncation that landed past the first semicolon).
+function headBeforeSemicolon(name, prefix) {
+  const i = (name || '').indexOf(';');
+  if (i === -1) return name;
+  const head = name.slice(0, i).trim();
+  return head.length > (prefix || '').length ? head : name;
 }
 
 // Run async worker over items with limited concurrency (the case cache dedups
@@ -859,7 +877,8 @@ async function fetchHearingNameSwaps() {
   const swaps = [];
   await runWithConcurrency(jobs, 4, async job => {
     const hearings = await getCaseHearings(job.caseId);
-    const full = stripTrailingParenNumber(fullNameForHearing(hearings, day, job.prefix));
+    const matched = fullNameForHearing(hearings, day, job.prefix);
+    const full = stripTrailingParenNumber(headBeforeSemicolon(matched, job.prefix));
     if (full && job.b.getAttribute(EXPANDED_ATTR) !== '1') swaps.push({ b: job.b, full, prefix: job.prefix });
   });
   return swaps;
