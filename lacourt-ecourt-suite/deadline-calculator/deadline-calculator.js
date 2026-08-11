@@ -19,7 +19,8 @@ let state = {
   motionType: 'standard',
   service: 'electronic',
   mailRegion: 'ca',
-  entryDate: null, // entry-of-judgment date — new trial's 180-day outer limit
+  entryDate: null, // entry-of-judgment date — the 180-day outer limit (new trial, costs)
+  memoServedDate: null, // date the memorandum of costs was served — motion to strike/tax runs from it
   detected: null, // { rawMotion, hearingDate, caseNumber, category, ... }
   showAllTypes: false, // when detected, hide the non-applicable motion types
 };
@@ -31,6 +32,7 @@ let state = {
 const {
   getHolidays, isCourtDay, nextCourtDay, prevCourtDay, addCD, addCAL,
   stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply, newTrialDL, reconDL,
+  costsMemoDL, costsMemoOuterDL, costsTaxDL,
   classifyMotion,
 } = LACourtDeadlines;
 
@@ -39,6 +41,7 @@ const CATEGORY_LABEL = {
   msj: 'Summary judgment / adjudication (CCP § 437c)',
   new_trial: 'New trial / JNOV / vacate judgment (CCP §§ 659, 629, 663a)',
   recon: 'Motion for reconsideration (CCP § 1008)',
+  costs: 'Memorandum of costs / motion to strike or tax costs (CRC 3.1700)',
 };
 
 // ── FORMATTING ─────────────────────────────────────────────────────────────
@@ -117,6 +120,12 @@ function renderDetectedBanner() {
   const rule = CATEGORY_LABEL[d.category] || CATEGORY_LABEL.standard;
   const triggerBased = d.category === 'new_trial' || d.category === 'recon';
   let extra = '';
+  // A motion to strike or tax costs is briefed on the standard § 1005 schedule
+  // (which is what's selected), but the question it raises is whether the
+  // memorandum itself was timely — point at the tab that answers it.
+  if (/\b(strike|tax|taxing)\b[\s\S]{0,40}\bcosts?\b|\bcosts?\b[\s\S]{0,20}\b(strike|tax)\b|memorandum\s+of\s+costs/i.test(d.rawMotion || '')) {
+    extra += `<div class="det-rule">Checking whether the memorandum of costs was itself timely? Use <strong>Costs (CRC 3.1700)</strong> with the date the notice of entry of judgment was served.</div>`;
+  }
   if (triggerBased) {
     if (d.noticeOfEntryDate) {
       extra = `<div class="det-rule">Base set to detected notice of entry: <strong>${esc(d.noticeOfEntryDate)}</strong>` +
@@ -171,6 +180,15 @@ function getSectionData(baseDate) {
       opp: null, oppNote: 'Opposition 10 days after service of moving brief (§ 659a)',
       reply: null, replyNote: 'Reply 5 days after opposition served (§ 659a)',
       warn: newTrialDL(baseDate) < today ? '⚠ Deadline passed — check pre-judgment alternative' : null,
+    },
+    {
+      id: 'costs', label: 'Costs (CRC 3.1700)',
+      // Base date = service of the notice of entry of judgment or dismissal.
+      // The 180-day-from-entry alternative needs the entry date, so it lives in
+      // Step-by-Step; this row is the 15-day-from-service branch.
+      motionFn: (svc) => costsMemoDL(baseDate, svc), motionRule: 'Memo: 15 days from service of notice of entry + svc. ext.',
+      opp: null, oppNote: 'Motion to strike / tax costs: 15 days after the cost memorandum is served, plus the same service extension (CRC 3.1700(b)(1))',
+      reply: null, replyNote: 'Opposition / reply to that motion run off its hearing date (§ 1005(b))', warn: null,
     },
     {
       id: 'recon', label: 'Reconsideration',
@@ -248,8 +266,10 @@ function renderTableMode() {
     or the next court day (New Trial, Reconsideration — triggered by the notice-of-entry date).
     Court days exclude weekends and California judicial holidays (CCP § 135), including Lincoln's Birthday (Feb 12)
     and Native American Day (4th Friday of Sept); Columbus Day is not a court holiday.
-    Reconsideration reflects the CCP §§ 1013 / 1010.6 service extensions. For MSJ, "Mail Confidential" uses the
+    Reconsideration and Costs reflect the CCP §§ 1013 / 1010.6 service extensions. For MSJ, "Mail Confidential" uses the
     5-day in-state mail tier because CCP § 437c(a)(2) has no 12-day Safe at Home tier.
+    Costs shows the 15-day branch of CRC 3.1700(a)(1); the memorandum is due on whichever comes first, that date or
+    180 days after entry of judgment — enter the entry date in Step-by-Step to see both.
   </div>`;
 
   el.innerHTML = html;
@@ -275,6 +295,7 @@ function renderInteractiveMode() {
     { v: 'msj', l: 'MSJ / MSA' },
     { v: 'new_trial', l: 'New Trial / JNOV' },
     { v: 'recon', l: 'Reconsideration' },
+    { v: 'costs', l: 'Costs (CRC 3.1700)' },
   ];
   const SVC_OPTS = [
     { v: 'electronic', l: 'Electronic' },
@@ -328,6 +349,48 @@ function renderInteractiveMode() {
       reply: null, replyNote: 'Reply 5 days after opposition is served (§ 659a)',
       warn: controlling && controlling < today ? '⚠ This deadline has passed. Check whether the motion could have been filed before entry of judgment.' : null,
     };
+  } else if (mt === 'costs') {
+    // CRC 3.1700(a)(1): the memorandum of costs is due on the FIRST of — 15 days
+    // after service of the notice of entry of judgment or dismissal (extended by
+    // service, §§ 1013 / 1010.6, since the period runs from service), or 180 days
+    // after entry of judgment (not extended — it runs from entry, not service).
+    const d15 = costsMemoDL(state.baseDate, svc);
+    const d180 = state.entryDate ? costsMemoOuterDL(state.entryDate) : null;
+    const memoDue = (d180 && d180 < d15) ? d180 : d15;
+    const which = d180
+      ? (d180 < d15 ? '180 days after entry of judgment controls' : '15 days after service of the notice of entry controls')
+      : '15 days after service of the notice of entry (add the entry-of-judgment date for the 180-day cap)';
+    const parts = ['15 days from service of notice of entry: ' + fmt(d15)];
+    if (d180) parts.push('180 days from entry of judgment: ' + fmt(d180));
+
+    // CRC 3.1700(b)(1): the motion to strike or tax runs from service of the
+    // memorandum — a date only the papers can supply, so it's its own field.
+    const taxDue = state.memoServedDate ? costsTaxDL(state.memoServedDate, svc) : null;
+    const memoLate = state.memoServedDate && state.memoServedDate > memoDue;
+
+    res = {
+      motion: memoDue,
+      motionNote: 'Whichever comes first under rule 3.1700(a)(1) — ' + which + '. (' + parts.join(' · ') + '.) ' +
+        'The 15-day branch carries the service extension because it runs from service (§§ 1013, 1010.6(a)(3)(B)); ' +
+        'the 180-day branch runs from entry and does not.',
+      opp: taxDue,
+      oppNote: taxDue
+        ? '15 days after the cost memorandum was served, plus the service extension (CRC 3.1700(b)(1); §§ 1013, 1010.6(a)(3)(B))'
+        : 'Enter the date the memorandum of costs was served — the motion runs 15 days from that service, plus the service extension (CRC 3.1700(b)(1)).',
+      reply: null,
+      replyNote: 'Opposition and reply on the motion to strike or tax costs run off ITS hearing date under § 1005(b) — switch to Standard Motion and enter that hearing date.',
+      labels: {
+        motion: 'Memorandum of Costs — Serve &amp; File By',
+        opp: 'Motion to Strike / Tax Costs — Serve &amp; File By',
+        reply: 'Opposition &amp; Reply on that Motion',
+      },
+      warn: state.memoServedDate
+        ? (memoLate
+            ? '⚠ The memorandum of costs was served ' + fmt(state.memoServedDate) + ' — after the ' + fmt(memoDue) +
+              ' deadline. Late unless the parties agreed to extend it (rule 3.1700(b)(3)) or the court granted relief.'
+            : '✓ The memorandum of costs was served ' + fmt(state.memoServedDate) + ', on or before the ' + fmt(memoDue) + ' deadline — timely.')
+        : null,
+    };
   } else {
     res = {
       motion: reconDL(state.baseDate, svc), motionNote: '10 calendar days from service of notice of entry, plus service extension (§§ 1008(a), 1013, 1010.6)',
@@ -353,7 +416,10 @@ function renderInteractiveMode() {
     <div class="mail-sub">
       ${MAIL_OPTS.map(o => `<button class="chip${state.mailRegion === o.v ? ' active' : ''}" data-action="mail" data-value="${o.v}">${o.l}</button>`).join('')}
     </div>` : '';
-  const warnHtml = res.warn ? `<div class="warn-box">${res.warn}</div>` : '';
+  // A costs answer can come back clean ("served on time"), which shouldn't read
+  // as a warning — same box, green.
+  const warnOk = !!res.warn && res.warn.charAt(0) === '\u2713';
+  const warnHtml = res.warn ? `<div class="warn-box${warnOk ? ' ok' : ''}">${res.warn}</div>` : '';
 
   const card = (label, date, note, highlight) => {
     const cls = 'result-card' + (highlight ? ' highlight' : '');
@@ -386,11 +452,22 @@ function renderInteractiveMode() {
       <input type="date" id="entryDate" value="${state.entryDate ? toInputValue(state.entryDate) : ''}">
       <div class="svc-note">Service method does not affect this deadline (§ 659(b)). The date above is the notice of entry (15-day trigger); add the entry-of-judgment date here for the 180-day cap. The earlier of the two controls.</div>
     </div>`}
+    ${mt === 'costs' ? `
+    <div class="field-group">
+      <span class="field-label">Entry of Judgment Date <span class="sub">&nbsp;(for the 180-day outer limit, rule 3.1700(a)(1))</span></span>
+      <input type="date" id="entryDate" value="${state.entryDate ? toInputValue(state.entryDate) : ''}">
+      <div class="svc-note">The date at the top is the SERVICE of the notice of entry of judgment or dismissal (the 15-day trigger). The memorandum is due on whichever of the two comes first.</div>
+    </div>
+    <div class="field-group">
+      <span class="field-label">Memorandum of Costs Served <span class="sub">&nbsp;(optional — checks it against the deadline and dates the motion to strike or tax)</span></span>
+      <input type="date" id="memoServedDate" value="${state.memoServedDate ? toInputValue(state.memoServedDate) : ''}">
+      <div class="svc-note">The service method chips above apply to both periods: the notice of entry's service for the memorandum, and the memorandum's own service for the motion to strike or tax costs.</div>
+    </div>` : ''}
     <div class="result-cards">
       ${warnHtml}
-      ${card('Motion — Serve &amp; File By', res.motion, res.motionNote, true)}
-      ${card('Opposition — Serve &amp; File By', res.opp, res.oppNote, false)}
-      ${card('Reply — Serve &amp; File By', res.reply, res.replyNote, false)}
+      ${card((res.labels && res.labels.motion) || 'Motion — Serve &amp; File By', res.motion, res.motionNote, true)}
+      ${card((res.labels && res.labels.opp) || 'Opposition — Serve &amp; File By', res.opp, res.oppNote, false)}
+      ${card((res.labels && res.labels.reply) || 'Reply — Serve &amp; File By', res.reply, res.replyNote, false)}
     </div>
   </div>`;
 }
@@ -467,8 +544,12 @@ if (baseInput) baseInput.addEventListener('input', onDateChange);
 // The entry-of-judgment field is rendered inside Mode B (rebuilt each render),
 // so wire it by delegation rather than a direct listener.
 document.addEventListener('input', e => {
-  if (e.target && e.target.id === 'entryDate') {
+  if (!e.target) return;
+  if (e.target.id === 'entryDate') {
     state.entryDate = parseDate(e.target.value);
+    render();
+  } else if (e.target.id === 'memoServedDate') {
+    state.memoServedDate = parseDate(e.target.value);
     render();
   }
 });

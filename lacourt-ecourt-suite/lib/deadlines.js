@@ -6,8 +6,8 @@
  * Attaches to the global as `LACourtDeadlines` — visible across content-script
  * files in the isolated world and to the calculator page.
  *
- * Authorities: CCP §§ 1005, 437c, 659, 659a, 663a, 1008, 1013, 1010.6; court
- * holidays per CCP § 135 / Gov. Code § 6700 / CRC 1.11.
+ * Authorities: CCP §§ 1005, 437c, 659, 659a, 663a, 1008, 1013, 1010.6; CRC
+ * 3.1700 (costs); court holidays per CCP § 135 / Gov. Code § 6700 / CRC 1.11.
  */
 (function () {
   'use strict';
@@ -106,16 +106,42 @@
   function stdReply(hearing) { return prevCourtDay(addCD(hearing, -5));  } // § 1005(b)
   function msjReply(hearing) { return prevCourtDay(addCAL(hearing, -11)); } // § 437c(b)(4)
   function newTrialDL(notice){ return nextCourtDay(addCAL(notice, 15));  } // § 659(a)(2)
+
+  // Service extension for a period that runs FORWARD from service of a document:
+  // § 1013(a) adds calendar days for mail, § 1010.6(a)(3)(B) adds two court days
+  // for electronic service. Personal service adds nothing.
+  function addServiceExtension(d, svc) {
+    if (svc === 'electronic') return addCD(d, 2);
+    if (svc === 'mail_ca') return addCAL(d, 5);
+    if (svc === 'mail_state') return addCAL(d, 10);
+    if (svc === 'mail_conf') return addCAL(d, 12);
+    if (svc === 'mail_intl') return addCAL(d, 20);
+    if (svc === 'fax') return addCD(d, 2);
+    return d;
+  }
+
   // § 1008(a): 10 days after service of notice of entry; §§ 1013 / 1010.6 apply.
   function reconDL(notice, svc) {
-    let d = addCAL(notice, 10);
-    if (svc === 'electronic') d = addCD(d, 2);
-    else if (svc === 'mail_ca') d = addCAL(d, 5);
-    else if (svc === 'mail_state') d = addCAL(d, 10);
-    else if (svc === 'mail_conf') d = addCAL(d, 12);
-    else if (svc === 'mail_intl') d = addCAL(d, 20);
-    else if (svc === 'fax') d = addCD(d, 2);
-    return nextCourtDay(d);
+    return nextCourtDay(addServiceExtension(addCAL(notice, 10), svc));
+  }
+
+  // ── COSTS (CRC 3.1700) ────────────────────────────────────────────────────
+  // A prevailing party's memorandum of costs is due on the FIRST of two dates:
+  // 15 days after service of the notice of entry of judgment or dismissal
+  // (rule 3.1700(a)(1)), or 180 days after entry of judgment. Only the 15-day
+  // period runs from service, so only it carries the §§ 1013 / 1010.6
+  // extensions; the 180-day outer limit runs from entry and does not.
+  function costsMemoDL(noticeOfEntry, svc) {
+    return nextCourtDay(addServiceExtension(addCAL(noticeOfEntry, 15), svc));
+  }
+  function costsMemoOuterDL(entryOfJudgment) {
+    return nextCourtDay(addCAL(entryOfJudgment, 180));
+  }
+  // Rule 3.1700(b)(1): a notice of motion to strike or tax costs is served and
+  // filed 15 days after service of the cost memorandum, extended for mail
+  // (§ 1013) and for electronic service (§ 1010.6(a)(3)(B) — two court days).
+  function costsTaxDL(memoServed, svc) {
+    return nextCourtDay(addServiceExtension(addCAL(memoServed, 15), svc));
   }
 
   // ── CLASSIFICATION ────────────────────────────────────────────────────────
@@ -143,6 +169,7 @@
   const api = {
     getHolidays, isCourtDay, nextCourtDay, prevCourtDay, addCD, addCAL,
     stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply, newTrialDL, reconDL,
+    addServiceExtension, costsMemoDL, costsMemoOuterDL, costsTaxDL,
     classifyMotion, parseDateFlexible,
   };
   (typeof window !== 'undefined' ? window : globalThis).LACourtDeadlines = api;

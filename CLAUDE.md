@@ -99,3 +99,9 @@ scraping the current tab.
   electronic, +5/+10/… calendar days for mail, +0 for personal service.
 - MSJ: 81 calendar days in this engine (§437c), plus the same service extensions.
 - Opposition/Reply deadlines and the MSJ variants live in `lib/deadlines.js`.
+- Costs: the memorandum is due 15 days after service of the notice of entry of
+  judgment/dismissal or 180 days after entry, whichever is first (CRC
+  3.1700(a)(1)); a motion to strike or tax costs is due 15 days after the
+  memorandum is served (3.1700(b)(1)). Both 15-day periods run from service, so
+  both carry the §§ 1013 / 1010.6(a)(3)(B) extensions; the 180-day limit runs
+  from entry and does not.
