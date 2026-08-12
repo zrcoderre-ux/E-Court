@@ -276,8 +276,49 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return false;
   }
 
+  // Filing-lag samples from the Documents tab: how many court days each paper
+  // sat between its filing date and eCourt posting it. Keyed by docId so
+  // revisiting a case re-reports the same rows without double-counting; the
+  // options page totals them into the lag distribution.
+  if (msg.type === 'recordFilingLag' && Array.isArray(msg.samples)) {
+    updateFilingLag(s => {
+      for (const x of msg.samples) {
+        if (!x || !x.docId || typeof x.lag !== 'number') continue;
+        s.byDoc[String(x.docId)] = {
+          name: x.name || '', filed: x.filed || '',
+          posted: x.posted || 0, postedText: x.postedText || '', lag: x.lag,
+        };
+      }
+    });
+    sendResponse({ ok: true });
+    return false;
+  }
+
   return false;
 });
+
+// Filing-lag store: { byDoc: { <docId>: {name, filed, posted, postedText, lag} } }.
+// Bounded like docTracking, dropping the oldest postings first.
+const FILING_LAG_CAP = 5000;
+let filingLagQueue = Promise.resolve();
+function updateFilingLag(mutator) {
+  filingLagQueue = filingLagQueue.then(() => new Promise(resolve => {
+    try {
+      chrome.storage.local.get(['filingLag'], result => {
+        const s = (result && result.filingLag) || {};
+        if (!s.byDoc) s.byDoc = {};
+        try { mutator(s); } catch (_) {}
+        const ids = Object.keys(s.byDoc);
+        if (ids.length > FILING_LAG_CAP) {
+          ids.sort((a, b) => (s.byDoc[a].posted || 0) - (s.byDoc[b].posted || 0));
+          for (const id of ids.slice(0, ids.length - FILING_LAG_CAP)) delete s.byDoc[id];
+        }
+        chrome.storage.local.set({ filingLag: s }, () => { void chrome.runtime.lastError; resolve(); });
+      });
+    } catch (_) { resolve(); }
+  }));
+  return filingLagQueue;
+}
 
 // Given an open tab's URL, return the URL to actually download for a court PDF,
 // or null if the tab isn't a PDF. Court docs frequently open in a companion PDF

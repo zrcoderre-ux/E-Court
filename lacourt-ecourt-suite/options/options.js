@@ -420,3 +420,133 @@ function docTrackingStatus(msg) {
 
   renderDocTracking();
 })();
+
+/* ------------------------------------------------------------------ */
+/* eCourt Filing Lag                                                    */
+/*                                                                      */
+/* The gap between a paper's filing date and the moment eCourt posted   */
+/* it, in court days, sampled from every Documents tab visited. The     */
+/* distribution is what sets the briefing widget's grace window, so it  */
+/* is worth watching: if the queue deepens seasonally, the window       */
+/* should follow (INGEST_GRACE_COURT_DAYS in lib/case-status.js).       */
+/* ------------------------------------------------------------------ */
+
+function loadFilingLagRows(cb) {
+  chrome.storage.local.get(['filingLag'], result => {
+    const byDoc = (result && result.filingLag && result.filingLag.byDoc) || {};
+    const rows = Object.keys(byDoc).map(id => Object.assign({ docId: id }, byDoc[id]));
+    rows.sort((a, b) => (b.posted || 0) - (a.posted || 0));
+    cb(rows);
+  });
+}
+
+function renderFilingLag() {
+  const view = document.getElementById('filingLagView');
+  if (!view) return;
+  loadFilingLagRows(rows => {
+    if (!rows.length) {
+      view.innerHTML = '<p class="empty-note">No filing-lag samples yet — open a case\'s Documents tab.</p>';
+      return;
+    }
+    const lags = rows.map(r => r.lag).filter(n => typeof n === 'number').sort((a, b) => a - b);
+    const median = lags.length ? lags[Math.floor(lags.length / 2)] : 0;
+    const mean = lags.length ? (lags.reduce((a, b) => a + b, 0) / lags.length) : 0;
+    const within1 = lags.length ? Math.round(100 * lags.filter(n => n <= 1).length / lags.length) : 0;
+    const buckets = {};
+    lags.forEach(n => { const k = n >= 4 ? '4+' : String(n); buckets[k] = (buckets[k] || 0) + 1; });
+    const order = ['0', '1', '2', '3', '4+'].filter(k => buckets[k]);
+    const max = Math.max.apply(null, order.map(k => buckets[k]).concat([1]));
+
+    let html = '<div class="dt-summary">' + rows.length + ' filings sampled · median '
+      + median + ' court day' + (median === 1 ? '' : 's') + ' · mean ' + mean.toFixed(2)
+      + ' · ' + within1 + '% posted within 1 court day</div>';
+
+    // A plain proportional bar per bucket: the shape is the whole point.
+    html += '<div class="dt-tablewrap"><table class="dt-table"><thead><tr>'
+      + '<th>Court days to post</th><th>Filings</th><th></th></tr></thead><tbody>';
+    order.forEach(k => {
+      const n = buckets[k];
+      const pct = Math.round(100 * n / lags.length);
+      html += '<tr><td>' + (k === '0' ? 'same day' : k) + '</td><td>' + n + ' (' + pct + '%)</td>'
+        + '<td><span style="display:inline-block;height:10px;border-radius:2px;background:#0a6e6e;width:'
+        + Math.max(2, Math.round(160 * n / max)) + 'px;"></span></td></tr>';
+    });
+    html += '</tbody></table></div>';
+
+    // The slowest recent filings — the ones that would have caught you out.
+    const slow = rows.filter(r => typeof r.lag === 'number' && r.lag >= 2).slice(0, 15);
+    if (slow.length) {
+      html += '<div class="dt-summary">Slowest recent postings</div>'
+        + '<div class="dt-tablewrap"><table class="dt-table"><thead><tr>'
+        + '<th>Document</th><th>Filed</th><th>Posted</th><th>Lag</th></tr></thead><tbody>';
+      slow.forEach(r => {
+        html += '<tr><td>' + dtEscHtml(r.name || '') + '</td>'
+          + '<td>' + dtEscHtml(r.filed || '') + '</td>'
+          + '<td class="dt-when">' + dtEscHtml(r.postedText || '') + '</td>'
+          + '<td>' + r.lag + '</td></tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+    view.innerHTML = html;
+  });
+}
+
+function filingLagCsv(cb) {
+  loadFilingLagRows(rows => {
+    const esc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    const lines = [['docId', 'name', 'filed', 'posted', 'lagCourtDays'].join(',')];
+    rows.forEach(r => {
+      lines.push([r.docId, r.name || '', r.filed || '', r.postedText || '', r.lag].map(esc).join(','));
+    });
+    cb(lines.join('\r\n'));
+  });
+}
+
+function filingLagStatus(msg) {
+  const s = document.getElementById('filingLagStatus');
+  if (!s) return;
+  s.textContent = msg || '✓ Done';
+  s.classList.add('visible');
+  setTimeout(() => s.classList.remove('visible'), 2000);
+}
+
+(function initFilingLag() {
+  const refresh = document.getElementById('filingLagRefresh');
+  const downloadBtn = document.getElementById('filingLagDownload');
+  const copyBtn = document.getElementById('filingLagCopy');
+  const clearBtn = document.getElementById('filingLagClear');
+  if (!refresh) return; // card not present
+
+  refresh.addEventListener('click', () => { renderFilingLag(); filingLagStatus('✓ Refreshed'); });
+
+  downloadBtn.addEventListener('click', () => {
+    filingLagCsv(csv => {
+      const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'ecourt-filing-lag.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      filingLagStatus('✓ CSV downloaded');
+    });
+  });
+
+  copyBtn.addEventListener('click', () => {
+    filingLagCsv(csv => {
+      navigator.clipboard.writeText(csv).then(
+        () => filingLagStatus('✓ CSV copied'),
+        () => filingLagStatus('Copy failed')
+      );
+    });
+  });
+
+  clearBtn.addEventListener('click', () => {
+    if (!confirm('Clear all filing-lag samples?')) return;
+    chrome.storage.local.remove('filingLag', () => { renderFilingLag(); filingLagStatus('✓ Cleared'); });
+  });
+
+  renderFilingLag();
+})();

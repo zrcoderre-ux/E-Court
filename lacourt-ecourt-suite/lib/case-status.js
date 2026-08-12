@@ -792,6 +792,171 @@ async function fetchAllDocuments(docsUrl) {
   return rows;
 }
 
+/* ------------------------------------------------------------------ */
+/* Document ingest time — when eCourt actually POSTED a filing         */
+/*                                                                     */
+/* The Documents tab shows only the filing DATE, which is the paper's  */
+/* effective date. A reply e-filed late on the day it is due carries   */
+/* that date (and is timely), but does not appear on the site until    */
+/* the clerk's intake queue reaches it — typically the next court day, */
+/* sometimes two or three.                                             */
+/*                                                                     */
+/* The doc endpoint's Last-Modified header carries the real posting    */
+/* time, mangled: the server hands an epoch value in SECONDS to an API */
+/* expecting MILLISECONDS, so every document dates to January 1970.    */
+/* Multiplying the parsed epoch-milliseconds back up by 1000 recovers  */
+/* the true instant, whose UTC fields read as the court's PACIFIC wall */
+/* clock — confirmed against the PDF /ModDate stamps on documents that */
+/* carry one, which land within minutes of the decoded window.         */
+/*                                                                     */
+/* The header renders whole seconds, so one header-second spans 1000   */
+/* real seconds: the true moment falls in a ~16.7-minute window. That  */
+/* is enough to place a filing on a day and a part of a day, which is  */
+/* all the lag question needs.                                         */
+/* ------------------------------------------------------------------ */
+
+const INGEST_WINDOW_MS = 999 * 1000;
+// A Last-Modified parsing below this is the 1970 artifact (a genuine modern
+// date parses to ~1.7e12). Should the court ever fix the bug, the header is
+// then a real instant and is used as-is.
+const INGEST_ARTIFACT_MAX_MS = 1e11;
+
+// Decode a Last-Modified header into { start, end, decoded }, or null. When
+// `decoded` is true, read the Dates with their UTC getters — those fields are
+// the court's Pacific wall clock, and the underlying instant is meaningless.
+function decodeIngestTime(lastModified) {
+  const t = Date.parse(lastModified || '');
+  if (!isFinite(t) || t <= 0) return null;
+  if (t >= INGEST_ARTIFACT_MAX_MS) return { start: new Date(t), end: new Date(t), decoded: false };
+  const ms = t * 1000;
+  return { start: new Date(ms), end: new Date(ms + INGEST_WINDOW_MS), decoded: true };
+}
+
+// The calendar fields of an ingest window's start, in whichever clock applies.
+function ingestParts(info) {
+  const d = info.start;
+  return info.decoded
+    ? { y: d.getUTCFullYear(), mo: d.getUTCMonth(), da: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes() }
+    : { y: d.getFullYear(), mo: d.getMonth(), da: d.getDate(), h: d.getHours(), mi: d.getMinutes() };
+}
+
+// The ingest day as a local midnight Date, so it can be compared against filing
+// dates and run through the court-day helpers.
+function ingestDay(info) {
+  if (!info) return null;
+  const p = ingestParts(info);
+  return new Date(p.y, p.mo, p.da);
+}
+
+// "Thu 8/6 10:43a" — the day and part-of-day, which is the resolution we have.
+const INGEST_DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+function fmtIngest(info) {
+  if (!info) return '';
+  const p = ingestParts(info);
+  const day = new Date(p.y, p.mo, p.da);
+  const h12 = p.h % 12 || 12;
+  const mm = p.mi < 10 ? '0' + p.mi : String(p.mi);
+  return INGEST_DOW[day.getDay()] + ' ' + (p.mo + 1) + '/' + p.da + ' ' + h12 + ':' + mm + (p.h < 12 ? 'a' : 'p');
+}
+
+// Court days from `from` to `to`, counting the days after `from` up to and
+// including `to`. Weekends and court holidays don't count.
+function courtDaysBetween(from, to) {
+  if (!from || !to) return null;
+  const a = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const b = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+  if (b < a) return -courtDaysBetween(to, from);
+  let n = 0;
+  const d = new Date(a);
+  while (d < b) { d.setDate(d.getDate() + 1); if (DL.isCourtDay(d)) n++; }
+  return n;
+}
+
+// How long a document sat between its filing date and eCourt posting it,
+// in court days. Null when either end is unknown.
+function ingestLagCourtDays(filedWhen, info) {
+  const day = ingestDay(info);
+  return (filedWhen && day) ? courtDaysBetween(filedWhen, day) : null;
+}
+
+/* Ingest times never change once a document is posted, so they're cached
+   permanently in chrome.storage.local under one key per docId. A Documents tab
+   costs one HEAD per uncached document on its first visit and nothing after. */
+const INGEST_KEY = id => 'ingest:' + id;
+const INGEST_MEM = new Map(); // docId -> {start,end,decoded} | null | Promise
+
+function ingestFromStore(docId) {
+  return new Promise(res => {
+    try {
+      chrome.storage.local.get([INGEST_KEY(docId)], r => {
+        if (chrome.runtime.lastError) return res(undefined);
+        const v = r && r[INGEST_KEY(docId)];
+        res(typeof v === 'string' ? decodeIngestTime(v) : undefined);
+      });
+    } catch (_) { res(undefined); }
+  });
+}
+
+// HEAD is enough — we only want the header, never the PDF (some run to
+// megabytes). A server that rejects HEAD gets a one-byte ranged GET instead.
+async function headIngest(docId) {
+  const url = '/ecourt/ecms/doc?docId=' + encodeURIComponent(docId);
+  const tries = [
+    { method: 'HEAD' },
+    { method: 'GET', headers: { Range: 'bytes=0-0' } },
+  ];
+  for (const opt of tries) {
+    try {
+      const res = await Promise.race([
+        fetch(url, Object.assign({ credentials: 'include' }, opt)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+      ]);
+      if (!res || !res.ok) continue;
+      const lm = res.headers.get('last-modified');
+      if (lm) return lm;
+    } catch (_) { /* try the next shape */ }
+  }
+  return null;
+}
+
+// The ingest window for one document, or null if the server didn't say.
+function getIngestTime(docId) {
+  const id = String(docId || '');
+  if (!id) return Promise.resolve(null);
+  let v = INGEST_MEM.get(id);
+  if (v !== undefined) return Promise.resolve(v);
+  const p = (async () => {
+    const cached = await ingestFromStore(id);
+    if (cached !== undefined) return cached;
+    const lm = await headIngest(id);
+    const info = lm ? decodeIngestTime(lm) : null;
+    if (lm) { try { chrome.storage.local.set({ [INGEST_KEY(id)]: lm }, () => { void chrome.runtime.lastError; }); } catch (_) {} }
+    return info;
+  })();
+  INGEST_MEM.set(id, p);
+  p.then(r => INGEST_MEM.set(id, r), () => INGEST_MEM.set(id, null));
+  return p;
+}
+
+/* ---- The intake queue, as it bears on a paper that isn't there yet ---- */
+
+// How many court days after a filing date a paper can still be in the intake
+// queue rather than missing. Measured at 0-3 court days (median 1) across the
+// sample the options page accumulates; 2 covers all but the tail.
+const INGEST_GRACE_COURT_DAYS = 2;
+
+// True when a paper due on `due` could be filed-but-not-yet-posted: its due
+// date has passed, but not by enough court days to clear the intake queue.
+// Used to hedge an absence rather than call the paper missing.
+function withinIngestGrace(due, now) {
+  if (!due) return false;
+  const today = now || new Date();
+  const dd = dayMs(due);
+  if (dd == null || dd >= dayMs(today)) return false; // not yet due: not an absence at all
+  const lag = courtDaysBetween(due, today);
+  return lag != null && lag <= INGEST_GRACE_COURT_DAYS;
+}
+
 // California motion-deadline engine, inlined so the content script is
 // self-contained (no dependency on a separate file loading first).
 // KEEP IN SYNC with lib/deadlines.js, which the Deadline Calculator page uses.
@@ -844,7 +1009,7 @@ const DL = (function () {
     if (/new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/.test(s)) return 'new_trial';
     if (/reconsideration|renewed?\s+motion|\bccp?\s*1008\b|\b1008\b/.test(s)) return 'recon';
     return 'standard'; }
-  return { classifyMotion, stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply };
+  return { classifyMotion, stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply, isCourtDay };
 })();
 
 const DL_DEBUG = true;
@@ -879,6 +1044,9 @@ function nextDlColor(due, filed, filedKnown) {
   if (!filedKnown) return DL_BLACK;
   const fm = dayMs(filed);
   if (fm != null && fm <= dd) return '#1a6b3a';
+  // Nothing on file, but the due date passed too recently for the clerk's
+  // intake queue to have posted a timely filing — that's not a red yet.
+  if (fm == null && withinIngestGrace(due)) return DL_NEUTRAL;
   return dd < dayMs(new Date()) ? '#c0392b' : DL_NEUTRAL;
 }
 
@@ -897,6 +1065,7 @@ function motionDlColor(elecDue, personalDue, filed, filedKnown) {
     if (pd != null && fm <= pd) return DL_YELLOW;          // timely only if personally served
     return '#c0392b';                                      // late even for personal service
   }
+  if (withinIngestGrace(elecDue)) return DL_NEUTRAL;       // may be filed but not posted yet
   return dd < dayMs(new Date()) ? '#c0392b' : DL_NEUTRAL;
 }
 
@@ -1072,8 +1241,19 @@ function statusHtml(c, filed, osc) {
     return dd != null && dd < dayMs(new Date());
   };
   // An absent paper shows "No Opposition (Due <date>)" / "No Reply (Due <date>)".
-  const absentSpan = (noun, due) =>
-    `<span style="color:${RED}">No ${noun} (Due ${fmtShortDate(due)})</span>`;
+  // Except while the due date is recent enough that a timely filing might still
+  // be sitting in the clerk's intake queue: eCourt posts a paper 0-3 court days
+  // after its filing date, so a reply filed the day it was due routinely isn't
+  // visible until the next court day. Inside that window the absence is
+  // reported as unconfirmed, in neutral teal, rather than called missing in red.
+  const absentSpan = (noun, due) => {
+    if (withinIngestGrace(due)) {
+      const t = `Due ${fmtShortDate(due)} — nothing on file yet, but eCourt posts filings up to `
+        + `${INGEST_GRACE_COURT_DAYS} court days after they are filed, so a timely ${noun.toLowerCase()} may not be visible yet.`;
+      return `<span style="color:${DL_NEUTRAL}" title="${dlEsc(t)}">No ${noun} Posted Yet (Due ${fmtShortDate(due)})</span>`;
+    }
+    return `<span style="color:${RED}">No ${noun} (Due ${fmtShortDate(due)})</span>`;
+  };
   const oppAbsent = absent(c.oppDue, f.opp);
 
   // The Motion uses its own colour so a late-but-maybe-personally-served filing
@@ -1321,6 +1501,9 @@ return {
   isOppositionDoc, isNonOppositionDoc, isComplaintDoc, isCrossComplaintDoc,
   isFirstAmendedComplaintDoc, isDemurrerOrMotionToStrikeDoc, isDemurrerOrStrikeMotion,
   isPetitionDoc, latestDoc, findDefaultProveUp, sameCalendarDay,
+  // Document ingest time (when eCourt actually posted a filing)
+  decodeIngestTime, getIngestTime, fmtIngest, ingestDay, ingestLagCourtDays,
+  courtDaysBetween, withinIngestGrace, INGEST_GRACE_COURT_DAYS,
   // Text helpers
   stripEventId, stripTrailingParenNumber, stripHearingOnPrefix, movantNormName,
   fmtShortDate, dayMs, dlEsc, dlLog,

@@ -294,6 +294,24 @@
         <span class="save-status" id="docTrackingStatus">✓ Done</span>
       </div>
     </div>
+
+    <div class="card">
+      <h2>eCourt Filing Lag</h2>
+      <p class="hint">How long filings sit between the date they are <strong>filed</strong> and the moment
+        eCourt actually <strong>posts</strong> them — the reason a reply filed on its due date often isn't
+        visible for a day or two. Samples accumulate on their own as you open Documents tabs; each document
+        counts once. The briefing widget uses this to hedge a missing paper
+        (<em>"No Opposition Posted Yet"</em>) instead of calling it absent while it could still be in the
+        clerk's intake queue.</p>
+      <div id="filingLagView" class="doc-tracking"></div>
+      <div class="actions">
+        <button class="btn-reset" id="filingLagRefresh">Refresh</button>
+        <button class="btn-reset" id="filingLagDownload">Download CSV</button>
+        <button class="btn-reset" id="filingLagCopy">Copy CSV</button>
+        <button class="btn-reset" id="filingLagClear">Clear samples</button>
+        <span class="save-status" id="filingLagStatus">✓ Done</span>
+      </div>
+    </div>
   </div>
 
   <script src="options.js"></script>
