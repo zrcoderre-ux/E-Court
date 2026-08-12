@@ -63,6 +63,7 @@ scraping the current tab.
 | `clipboard/content.js` | Case-page script: floating Copy/Deadlines/Documents/Export buttons, movant detection, relevant-document opening, the inline "Next"-header briefing-deadline widget, OSC default-judgment flow. Pulls the status engine out of `LACCaseStatus`. |
 | `clipboard/paste-rotator.js` | Fills the order-template values into forms (rotating paste). |
 | `agenda/content.js` | Agenda/calendar page: Copy All (cleaned two-column output), auto-copy on load, name expansion + sort + green-rows-to-top batching, auto-advance to next day, next-day prefetch, and the per-case status shown beside each case name (same engine as the case page). |
+| `documents/ingest.js` | Documents-tab script: stamps each filing with the day/time eCourt actually **posted** it (decoded from the doc endpoint's `Last-Modified`) and reports lag samples to the background. |
 | `order-template/` | In-extension Order Template Input popup (replaced the old Microsoft Form) + spreadsheet export. |
 | `deadline-calculator/` | Standalone CA motion-deadline calculator page. |
 | `lib/deadlines.js` | The deadline engine as the standalone calculator page uses it. **KEEP IN SYNC** with the `DL` copy inside `lib/case-status.js`. |
@@ -90,6 +91,17 @@ scraping the current tab.
   convention), and the Windows username `ZCoderre` in native-host paths. Do not
   scrub these. Real *party* names / case numbers, however, should stay
   pseudonymized (Doe/Roe, ACME/Globex, etc.).
+- **Filing date ≠ posting date.** eCourt's Documents tab shows the effective
+  filing date; the clerk's intake queue posts a paper 0–3 court days later
+  (median 1, measured), during business hours. The doc endpoint's
+  `Last-Modified` carries the real posting time, mangled — the server passes
+  epoch **seconds** to an API expecting **milliseconds**, so every document
+  dates to January 1970. Multiply the parsed epoch-ms by 1000; the result's
+  **UTC fields are the court's Pacific wall clock** (verified against PDF
+  `/ModDate` stamps). Resolution is ~17 minutes. `INGEST_GRACE_COURT_DAYS` in
+  `lib/case-status.js` is the window during which a missing paper is reported
+  as "not posted yet" rather than absent; revisit it if the options page's
+  Filing Lag distribution shifts.
 - **New Outlook** is in use (no COM/`.oft`/`CreateItemFromTemplate`), so email
   drafting uses `mailto:` and the Word mail merge is launched via the native host.
 
