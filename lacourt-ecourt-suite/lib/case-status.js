@@ -1119,6 +1119,41 @@ function computePostJudgmentSchedule(cat, docs) {
   return out;
 }
 
+/* ---- Memorandum of costs (CRC 3.1700(a)(1)) ------------------------------
+   The prevailing party's memorandum is due on the FIRST of: 15 days after
+   service of the notice of entry of judgment or dismissal (the clerk's under
+   §664.5, or a party's written notice), or 180 days after entry. Only the
+   15-day period runs from service, so only it carries the §1010.6(a)(3)(B)
+   electronic-service extension the widget assumes throughout.
+
+   The trigger here is the notice of entry specifically — narrower than rule
+   8.104's, which also accepts a filed-endorsed copy of the judgment. Rule
+   3.1700(a)(1) names the §664.5 notice, so the bare judgment is deliberately
+   not admitted as a trigger.
+
+   Docket filing dates stand in for service dates, which eCourt doesn't record. */
+const COSTS_MEMO_RE = /^memorandum of costs\b/i;
+const COSTS_TRIGGER_RE = /^(?:certificate of mailing for\s+)?notice of entry of (?:the\s+)?(?:judgment|dismissal)\b/i;
+const ENTRY_JUDGMENT_DOC_RE = /^(?:amended\s+)?judgment\b/i;
+
+function computeCostsMemoStatus(docs) {
+  const memo = pjEarliest((docs || []).filter(d => COSTS_MEMO_RE.test(d.name || '')));
+  if (!memo) return null;
+  const trigger = pjEarliest((docs || []).filter(d => COSTS_TRIGGER_RE.test(d.name || '')));
+  const entry = pjEarliest((docs || []).filter(d => ENTRY_JUDGMENT_DOC_RE.test(d.name || '')));
+  const due15 = trigger ? pjFromService(trigger.when, 15) : null;
+  const outer = entry ? pjRoll(pjAddCal(entry.when, 180)) : null;
+  const due = (due15 && outer) ? (due15 <= outer ? due15 : outer) : (due15 || outer);
+  if (!due) return { memo, due: null, late: false };
+  return {
+    memo, due, trigger, entry,
+    basis: due === due15
+      ? '15 days after service of the notice of entry, plus the electronic-service extension'
+      : '180 days after entry of judgment',
+    late: dayMs(memo.when) > dayMs(due),
+  };
+}
+
 // The paper a post-judgment motion runs from: the notice of intention for new
 // trial / JNOV, the notice of entry of the order for reconsideration. It is a
 // floor as well as a clock — nothing filed before it briefs the motion, so the
@@ -1519,6 +1554,18 @@ function statusHtml(c, filed, osc) {
     : `<span style="color:${motionColor}"${motionTitle}>Motion Due ${fmtShortDate(c.motionDue)}</span>`;
 
   const parts = [motionSpan];
+  // A memorandum of costs filed after its own deadline is the fact worth having
+  // in front of you on a motion to strike or tax it — the memo may be untimely
+  // on its face. Shown ONLY when it is late; a timely memo is the ordinary case
+  // and would just be another date to read past.
+  const cm = f.costsMemo;
+  if (cm && cm.late && cm.due) {
+    const t = 'Memorandum of costs filed ' + fmtShortDate(cm.memo.when) + ', after the '
+      + fmtShortDate(cm.due) + ' deadline (' + cm.basis + ' — CRC 3.1700(a)(1)). '
+      + 'The docket shows filing, not service, so check the proof of service.';
+    parts.unshift(`<span style="color:${RED}" title="${dlEsc(t)}">Costs Memo Late `
+      + `(${fmtShortDate(cm.memo.when)}, due ${fmtShortDate(cm.due)})</span>`);
+  }
   // With no moving papers on file there is nothing to brief, so the opposition
   // and reply deadlines are moot — the same reasoning that drops the reply when
   // no opposition was filed. A motion that is merely still in the clerk's intake
@@ -1567,6 +1614,10 @@ async function computeFiledStatus(ctx, c) {
         filed.filedKnown = true;
         const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
         const hearings = await ctx.hearings();
+
+        // On a motion to strike or tax costs, whether the memorandum it attacks
+        // was itself timely is worth knowing before reading the motion.
+        if (c.cat === 'costs') filed.costsMemo = computeCostsMemoStatus(docs);
 
         // Post-judgment motions brief off the docket, not the hearing date, so
         // their schedule is built here where the documents are in hand.
@@ -1772,7 +1823,7 @@ return {
   fetchWithTimeout, fetchCaseDoc, fetchAllDocuments, parseDocRows, absoluteDocUrl,
   parsePartiesTable, parseFutureHearings, parseHearingDateTime,
   // Status
-  computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
+  computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml, computeCostsMemoStatus,
   // Hearing / document classification
   isOscDefaultJudgment, isWorkableHearing, isHearingExcluded, excludedTermMatches,
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,
