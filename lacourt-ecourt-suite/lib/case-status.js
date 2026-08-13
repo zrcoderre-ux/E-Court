@@ -324,7 +324,16 @@ function bestFilingMatch(motionType, filings) {
     const s = movantMatchScore(motionType, f.name);
     if (s > bestScore) { bestScore = s; best = f; }
   }
-  return bestScore >= 0.5 ? best : null;
+  // Strictly greater than half: a score of exactly 0.50 is a name that overlaps
+  // the hearing type by one incidental word and diverges on the rest — "Motion
+  // in Limine ... to Exclude Testimony at Trial" against a Motion for New Trial,
+  // sharing only "trial". Accepting those picked the wrong moving paper for a
+  // hearing whose motion was never filed, and the single-hearing sweep in
+  // computeRelevantDocuments then opened the whole docket after it. Real
+  // pairings score well clear of the line (measured: 0.75-1.00, the bidirectional
+  // score in movantMatchScore covering concise document names), so returning
+  // null — no moving paper on file — is the right answer at exactly 0.50.
+  return bestScore > 0.5 ? best : null;
 }
 
 // Parse a "Filed By" cell into { parties:[{name,role}], truncated }.
