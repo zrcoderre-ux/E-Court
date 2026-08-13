@@ -1113,7 +1113,14 @@ function computePostJudgmentSchedule(cat, docs) {
   // Deliberately NOT rolled forward: §660 is a jurisdictional cutoff, not a
   // filing deadline, so the 75th day is reported as it falls.
   const from = entry || intent;
-  out.ruleExpires = pjAddCal(from.when, 75);
+  // Rolled forward under CCP 12a. § 660(c) opens "Except as otherwise provided
+  // in Section 12a of this code", so the statute incorporates the holiday
+  // extension rather than standing apart from it — the fact that the period
+  // bounds the COURT's power rather than a party's filing doesn't take it
+  // outside § 12a, because § 660 says so itself.
+  const raw = pjAddCal(from.when, 75);
+  out.ruleExpires = pjRoll(raw);
+  out.ruleExpiresRaw = raw;
   out.expiresAnchor = from;
   out.expiresFrom = entry ? 'notice of entry of judgment' : 'the first notice of intention';
   return out;
@@ -1529,7 +1536,10 @@ function statusHtml(c, filed, osc) {
       const from = pj.expiresAnchor
         ? '"' + pj.expiresAnchor.name + '" filed ' + fmtShortDate(pj.expiresAnchor.when)
         : pj.expiresFrom;
-      const t = 'CCP 660: the court\'s power to rule expires 75 days after ' + from
+      const rolled = pj.ruleExpiresRaw && dayMs(pj.ruleExpiresRaw) !== dayMs(pj.ruleExpires)
+        ? ', which falls on ' + fmtShortDate(pj.ruleExpiresRaw) + ' — a non-court day, carried to the next court day under CCP 12a'
+        : '';
+      const t = 'CCP 660(c): the court\'s power to rule expires 75 days after ' + from + rolled
         + (gone ? '. That date has passed — undetermined, the motion is denied by operation of law.' : '.');
       pjParts.push(`<span style="color:${gone ? RED : DL_NEUTRAL}" title="${dlEsc(t)}">`
         + (gone ? 'Power to Rule Expired ' : 'Power to Rule Expires ') + fmtShortDate(pj.ruleExpires) + '</span>');
