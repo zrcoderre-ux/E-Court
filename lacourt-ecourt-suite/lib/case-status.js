@@ -1227,7 +1227,18 @@ function computeDueDatesFor(eff) {
   const motionType = eff.motionType;
   if (!motionType) return null; // not a motion (or the header hasn't rendered yet)
   const cat = D.classifyMotion(motionType);
-  if (cat !== 'standard' && cat !== 'msj') return Object.assign({ skip: true, reason: cat }, tag); // new trial / recon aren't hearing-based
+  // New trial / JNOV / reconsideration aren't hearing-based: their deadlines run
+  // from notice of entry of judgment or the original order, not the hearing, so
+  // there is no §1005 schedule to show. Whether the moving papers ever arrived
+  // is a separate fact and still worth reporting — a hearing whose motion was
+  // never filed comes off calendar — so these carry motionOnly rather than
+  // dropping out entirely.
+  if (cat !== 'standard' && cat !== 'msj') {
+    return Object.assign({
+      skip: true, motionOnly: true, reason: cat, motionType, cat,
+      hearingWhen: parseHearingDateTime(eff.hearingDate),
+    }, tag);
+  }
   const hearing = parseHearingDateTime(eff.hearingDate);
   if (!hearing) { dlLog('no hearing date parsed for motion:', motionType); return null; }
   return Object.assign({
@@ -1270,6 +1281,15 @@ function statusHtml(c, filed, osc) {
   }
   const f = filed || {};
   const RED = '#c0392b';
+  // A motion whose deadlines don't run from the hearing (new trial, JNOV,
+  // reconsideration). There is no briefing schedule to paint, so the only thing
+  // to say is whether the moving papers are on the docket at all — and the only
+  // thing worth saying is when they aren't.
+  if (c.motionOnly) {
+    if (!f.filedKnown || f.motion != null) return '';
+    return prefix + `<span style="color:${RED}" title="No moving papers for this hearing are on the docket. `
+      + `Its deadlines don't run from the hearing date, so no briefing schedule is shown.">No Motion on File</span>`;
+  }
   const item = (label, key, due) =>
     `<span style="color:${nextDlColor(due, f[key], f.filedKnown)}">${label} ${fmtShortDate(due)}</span>`;
   // The reply is the one paper whose absence is routine until its date arrives —

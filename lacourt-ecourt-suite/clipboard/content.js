@@ -2946,7 +2946,10 @@ function nextDlHtml() {
 // Fetch the case Documents once and recolour by whether each paper was filed on
 // time. Best-effort — the dates are already shown regardless.
 async function fetchNextDeadlineFilings() {
-  if (__nextDlFetchStarted || !__nextDlComputed || __nextDlComputed.skip) return;
+  // motionOnly hearings have no deadlines, but still need the Documents fetch:
+  // whether the moving papers are on file is the whole of what they report.
+  if (__nextDlFetchStarted || !__nextDlComputed) return;
+  if (__nextDlComputed.skip && !__nextDlComputed.motionOnly) return;
   __nextDlFetchStarted = true;
   __nextDlFiled = await computeFiledStatus(pageCaseCtx(), __nextDlComputed);
   dlCacheWrite();        // persist so the next sub-tab load paints final colours
@@ -2962,7 +2965,8 @@ function computeOscDefaultStatus() {
 // Idempotent: injects the widget if missing, else refreshes its colours. Re-finds
 // the header each time so it survives e-court's React re-renders.
 function injectNextDeadlines() {
-  if (!__nextDlComputed || __nextDlComputed.skip) return;
+  if (!__nextDlComputed) return;
+  if (__nextDlComputed.skip && !__nextDlComputed.motionOnly) return;
   const span = findNextHeaderSpan();
   if (!span || !span.parentNode) return;
   const host = span.parentNode;
@@ -3096,7 +3100,7 @@ function applyNextDlComputed(c) {
   }
   dlLog('computed:', c.skip ? 'skip (' + (c.reason || 'not hearing-based') + ')'
     : { motionType: c.motionType, cat: c.cat, lookedAhead: !!c.eff, motionDue: fmtShortDate(c.motionDue), oppDue: fmtShortDate(c.oppDue), replyDue: fmtShortDate(c.replyDue) });
-  if (c.skip) return;
+  if (c.skip && !c.motionOnly) return;
   dlCacheWrite();               // cache the dates (keeps any seeded filing status)
   injectNextDeadlines();        // paint dates immediately (seeded/known colours)
   fetchNextDeadlineFilings();   // then refine with filing status
