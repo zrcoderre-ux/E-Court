@@ -1070,8 +1070,15 @@ function withinIngestGrace(due, now) {
 
 const NOTICE_OF_INTENTION_RE = /\bnotice\s+of\s+inten(?:t|tion)\b/i;
 const NEW_TRIAL_SUBJECT_RE = /\bnew\s+trial\b|\bjnov\b|judgment\s+notwithstanding/i;
-const NOTICE_OF_ENTRY_JUDGMENT_RE = /\bnotice\s+of\s+entry\s+of\s+(?:the\s+)?judgment\b/i;
-const NOTICE_OF_ENTRY_ORDER_RE = /\bnotice\s+of\s+entry\s+of\s+(?:the\s+)?order\b|\bnotice\s+of\s+ruling\b/i;
+// Anchored at the start of the name on purpose. §660 runs from the clerk's
+// MAILING of notice of entry (§664.5) or a party's SERVICE of written notice of
+// entry — so the notice itself, or the clerk's certificate of mailing it. A
+// "Minute Order (Court Order re: Notice of Entry of Judgment)" merely mentions
+// the notice; an unanchored match picked it up, and since the earliest match
+// wins, a docket where that order predates the notice anchored the whole
+// 75-day computation on the wrong paper.
+const NOTICE_OF_ENTRY_JUDGMENT_RE = /^(?:certificate of mailing for\s+)?notice of entry of (?:the\s+)?judgment\b/i;
+const NOTICE_OF_ENTRY_ORDER_RE = /^(?:certificate of mailing for\s+)?notice of (?:entry of (?:the\s+)?order|ruling)\b/i;
 const PJ_SERVICE_EXT_COURT_DAYS = 2; // §1010.6(a)(3)(B), electronic service
 
 function pjAddCal(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
@@ -1105,7 +1112,9 @@ function computePostJudgmentSchedule(cat, docs) {
   const entry = pjEarliest((docs || []).filter(d => NOTICE_OF_ENTRY_JUDGMENT_RE.test(d.name || '')));
   // Deliberately NOT rolled forward: §660 is a jurisdictional cutoff, not a
   // filing deadline, so the 75th day is reported as it falls.
-  out.ruleExpires = pjAddCal((entry || intent).when, 75);
+  const from = entry || intent;
+  out.ruleExpires = pjAddCal(from.when, 75);
+  out.expiresAnchor = from;
   out.expiresFrom = entry ? 'notice of entry of judgment' : 'the first notice of intention';
   return out;
 }
@@ -1234,7 +1243,14 @@ function motionDlColor(elecDue, personalDue, filed, filedKnown) {
   return dd < dayMs(new Date()) ? '#c0392b' : DL_NEUTRAL;
 }
 
-function dlEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+// Escapes quotes as well as markup: these strings go into title="..." attributes
+// as often as into text, and a document name carrying a quote silently truncated
+// the attribute (and everything after it) rather than failing loudly.
+function dlEsc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
 
 // Triggers the default-judgment flow: either an OSC Re: Failure to Prosecute
 // Default Judgment, or a Default Prove-Up Hearing — both are worked up the same
@@ -1469,7 +1485,12 @@ function statusHtml(c, filed, osc) {
     // operation of law, which is the whole point of showing it.
     if (pj.ruleExpires) {
       const gone = dayMs(pj.ruleExpires) < dayMs(new Date());
-      const t = 'CCP 660: the court\'s power to rule expires 75 days after ' + pj.expiresFrom
+      // Name the paper it counted from: the anchor is inferred from document
+      // titles, so the figure should be checkable without reading the code.
+      const from = pj.expiresAnchor
+        ? '"' + pj.expiresAnchor.name + '" filed ' + fmtShortDate(pj.expiresAnchor.when)
+        : pj.expiresFrom;
+      const t = 'CCP 660: the court\'s power to rule expires 75 days after ' + from
         + (gone ? '. That date has passed — undetermined, the motion is denied by operation of law.' : '.');
       pjParts.push(`<span style="color:${gone ? RED : DL_NEUTRAL}" title="${dlEsc(t)}">`
         + (gone ? 'Power to Rule Expired ' : 'Power to Rule Expires ') + fmtShortDate(pj.ruleExpires) + '</span>');
