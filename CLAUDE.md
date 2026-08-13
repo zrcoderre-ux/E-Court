@@ -85,7 +85,18 @@ scraping the current tab.
   filing status: green = filed on time (assuming electronic service), red =
   overdue/late, neutral = not yet due. The **Motion** additionally shows **yellow**
   when it missed the electronic-service deadline but would be timely under personal
-  service (no notice extension) — a cue to check the proof of service.
+  service (no notice extension) — a cue to check the proof of service. A paper
+  past due with nothing on file reads **"No Motion/Opposition/Reply"**; new trial,
+  JNOV and reconsideration have no §1005 schedule (their deadlines run from notice
+  of entry of judgment) and carry `motionOnly`, so the widget says only whether the
+  moving papers are on the docket at all.
+- **A hearing whose motion was never filed** is a real and common state (a reserved
+  date the party abandoned). `bestFilingMatch` requires a score **strictly above
+  0.5** so one incidental shared word can't nominate the wrong moving paper —
+  legitimate pairings measure 0.75–1.00. With no moving paper, the Documents button
+  opens the papers that *reference* the hearing (notice of intent, notice of
+  hearing, notice of failure to serve) via `docReferencesMotion`, which tolerates
+  one edit because docket titles carry typos ("New Trail", "Abritration").
 - **Not sensitive / intentionally in the repo:** Judge Mackenzie's name and the
   `AMackenzie@lacourt.ca.gov` address (an elected official + standing naming
   convention), and the Windows username `ZCoderre` in native-host paths. Do not

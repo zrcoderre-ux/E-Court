@@ -527,6 +527,39 @@ function docSigTokens(s) {
     .filter(t => t.length >= 4 && !DOC_STOP.has(t));
 }
 
+/* Docket titles are typed by hand and carry typos — this docket alone has
+   "Motion for New Trail" and "Compelling Abritration". One edit still names the
+   same motion, so tokens are compared loosely where a miss would lose the only
+   papers that reference a hearing. Adjacent transpositions count as one edit
+   (they are the common typo, and "trial"/"trail" is exactly that); the 5-char
+   floor keeps short words from colliding. */
+function withinOneEdit(a, b) {
+  if (a === b) return true;
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < la && j < lb) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (la === lb) {
+      if (a[i + 1] === b[j] && a[i] === b[j + 1]) { i += 2; j += 2; continue; } // transposed
+      i++; j++;
+    } else if (la > lb) { i++; } else { j++; }
+  }
+  return true;
+}
+
+// Does this document's name reference `motionType`, allowing for docket typos?
+// Deliberately looser than docWordOverlap, and used only where no moving paper
+// is on file — there the referencing papers are the whole record of the hearing,
+// so a missed token costs more than a stray match.
+function docReferencesMotion(name, motionType) {
+  const a = docSigTokens(motionType);
+  if (!a.length) return false;
+  const dn = docSigTokens(name);
+  return dn.some(d => a.some(t => (t.length >= 5 && d.length >= 5) ? withinOneEdit(t, d) : t === d));
+}
+
 function docWordOverlap(name, motionType) {
   const a = new Set(docSigTokens(motionType));
   if (!a.size) return false;
@@ -1578,7 +1611,7 @@ return {
   isOscDefaultJudgment, isWorkableHearing, isHearingExcluded, excludedTermMatches,
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,
   isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
-  docWordOverlap, docLinksToMotion, docPartyNames, docSharesParty,
+  docWordOverlap, docReferencesMotion, docLinksToMotion, docPartyNames, docSharesParty,
   isOppositionDoc, isNonOppositionDoc, isComplaintDoc, isCrossComplaintDoc,
   isFirstAmendedComplaintDoc, isDemurrerOrMotionToStrikeDoc, isDemurrerOrStrikeMotion,
   isPetitionDoc, latestDoc, findDefaultProveUp, sameCalendarDay,

@@ -41,7 +41,7 @@
     computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
     isOscDefaultJudgment, isWorkableHearing, loadExcludedTerms,
     isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
-    docWordOverlap, docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
+    docWordOverlap, docReferencesMotion, docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
     isDemurrerOrMotionToStrikeDoc, isPetitionDoc, latestDoc, findDefaultProveUp,
     sameCalendarDay, stripEventId, stripTrailingParenNumber, stripHearingOnPrefix,
     movantNormName, fmtShortDate, dlLog,
@@ -1931,6 +1931,19 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
       for (const d of docs) {
         if (d.when && pw && d.when >= pw && /\bplaintiff\b/i.test(d.filedBy || '')) add(d);
       }
+    }
+  }
+
+  // No moving paper on file for this hearing — never filed, or withdrawn. The
+  // papers that DO reference it are then the entire record of it: the notice of
+  // intent, the notice of hearing, a notice that the motion was never served.
+  // Those are what the button should open. Other motions' moving papers stay
+  // out, for the same reason as in the sweeps below — they belong to their own
+  // hearings — unless the Hearings tab listed them for this one.
+  if (!motionDoc) {
+    for (const d of docs) {
+      if (isMovingPaper(d.name) && !blobDocIds.has(d.docId)) continue;
+      if (docReferencesMotion(d.name, motionType)) add(d);
     }
   }
 
