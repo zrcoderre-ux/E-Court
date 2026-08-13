@@ -2429,9 +2429,19 @@ function renderDocumentsButton() {
 // we scan the case's Documents for the operative notice-of-entry filing so the
 // calculator can seed the correct trigger date.
 const NOTICE_OF_ENTRY_RE = /notice of (entry|ruling)/i;
+// After a settlement the appealable event is often a clerk's dismissal order
+// rather than anything titled "Notice of Entry" — eCourt shows it as
+// "Order - Dismissal / Issued and Filed by: Clerk". Rule 8.104(e) treats an
+// appealable order as the judgment, so its service starts the 60 days. Used
+// only as a fallback: a real notice of entry, where one exists, is better
+// evidence of the service date.
+const DISMISSAL_TRIGGER_RE = /^order\s*[-–—:]?\s*dismissal\b|^order of dismissal\b|notice of entry of dismissal\b/i;
 const ENTRY_OF_JUDGMENT_RE = /\bjudgment\b/i;
 function isTriggerBasedMotion(motionType) {
-  return /reconsideration|renewed?\s+motion|\b1008\b|new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/i.test(motionType || '');
+  return /reconsideration|renewed?\s+motion|\b1008\b|new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/i.test(motionType || '')
+    // Fees (CRC 3.1702) and costs (3.1700) run off the same notice-of-entry
+    // trigger, so they need the dates detected too.
+    || /attorney'?s?\s+fees|\battorney\s+fee\b|\bfees\s+and\s+costs\b|\b(?:strike|tax|taxing)\s+(?:of\s+)?costs\b|memorandum\s+of\s+costs/i.test(motionType || '');
 }
 // The entry-of-judgment filing itself (for the § 659 180-day outer limit), as
 // opposed to notices/proposed/supporting papers that merely mention "judgment".
@@ -2459,7 +2469,10 @@ async function detectTriggerDates(hearingDateStr) {
     const docs = await fetchAllDocuments(docsUrl);
     if (!docs || !docs.length) return out;
     const cutoff = hearingDateStr ? parseHearingDateTime(hearingDateStr) : null;
-    const noe = latestDocOnOrBefore(docs.filter(d => d.name && d.when && NOTICE_OF_ENTRY_RE.test(d.name)), cutoff);
+    let noe = latestDocOnOrBefore(docs.filter(d => d.name && d.when && NOTICE_OF_ENTRY_RE.test(d.name)), cutoff);
+    if (!noe) {
+      noe = latestDocOnOrBefore(docs.filter(d => d.name && d.when && DISMISSAL_TRIGGER_RE.test(d.name)), cutoff);
+    }
     if (noe) { out.noticeOfEntryDate = noe.dateStr; out.noticeOfEntryDoc = noe.name; }
     const eoj = latestDocOnOrBefore(docs.filter(d => d.name && d.when && isEntryOfJudgmentDoc(d.name)), cutoff);
     if (eoj) { out.entryOfJudgmentDate = eoj.dateStr; out.entryOfJudgmentDoc = eoj.name; }

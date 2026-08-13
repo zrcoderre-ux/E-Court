@@ -107,6 +107,26 @@
   function msjReply(hearing) { return prevCourtDay(addCAL(hearing, -11)); } // § 437c(b)(4)
   function newTrialDL(notice){ return nextCourtDay(addCAL(notice, 15));  } // § 659(a)(2)
 
+  // ── ATTORNEY FEES (CRC 3.1702(b)) ─────────────────────────────────────────
+  // A notice of motion claiming fees for services through rendition of judgment
+  // in the trial court is served and filed within the time for filing a NOTICE
+  // OF APPEAL (rule 3.1702(b)(1), incorporating rules 8.104 and 8.108). Under
+  // rule 8.104(a)(1) that is the earliest of: 60 days after the clerk serves a
+  // "Notice of Entry" or a filed-endorsed copy of the judgment; 60 days after a
+  // party serves either with proof of service; or 180 days after entry.
+  //
+  // Deliberately NO service extension. The period is measured by the time to
+  // appeal, and both extension statutes carve that out expressly — § 1013(a)
+  // for mail and fax, § 1010.6(a)(3)(B) for electronic service ("the extension
+  // shall not apply to extend the time for filing ... a notice of appeal").
+  // This is the difference from the costs memorandum, which does carry them.
+  //
+  // Rule 8.108 can extend the period when a valid post-trial motion is pending,
+  // and rule 3.1702(b)(2) lets the parties stipulate to more time. Neither is
+  // visible from the docket, so the date here is the unextended one.
+  function feesDL(triggerService) { return nextCourtDay(addCAL(triggerService, 60)); }
+  function feesOuterDL(entryOfJudgment) { return nextCourtDay(addCAL(entryOfJudgment, 180)); }
+
   // Service extension for a period that runs FORWARD from service of a document:
   // § 1013(a) adds calendar days for mail, § 1010.6(a)(3)(B) adds two court days
   // for electronic service. Personal service adds nothing.
@@ -152,6 +172,10 @@
     if (/summary\s+judgment|summary\s+adjudication|\bmsj\b|\bmsa\b/.test(s)) return 'msj';
     if (/new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/.test(s)) return 'new_trial';
     if (/reconsideration|renewed?\s+motion|\bccp?\s*1008\b|\b1008\b/.test(s)) return 'recon';
+    // Fees before costs: "motion to strike or tax costs" is a costs motion, but
+    // "attorney fees and costs" is a fee motion, and the fee test is narrower.
+    if (/attorney'?s?\s+fees|\battorney\s+fee\b|\bfees\s+and\s+costs\b|\b3\.1702\b/.test(s)) return 'fees';
+    if (/\b(?:strike|tax|taxing)\s+(?:of\s+)?costs\b|\bcosts\b.*\b(?:strike|tax)\b|memorandum\s+of\s+costs|\b3\.1700\b/.test(s)) return 'costs';
     return 'standard';
   }
 
@@ -169,7 +193,7 @@
   const api = {
     getHolidays, isCourtDay, nextCourtDay, prevCourtDay, addCD, addCAL,
     stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply, newTrialDL, reconDL,
-    addServiceExtension, costsMemoDL, costsMemoOuterDL, costsTaxDL,
+    addServiceExtension, costsMemoDL, costsMemoOuterDL, costsTaxDL, feesDL, feesOuterDL,
     classifyMotion, parseDateFlexible,
   };
   (typeof window !== 'undefined' ? window : globalThis).LACourtDeadlines = api;
