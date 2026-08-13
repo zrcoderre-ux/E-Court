@@ -324,7 +324,16 @@ function bestFilingMatch(motionType, filings) {
     const s = movantMatchScore(motionType, f.name);
     if (s > bestScore) { bestScore = s; best = f; }
   }
-  return bestScore >= 0.5 ? best : null;
+  // Strictly greater than half: a score of exactly 0.50 is a name that overlaps
+  // the hearing type by one incidental word and diverges on the rest — "Motion
+  // in Limine ... to Exclude Testimony at Trial" against a Motion for New Trial,
+  // sharing only "trial". Accepting those picked the wrong moving paper for a
+  // hearing whose motion was never filed, and the single-hearing sweep in
+  // computeRelevantDocuments then opened the whole docket after it. Real
+  // pairings score well clear of the line (measured: 0.75-1.00, the bidirectional
+  // score in movantMatchScore covering concise document names), so returning
+  // null — no moving paper on file — is the right answer at exactly 0.50.
+  return bestScore > 0.5 ? best : null;
 }
 
 // Parse a "Filed By" cell into { parties:[{name,role}], truncated }.
@@ -516,6 +525,39 @@ const DOC_STOP = new Set(['motion','opposition','reply','response','notice','dec
 function docSigTokens(s) {
   return (s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
     .filter(t => t.length >= 4 && !DOC_STOP.has(t));
+}
+
+/* Docket titles are typed by hand and carry typos — this docket alone has
+   "Motion for New Trail" and "Compelling Abritration". One edit still names the
+   same motion, so tokens are compared loosely where a miss would lose the only
+   papers that reference a hearing. Adjacent transpositions count as one edit
+   (they are the common typo, and "trial"/"trail" is exactly that); the 5-char
+   floor keeps short words from colliding. */
+function withinOneEdit(a, b) {
+  if (a === b) return true;
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < la && j < lb) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (la === lb) {
+      if (a[i + 1] === b[j] && a[i] === b[j + 1]) { i += 2; j += 2; continue; } // transposed
+      i++; j++;
+    } else if (la > lb) { i++; } else { j++; }
+  }
+  return true;
+}
+
+// Does this document's name reference `motionType`, allowing for docket typos?
+// Deliberately looser than docWordOverlap, and used only where no moving paper
+// is on file — there the referencing papers are the whole record of the hearing,
+// so a missed token costs more than a stray match.
+function docReferencesMotion(name, motionType) {
+  const a = docSigTokens(motionType);
+  if (!a.length) return false;
+  const dn = docSigTokens(name);
+  return dn.some(d => a.some(t => (t.length >= 5 && d.length >= 5) ? withinOneEdit(t, d) : t === d));
 }
 
 function docWordOverlap(name, motionType) {
@@ -1218,7 +1260,18 @@ function computeDueDatesFor(eff) {
   const motionType = eff.motionType;
   if (!motionType) return null; // not a motion (or the header hasn't rendered yet)
   const cat = D.classifyMotion(motionType);
-  if (cat !== 'standard' && cat !== 'msj') return Object.assign({ skip: true, reason: cat }, tag); // new trial / recon aren't hearing-based
+  // New trial / JNOV / reconsideration aren't hearing-based: their deadlines run
+  // from notice of entry of judgment or the original order, not the hearing, so
+  // there is no §1005 schedule to show. Whether the moving papers ever arrived
+  // is a separate fact and still worth reporting — a hearing whose motion was
+  // never filed comes off calendar — so these carry motionOnly rather than
+  // dropping out entirely.
+  if (cat !== 'standard' && cat !== 'msj') {
+    return Object.assign({
+      skip: true, motionOnly: true, reason: cat, motionType, cat,
+      hearingWhen: parseHearingDateTime(eff.hearingDate),
+    }, tag);
+  }
   const hearing = parseHearingDateTime(eff.hearingDate);
   if (!hearing) { dlLog('no hearing date parsed for motion:', motionType); return null; }
   return Object.assign({
@@ -1261,6 +1314,15 @@ function statusHtml(c, filed, osc) {
   }
   const f = filed || {};
   const RED = '#c0392b';
+  // A motion whose deadlines don't run from the hearing (new trial, JNOV,
+  // reconsideration). There is no briefing schedule to paint, so the only thing
+  // to say is whether the moving papers are on the docket at all — and the only
+  // thing worth saying is when they aren't.
+  if (c.motionOnly) {
+    if (!f.filedKnown || f.motion != null) return '';
+    return prefix + `<span style="color:${RED}" title="No moving papers for this hearing are on the docket. `
+      + `Its deadlines don't run from the hearing date, so no briefing schedule is shown.">No Motion on File</span>`;
+  }
   const item = (label, key, due) =>
     `<span style="color:${nextDlColor(due, f[key], f.filedKnown)}">${label} ${fmtShortDate(due)}</span>`;
   // The reply is the one paper whose absence is routine until its date arrives —
@@ -1549,7 +1611,7 @@ return {
   isOscDefaultJudgment, isWorkableHearing, isHearingExcluded, excludedTermMatches,
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,
   isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
-  docWordOverlap, docLinksToMotion, docPartyNames, docSharesParty,
+  docWordOverlap, docReferencesMotion, docLinksToMotion, docPartyNames, docSharesParty,
   isOppositionDoc, isNonOppositionDoc, isComplaintDoc, isCrossComplaintDoc,
   isFirstAmendedComplaintDoc, isDemurrerOrMotionToStrikeDoc, isDemurrerOrStrikeMotion,
   isPetitionDoc, latestDoc, findDefaultProveUp, sameCalendarDay,

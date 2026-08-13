@@ -1003,7 +1003,7 @@ async function caseStatusHtmlFor(job) {
     motionType: stripHearingOnPrefix(job.hearing),
     hearingDate: job.day,
   });
-  if (!c || c.skip) return '';
+  if (!c || (c.skip && !c.motionOnly)) return '';
   const ctx = caseCtxForId(job.caseId);
   if (c.osc) return statusHtml(c, null, await computeOscStatus(ctx));
   return statusHtml(c, await computeFiledStatus(ctx, c), null);
