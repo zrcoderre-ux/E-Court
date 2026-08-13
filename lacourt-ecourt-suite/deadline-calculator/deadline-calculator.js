@@ -523,6 +523,15 @@ function applyDetected(data) {
     const fd = document.getElementById('dateFriendly');
     if (fd) fd.textContent = fmtFull(bd);
   }
+  // The memorandum of costs the content script found: the motion to strike or
+  // tax runs 15 days from its service, and typing that date by hand was the one
+  // step the costs mode still required.
+  const memo = parseDate(data.memoServedDate);
+  if (memo) {
+    state.memoServedDate = memo;
+    const mi = document.getElementById('memoServedDate');
+    if (mi) mi.value = toInputValue(memo);
+  }
   // Pre-select the matching rule and open the step-by-step view on it.
   state.motionType = category;
   state.mode = 'B';

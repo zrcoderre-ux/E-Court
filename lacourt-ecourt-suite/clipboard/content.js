@@ -2445,6 +2445,10 @@ const DISMISSAL_TRIGGER_RE = /^order\s*[-–—:]?\s*dismissal\b|^order of dismi
 // is about the CLERK's service; a party's own copy triggers only under (B),
 // which needs service plus proof of service that the docket doesn't show.
 const JUDGMENT_TRIGGER_RE = /^(?:amended\s+)?judgment\b/i;
+// The prevailing party's memorandum of costs. The motion to strike or tax runs
+// 15 days from its SERVICE (CRC 3.1700(b)(1)); the docket shows filing, which
+// stands in for it, so the calculator states which document it used.
+const COSTS_MEMO_DOC_RE = /^memorandum of costs\b/i;
 function isClerkFiledDoc(d) { return /\bclerk\b/i.test((d && d.filedBy) || ''); }
 const ENTRY_OF_JUDGMENT_RE = /\bjudgment\b/i;
 function isTriggerBasedMotion(motionType) {
@@ -2472,7 +2476,8 @@ function latestDocOnOrBefore(matches, cutoff) {
 // § 659 15-day trigger) and the entry-of-judgment filing (the § 659 180-day
 // outer limit).
 async function detectTriggerDates(hearingDateStr) {
-  const out = { noticeOfEntryDate: '', noticeOfEntryDoc: '', entryOfJudgmentDate: '', entryOfJudgmentDoc: '' };
+  const out = { noticeOfEntryDate: '', noticeOfEntryDoc: '', entryOfJudgmentDate: '', entryOfJudgmentDoc: '',
+                memoServedDate: '', memoDoc: '' };
   try {
     const docsUrl = getDocumentsUrl();
     if (!docsUrl) return out;
@@ -2496,6 +2501,11 @@ async function detectTriggerDates(hearingDateStr) {
     }
     const eoj = latestDocOnOrBefore(docs.filter(d => d.name && d.when && isEntryOfJudgmentDoc(d.name)), cutoff);
     if (eoj) { out.entryOfJudgmentDate = eoj.dateStr; out.entryOfJudgmentDoc = eoj.name; }
+    // The memorandum of costs a strike/tax motion attacks — the earliest one,
+    // since that is the memo whose service starts the 15 days.
+    const memos = docs.filter(d => d.name && d.when && COSTS_MEMO_DOC_RE.test(d.name)
+      && (!cutoff || d.when <= cutoff)).sort((a, b) => a.when - b.when);
+    if (memos[0]) { out.memoServedDate = memos[0].dateStr; out.memoDoc = memos[0].name; }
     return out;
   } catch (_) { return out; }
 }
@@ -2563,6 +2573,8 @@ function renderDeadlineButton() {
         noticeOfEntryDoc: trig.noticeOfEntryDoc,
         entryOfJudgmentDate: trig.entryOfJudgmentDate,
         entryOfJudgmentDoc: trig.entryOfJudgmentDoc,
+        memoServedDate: trig.memoServedDate,
+        memoDoc: trig.memoDoc,
         createdAt: Date.now(),
       };
       await new Promise(res => {
