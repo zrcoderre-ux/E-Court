@@ -2429,12 +2429,14 @@ function renderDocumentsButton() {
 // we scan the case's Documents for the operative notice-of-entry filing so the
 // calculator can seed the correct trigger date.
 const NOTICE_OF_ENTRY_RE = /notice of (entry|ruling)/i;
-// After a settlement the appealable event is often a clerk's dismissal order
-// rather than anything titled "Notice of Entry" — eCourt shows it as
-// "Order - Dismissal / Issued and Filed by: Clerk". Rule 8.104(e) treats an
-// appealable order as the judgment, so its service starts the 60 days. Used
-// only as a fallback: a real notice of entry, where one exists, is better
-// evidence of the service date.
+// Rule 8.104(a)(1)(A) does not require the trigger to be TITLED "Notice of
+// Entry": the clerk serving a filed-endorsed copy of the judgment starts the
+// period just as well, and under rule 8.104(e) an appealable order is the
+// judgment. eCourt's "Order - Dismissal / Issued and Filed by: Clerk" after a
+// settlement is exactly that, so it is a trigger in its own right rather than a
+// second choice. What the docket cannot show is the SERVICE date the rule keys
+// on — the filing date stands in for it, so the proof of service or certificate
+// of mailing is still worth checking before relying on the computed date.
 const DISMISSAL_TRIGGER_RE = /^order\s*[-–—:]?\s*dismissal\b|^order of dismissal\b|notice of entry of dismissal\b/i;
 const ENTRY_OF_JUDGMENT_RE = /\bjudgment\b/i;
 function isTriggerBasedMotion(motionType) {
@@ -2469,11 +2471,20 @@ async function detectTriggerDates(hearingDateStr) {
     const docs = await fetchAllDocuments(docsUrl);
     if (!docs || !docs.length) return out;
     const cutoff = hearingDateStr ? parseHearingDateTime(hearingDateStr) : null;
-    let noe = latestDocOnOrBefore(docs.filter(d => d.name && d.when && NOTICE_OF_ENTRY_RE.test(d.name)), cutoff);
-    if (!noe) {
-      noe = latestDocOnOrBefore(docs.filter(d => d.name && d.when && DISMISSAL_TRIGGER_RE.test(d.name)), cutoff);
+    // One pool, both shapes equal. Rule 8.104(a)(1) then takes the EARLIEST of
+    // the triggering events, so among papers serving the SAME judgment the
+    // earliest controls — a clerk's dismissal order on the 18th is not
+    // displaced by a party's notice of entry on the 22nd. The look-back is
+    // bounded to one appeal period so an older judgment in a long case can't
+    // reach forward and claim this motion's trigger.
+    const triggers = docs.filter(d => d.name && d.when
+      && (NOTICE_OF_ENTRY_RE.test(d.name) || DISMISSAL_TRIGGER_RE.test(d.name)));
+    let noe = latestDocOnOrBefore(triggers, cutoff);
+    if (noe) {
+      const windowStart = new Date(noe.when); windowStart.setDate(windowStart.getDate() - 60);
+      for (const d of triggers) if (d.when >= windowStart && d.when < noe.when) noe = d;
+      out.noticeOfEntryDate = noe.dateStr; out.noticeOfEntryDoc = noe.name;
     }
-    if (noe) { out.noticeOfEntryDate = noe.dateStr; out.noticeOfEntryDoc = noe.name; }
     const eoj = latestDocOnOrBefore(docs.filter(d => d.name && d.when && isEntryOfJudgmentDoc(d.name)), cutoff);
     if (eoj) { out.entryOfJudgmentDate = eoj.dateStr; out.entryOfJudgmentDoc = eoj.name; }
     return out;
