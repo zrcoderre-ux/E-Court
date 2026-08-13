@@ -1321,7 +1321,7 @@ function statusHtml(c, filed, osc) {
   if (c.motionOnly) {
     if (!f.filedKnown || f.motion != null) return '';
     return prefix + `<span style="color:${RED}" title="No moving papers for this hearing are on the docket. `
-      + `Its deadlines don't run from the hearing date, so no briefing schedule is shown.">No Motion on File</span>`;
+      + `Its deadlines don't run from the hearing date, so no briefing schedule is shown.">No Motion</span>`;
   }
   const item = (label, key, due) =>
     `<span style="color:${nextDlColor(due, f[key], f.filedKnown)}">${label} ${fmtShortDate(due)}</span>`;
