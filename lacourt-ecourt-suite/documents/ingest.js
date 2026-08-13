@@ -5,9 +5,13 @@
  * not the day it showed up on the site. Those differ: the clerk's intake queue
  * runs during business hours and lands a paper 0-3 court days after it was
  * filed, so a reply filed on the day it was due is routinely invisible until
- * the next court day. This annotates each document row with the day and time
- * eCourt actually posted it, plus the lag in court days, decoded out of the doc
- * endpoint's Last-Modified header (see lib/case-status.js).
+ * the next court day. This surfaces the day and time eCourt actually posted
+ * each filing, decoded out of the doc endpoint's Last-Modified header (see
+ * lib/case-status.js), as a hover under the row's Filed date — in place of the
+ * site's own "UPDATE DOCUMENT" tooltip, which that cell otherwise shows.
+ *
+ * The lag in court days is computed for the samples only. On the page the date
+ * itself is the useful fact; the lag distribution belongs to the options page.
  *
  * The lookup is one HEAD per document, cached permanently by docId, so a case
  * costs its requests once. Every decoded (filed -> posted) pair is also handed
@@ -39,37 +43,62 @@
     return out;
   }
 
-  // "Thu 8/6 10:43a · +1 ct day" — the posting moment and how long it sat.
-  function labelFor(info, filedWhen) {
-    const when = fmtIngest(info);
-    if (!when) return '';
-    const lag = ingestLagCourtDays(filedWhen, info);
-    if (lag == null) return when;
-    if (lag <= 0) return when + ' · same day';
-    return when + ' · +' + lag + ' ct day' + (lag === 1 ? '' : 's');
+  const STYLE_ID = 'lac-ingest-styles';
+  const CELL_CLASS = 'lac-upload-cell';
+  const STAMP_CLASS = 'lac-upload-stamp';
+
+  // Absolutely positioned so revealing it doesn't reflow the table — it drops
+  // over the row below the way the native tooltip it replaces would.
+  function ensureStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+    const s = document.createElement('style');
+    s.id = STYLE_ID;
+    s.textContent = '.' + CELL_CLASS + '{position:relative;}'
+      + '.' + STAMP_CLASS + '{display:none;position:absolute;left:0;top:100%;margin-top:2px;'
+      + 'z-index:2147483000;padding:3px 7px;border-radius:3px;background:#1f2937;color:#f9fafb;'
+      + 'font:600 11px system-ui,sans-serif;white-space:nowrap;pointer-events:none;'
+      + 'box-shadow:0 1px 4px rgba(0,0,0,.35);}'
+      + '.' + CELL_CLASS + ':hover .' + STAMP_CLASS + '{display:block;}';
+    (document.head || document.documentElement).appendChild(s);
   }
 
-  // A filing that sat longer than this reads amber — it is the case where the
-  // paper was on file well before you could have seen it.
-  const SLOW_COURT_DAYS = 2;
+  // The row's Filed/Status Date cell. It is column 1 by header order, but the
+  // date pattern is checked rather than trusted, and scanned for if that misses.
+  function dateCellFor(anchor) {
+    const tr = anchor.closest && anchor.closest('tr');
+    if (!tr) return null;
+    const cells = Array.from(tr.children);
+    const isDate = c => /^\s*\d{1,2}\/\d{1,2}\/\d{4}\s*$/.test(c.textContent || '');
+    if (cells[1] && isDate(cells[1])) return cells[1];
+    return cells.filter(isDate)[0] || null;
+  }
 
-  function stamp(anchor, info, filedWhen) {
+  // eCourt hangs an "UPDATE DOCUMENT" tooltip off this cell. Stash the titles
+  // and clear them so hovering shows the upload time instead of the site's.
+  function suppressNativeTitles(cell) {
+    const els = [cell].concat(Array.from(cell.querySelectorAll('[title]')));
+    for (const el of els) {
+      const t = el.getAttribute && el.getAttribute('title');
+      if (t) { el.setAttribute('data-lac-title', t); el.removeAttribute('title'); }
+    }
+  }
+
+  function stamp(anchor, info) {
     if (!anchor || anchor.getAttribute(MARK_ATTR) === '1') return;
-    const text = labelFor(info, filedWhen);
+    const text = fmtIngest(info);
     if (!text) return;
+    const cell = dateCellFor(anchor);
+    if (!cell) return;
     anchor.setAttribute(MARK_ATTR, '1');
-    const lag = ingestLagCourtDays(filedWhen, info);
+    ensureStyles();
+    suppressNativeTitles(cell);
+    cell.classList.add(CELL_CLASS);
+    const prev = cell.querySelector('.' + STAMP_CLASS);
+    if (prev) prev.remove();
     const span = document.createElement('span');
-    span.className = 'lac-ingest-stamp';
-    span.textContent = text;
-    span.title = 'Posted to eCourt at this time (±17 min). The Filed column shows the '
-      + 'effective filing date, which can be several court days earlier.';
-    span.setAttribute('style',
-      'display:inline-block;margin-left:8px;font:600 11px system-ui,sans-serif;'
-      + 'white-space:nowrap;color:' + (lag != null && lag > SLOW_COURT_DAYS ? '#b8860b' : '#6b7280') + ';');
-    // Sits after the document link, inside the same cell, so it travels with
-    // the row through pagination and filtering.
-    if (anchor.parentNode) anchor.parentNode.insertBefore(span, anchor.nextSibling);
+    span.className = STAMP_CLASS;
+    span.textContent = 'Uploaded ' + text;
+    cell.appendChild(span);
   }
 
   function runWithConcurrency(items, limit, worker) {
@@ -101,9 +130,13 @@
       const info = await getIngestTime(job.docId);
       if (!info) return;
       const filedWhen = job.filed ? job.filed.when : null;
-      stamp(job.anchor, info, filedWhen);
+      stamp(job.anchor, info);
       const day = ingestDay(info);
-      if (filedWhen && day) {
+      const lag = ingestLagCourtDays(filedWhen, info);
+      // A paper posted before its own filing date isn't measuring the intake
+      // queue (a filing date set forward, a nunc pro tunc entry), so it stays
+      // out of the distribution rather than dragging the medians down.
+      if (filedWhen && day && lag != null && lag >= 0) {
         samples.push({
           docId: job.docId,
           name: (job.filed && job.filed.name || '').slice(0, 80),
@@ -111,7 +144,7 @@
           filed: job.filed.dateStr || '',
           posted: day.getTime(),
           postedText: fmtIngest(info),
-          lag: ingestLagCourtDays(filedWhen, info),
+          lag,
         });
       }
     });
@@ -140,7 +173,7 @@
       const mo = new MutationObserver(muts => {
         for (const m of muts) {
           for (const n of m.addedNodes) {
-            if (n.nodeType === 1 && !(n.classList && n.classList.contains('lac-ingest-stamp'))) { schedule(); return; }
+            if (n.nodeType === 1 && !(n.classList && n.classList.contains(STAMP_CLASS))) { schedule(); return; }
           }
         }
       });
