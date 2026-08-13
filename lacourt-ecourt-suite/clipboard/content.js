@@ -2799,6 +2799,32 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) sche
 window.addEventListener('focus', scheduleButtonCollapse);
 window.addEventListener('pageshow', scheduleButtonCollapse);
 
+// A cold load can render the buttons before the site paints its blue header:
+// the probe finds no bar, sessionStorage carries no remembered size yet (nothing
+// has measured it in this tab), and the buttons fall back to the compact tab.
+// The listeners above only fire on resize/refocus/reload, so that wrong size
+// then sticks for the life of the page — the symptom being buttons that don't
+// fill the header until you reload a second time. Retry on a short ladder after
+// first paint, stopping the moment the bar turns up (so a warm load, which wins
+// the race on the first rung, costs one extra probe).
+const BAR_RETRY_MS = [150, 400, 1000, 2500];
+let __barRetryStarted = false;
+function retryBarSizingUntilFound() {
+  if (__barRetryStarted) return;
+  __barRetryStarted = true;
+  let i = 0;
+  const tick = () => {
+    // A hidden tab reports stale layout, so a miss there proves nothing; the
+    // visibilitychange listener re-sizes when the tab comes back.
+    if (!document.hidden && findCaseTopBar()) {
+      try { updateButtonCollapse(); } catch (_) {}
+      return;
+    }
+    if (i < BAR_RETRY_MS.length) setTimeout(tick, BAR_RETRY_MS[i++]);
+  };
+  setTimeout(tick, BAR_RETRY_MS[i++]);
+}
+
 /* ------------------------------------------------------------------ */
 /* Inline Opposition / Reply (and Motion) deadlines on the "Next" header */
 /* ------------------------------------------------------------------ */
@@ -3121,6 +3147,8 @@ function setupFillFormButton() {
     // then schedule the debounced pass that measures the live bar and re-docks.
     try { updateButtonCollapse(); } catch (_) {}
     scheduleButtonCollapse();
+    // ...and keep looking for the header if it hasn't rendered yet.
+    retryBarSizingUntilFound();
   };
 
   if (document.readyState === 'loading') {
