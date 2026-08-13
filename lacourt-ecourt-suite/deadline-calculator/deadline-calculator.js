@@ -33,7 +33,7 @@ const {
   getHolidays, isCourtDay, nextCourtDay, prevCourtDay, addCD, addCAL,
   stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply, newTrialDL, reconDL,
   costsMemoDL, costsMemoOuterDL, costsTaxDL,
-  classifyMotion,
+  classifyMotion, feesDL, feesOuterDL,
 } = LACourtDeadlines;
 
 const CATEGORY_LABEL = {
@@ -191,6 +191,21 @@ function getSectionData(baseDate) {
       reply: null, replyNote: 'Opposition / reply to that motion run off its hearing date (§ 1005(b))', warn: null,
     },
     {
+      id: 'fees', label: 'Attorney Fees (CRC 3.1702)',
+      // Base date = service of the trigger: the clerk's "Notice of Entry" or
+      // filed-endorsed copy of the judgment (or appealable dismissal order), or
+      // a party's service of either. Rule 3.1702(b)(1) gives the fee motion the
+      // time for filing a NOTICE OF APPEAL (rule 8.104(a)(1)) — 60 days from
+      // that service, or 180 days from entry, whichever comes first.
+      motionFn: () => feesDL(baseDate),
+      motionRule: '60 days from service of the trigger (CRC 3.1702(b)(1); rule 8.104(a)(1))',
+      // NOT extended for service method: § 1013(a) and § 1010.6(a)(3)(B) both
+      // exclude the notice of appeal, which is what this period is measured by.
+      opp: null, oppNote: 'Opposition 9 court days before the fee hearing (§ 1005(b)) — that period IS extended for service',
+      reply: null, replyNote: 'Reply 5 court days before the hearing (§ 1005(b))',
+      warn: feesDL(baseDate) < today ? '⚠ Deadline passed — check rule 8.108 (post-trial motion pending) or a rule 3.1702(b)(2) stipulation' : null,
+    },
+    {
       id: 'recon', label: 'Reconsideration',
       motionFn: (svc) => reconDL(baseDate, svc), motionRule: '10 days from notice + svc. ext.',
       // Opp/reply run from the eventual hearing (§ 1005), which isn't the
@@ -288,6 +303,9 @@ function renderInteractiveMode() {
   const mt = state.motionType;
   // Only new trial is service-immune (§ 659(b)); reconsideration IS extended by
   // service method (§§ 1013 / 1010.6), so it keeps the service chips.
+  // Fees run off the time to appeal, which no service extension reaches
+  // (§ 1013(a), § 1010.6(a)(3)(B) both carve out the notice of appeal), so the
+  // service chips are meaningless there and the row says so instead.
   const triggerBased = mt === 'new_trial';
 
   const MOTION_OPTS = [
@@ -296,6 +314,7 @@ function renderInteractiveMode() {
     { v: 'new_trial', l: 'New Trial / JNOV' },
     { v: 'recon', l: 'Reconsideration' },
     { v: 'costs', l: 'Costs (CRC 3.1700)' },
+    { v: 'fees', l: 'Attorney Fees (CRC 3.1702)' },
   ];
   const SVC_OPTS = [
     { v: 'electronic', l: 'Electronic' },

@@ -1182,6 +1182,10 @@ const DL = (function () {
     if (/summary\s+judgment|summary\s+adjudication|\bmsj\b|\bmsa\b/.test(s)) return 'msj';
     if (/new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/.test(s)) return 'new_trial';
     if (/reconsideration|renewed?\s+motion|\bccp?\s*1008\b|\b1008\b/.test(s)) return 'recon';
+    // Fees before costs: "strike or tax costs" is a costs motion, but "fees and
+    // costs" is a fee motion, and the fee test is the narrower one.
+    if (/attorney'?s?\s+fees|\battorney\s+fee\b|\bfees\s+and\s+costs\b|\b3\.1702\b/.test(s)) return 'fees';
+    if (/\b(?:strike|tax|taxing)\s+(?:of\s+)?costs\b|\bcosts\b.*\b(?:strike|tax)\b|memorandum\s+of\s+costs|\b3\.1700\b/.test(s)) return 'costs';
     return 'standard'; }
   return { classifyMotion, stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply, isCourtDay };
 })();
@@ -1364,7 +1368,7 @@ function computeDueDatesFor(eff) {
   // is a separate fact and still worth reporting — a hearing whose motion was
   // never filed comes off calendar — so these carry motionOnly rather than
   // dropping out entirely.
-  if (cat !== 'standard' && cat !== 'msj') {
+  if (cat === 'new_trial' || cat === 'recon') {
     return Object.assign({
       skip: true, motionOnly: true, reason: cat, motionType, cat,
       hearingWhen: parseHearingDateTime(eff.hearingDate),
