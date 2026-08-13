@@ -101,7 +101,10 @@ scraping the current tab.
   `/ModDate` stamps). Resolution is ~17 minutes. `INGEST_GRACE_COURT_DAYS` in
   `lib/case-status.js` is the window during which a missing paper is reported
   as "not posted yet" rather than absent; revisit it if the options page's
-  Filing Lag distribution shifts.
+  Filing Lag distribution shifts. Lag varies by **document type** (`docLagCategory`)
+  — clerk-entered minute orders post same-day, default prove-up packets have
+  been measured at 11 court days — so read the per-type breakdown, not the
+  pooled median, before changing the window.
 - **New Outlook** is in use (no COM/`.oft`/`CreateItemFromTemplate`), so email
   drafting uses `mailto:` and the Word mail merge is launched via the native host.
 
