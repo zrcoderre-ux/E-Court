@@ -1892,6 +1892,9 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   //      pleadings are added separately, above).
   //   2. When we don't (bestFilingMatch returned null, so no date), and several
   //      filings share the same name, keep only the latest.
+  // Documents the Hearings tab actually listed for THIS hearing. Authoritative,
+  // so they're exempt from the other-motion guard below.
+  const blobDocIds = new Set();
   if (hearingDocBlob) {
     const blob = movantNormName(hearingDocBlob);
     const hits = [];
@@ -1906,6 +1909,7 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
         continue;
       }
       add(d);
+      blobDocIds.add(d.docId);
     }
   }
 
@@ -1941,12 +1945,26 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
       // One upcoming hearing: everything after the motion is fair game.
       for (const d of docs) if (d.when && mw && d.when > mw) add(d);
     } else {
+      // A document that is itself a moving paper belongs to the hearing IT
+      // noticed. The name-similarity sweeps below can't tell "Motion to Compel
+      // Arbitration" from "Motion to Compel Further Responses" — docWordOverlap
+      // matches on the single shared token "compel" — so a case carrying
+      // parallel motions set on different dates would open every one of them.
+      // Keep those sweeps to papers that aren't somebody's moving paper. This
+      // hearing's own motion and anything the Hearings tab listed for it are
+      // exempt (both authoritative, and both already added above). Oppositions,
+      // replies, separate statements and declarations are not moving papers, so
+      // the briefing this is meant to collect is unaffected.
+      const isOtherMotion = d => isMovingPaper(d.name)
+        && d.docId !== (motionDoc && motionDoc.docId)
+        && !blobDocIds.has(d.docId);
+
       // Multiple hearings: match by shared words + Opposition/Reply co-filings.
-      for (const d of docs) if (d.when && mw && d.when >= mw && docWordOverlap(d.name, motionType)) add(d);
+      for (const d of docs) if (d.when && mw && d.when >= mw && docWordOverlap(d.name, motionType) && !isOtherMotion(d)) add(d);
       const after = docs.filter(d => d.when && mw && d.when >= mw);
       for (const opp of after) if (/\bopposition\b/i.test(opp.name) && docWordOverlap(opp.name, motionType)) {
         add(opp); const P = docPartyNames(opp.filedBy);
-        for (const d of docs) if (sameCalendarDay(d.when, opp.when) && docSharesParty(docPartyNames(d.filedBy), P)) add(d);
+        for (const d of docs) if (sameCalendarDay(d.when, opp.when) && docSharesParty(docPartyNames(d.filedBy), P) && !isOtherMotion(d)) add(d);
       }
       // The movant files the reply, so a "Reply …" by the same party as the
       // motion also counts — covers replies that name the motion only by the
@@ -1955,7 +1973,7 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
       for (const rep of after) if (/\breply\b/i.test(rep.name)
           && (docWordOverlap(rep.name, motionType) || docSharesParty(docPartyNames(rep.filedBy), mov))) {
         add(rep); const P = docPartyNames(rep.filedBy);
-        for (const d of docs) if (sameCalendarDay(d.when, rep.when) && docSharesParty(docPartyNames(d.filedBy), P)) add(d);
+        for (const d of docs) if (sameCalendarDay(d.when, rep.when) && docSharesParty(docPartyNames(d.filedBy), P) && !isOtherMotion(d)) add(d);
       }
     }
   }
