@@ -1040,6 +1040,76 @@ function withinIngestGrace(due, now) {
   return lag != null && lag <= INGEST_GRACE_COURT_DAYS;
 }
 
+/* ------------------------------------------------------------------ */
+/* Post-judgment motions: new trial / JNOV and reconsideration         */
+/*                                                                     */
+/* These don't brief off the hearing date, so §1005 doesn't reach them */
+/* — their clocks run from papers already on the docket:               */
+/*                                                                     */
+/*   CCP 659a  moving papers 10 days after the notice of intention is  */
+/*             FILED; opposition 10 days after service of that brief;  */
+/*             reply 5 days after service of the opposition. A judge   */
+/*             may extend for good cause up to 10 more days, which is  */
+/*             an order we can't see, so the dates here are the        */
+/*             unextended ones.                                        */
+/*   CCP 660   the court's power to rule expires 75 days after the     */
+/*             earliest of the clerk's mailing of notice of entry      */
+/*             (§664.5) or a party's service of written notice of      */
+/*             entry; absent either, 75 days after the first notice of */
+/*             intention. Undetermined by then, the motion is denied   */
+/*             by operation of law.                                    */
+/*   CCP 1008  reconsideration within 10 days after service of written */
+/*             notice of entry of THE ORDER — a different anchor.      */
+/*                                                                     */
+/* The periods running from SERVICE carry the electronic-service       */
+/* extension (§1010.6(a)(3)(B), 2 court days), consistent with the     */
+/* rest of the widget; the 659a moving-papers period runs from FILING  */
+/* and carries none. Docket filing dates stand in for service dates —  */
+/* the docket doesn't record when a paper was served.                  */
+/* ------------------------------------------------------------------ */
+
+const NOTICE_OF_INTENTION_RE = /\bnotice\s+of\s+inten(?:t|tion)\b/i;
+const NEW_TRIAL_SUBJECT_RE = /\bnew\s+trial\b|\bjnov\b|judgment\s+notwithstanding/i;
+const NOTICE_OF_ENTRY_JUDGMENT_RE = /\bnotice\s+of\s+entry\s+of\s+(?:the\s+)?judgment\b/i;
+const NOTICE_OF_ENTRY_ORDER_RE = /\bnotice\s+of\s+entry\s+of\s+(?:the\s+)?order\b|\bnotice\s+of\s+ruling\b/i;
+const PJ_SERVICE_EXT_COURT_DAYS = 2; // §1010.6(a)(3)(B), electronic service
+
+function pjAddCal(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+function pjAddCourtDays(d, n) {
+  const r = new Date(d); let rem = n;
+  while (rem > 0) { r.setDate(r.getDate() + 1); if (DL.isCourtDay(r)) rem--; }
+  return r;
+}
+// CCP 12/12a: a period ending on a holiday runs to the next court day.
+function pjRoll(d) { const r = new Date(d); while (!DL.isCourtDay(r)) r.setDate(r.getDate() + 1); return r; }
+function pjFromFiling(anchor, days) { return pjRoll(pjAddCal(anchor, days)); }
+function pjFromService(anchor, days) { return pjRoll(pjAddCourtDays(pjAddCal(anchor, days), PJ_SERVICE_EXT_COURT_DAYS)); }
+
+function pjEarliest(list) {
+  return (list || []).filter(d => d && d.when).sort((a, b) => a.when - b.when)[0] || null;
+}
+
+// The schedule for a post-judgment hearing, from the anchoring papers on the
+// docket. Null when the anchor isn't there — then there's nothing to compute
+// from and the widget falls back to reporting whether the motion is on file.
+function computePostJudgmentSchedule(cat, docs) {
+  if (cat === 'recon') {
+    const notice = pjEarliest((docs || []).filter(d => NOTICE_OF_ENTRY_ORDER_RE.test(d.name || '')));
+    if (!notice) return null;
+    return { kind: 'recon', anchor: notice, motionDue: pjFromService(notice.when, 10) };
+  }
+  const intent = pjEarliest((docs || []).filter(d =>
+    NOTICE_OF_INTENTION_RE.test(d.name || '') && NEW_TRIAL_SUBJECT_RE.test(d.name || '')));
+  if (!intent) return null;
+  const out = { kind: 'new_trial', anchor: intent, motionDue: pjFromFiling(intent.when, 10) };
+  const entry = pjEarliest((docs || []).filter(d => NOTICE_OF_ENTRY_JUDGMENT_RE.test(d.name || '')));
+  // Deliberately NOT rolled forward: §660 is a jurisdictional cutoff, not a
+  // filing deadline, so the 75th day is reported as it falls.
+  out.ruleExpires = pjAddCal((entry || intent).when, 75);
+  out.expiresFrom = entry ? 'notice of entry of judgment' : 'the first notice of intention';
+  return out;
+}
+
 // California motion-deadline engine, inlined so the content script is
 // self-contained (no dependency on a separate file loading first).
 // KEEP IN SYNC with lib/deadlines.js, which the Deadline Calculator page uses.
@@ -1318,11 +1388,6 @@ function statusHtml(c, filed, osc) {
   // reconsideration). There is no briefing schedule to paint, so the only thing
   // to say is whether the moving papers are on the docket at all — and the only
   // thing worth saying is when they aren't.
-  if (c.motionOnly) {
-    if (!f.filedKnown || f.motion != null) return '';
-    return prefix + `<span style="color:${RED}" title="No moving papers for this hearing are on the docket. `
-      + `Its deadlines don't run from the hearing date, so no briefing schedule is shown.">No Motion on File</span>`;
-  }
   const item = (label, key, due) =>
     `<span style="color:${nextDlColor(due, f[key], f.filedKnown)}">${label} ${fmtShortDate(due)}</span>`;
   // The reply is the one paper whose absence is routine until its date arrives —
@@ -1357,6 +1422,48 @@ function statusHtml(c, filed, osc) {
     }
     return `<span style="color:${RED}">No ${noun} (Due ${fmtShortDate(due)})</span>`;
   };
+  if (c.motionOnly) {
+    if (!f.filedKnown) return '';
+    const pj = f.pj;
+    if (!pj) {
+      // No anchoring paper on the docket, so there is no schedule to compute.
+      // All that can be said is whether the moving papers arrived.
+      if (f.motion != null) return '';
+      return prefix + `<span style="color:${RED}" title="No moving papers for this hearing are on the docket, `
+        + `and no notice of intention or notice of entry to compute deadlines from.">No Motion</span>`;
+    }
+    const pjAbsent = (due, when) => f.filedKnown && when == null && dayMs(due) != null && dayMs(due) < dayMs(new Date());
+    const pjParts = [];
+    const cite = pj.kind === 'recon' ? 'CCP 1008(a), 10 days after service of notice of entry of the order'
+      : 'CCP 659a, 10 days after the notice of intention was filed';
+    pjParts.push(pjAbsent(pj.motionDue, f.motion)
+      ? absentSpan('Motion', pj.motionDue)
+      : `<span style="color:${nextDlColor(pj.motionDue, f.motion, f.filedKnown)}" title="${dlEsc(cite)}">Motion Due ${fmtShortDate(pj.motionDue)}</span>`);
+    // Only meaningful once the paper they run from is actually on file.
+    if (f.motion != null && pj.oppDue) {
+      pjParts.push(pjAbsent(pj.oppDue, f.opp)
+        ? absentSpan('Opposition', pj.oppDue)
+        : `<span style="color:${nextDlColor(pj.oppDue, f.opp, f.filedKnown)}">Opposition Due ${fmtShortDate(pj.oppDue)}</span>`);
+    }
+    if (f.opp != null && pj.replyDue) {
+      if (pjAbsent(pj.replyDue, f.reply)) {
+        pjParts.push(absentSpan('Reply', pj.replyDue));
+      } else {
+        const rc = nextDlColor(pj.replyDue, f.reply, f.filedKnown);
+        pjParts.push(`<span style="color:${rc === DL_NEUTRAL ? DL_BLACK : rc}">Reply Due ${fmtShortDate(pj.replyDue)}</span>`);
+      }
+    }
+    // The jurisdictional cutoff. Past it and the motion stands denied by
+    // operation of law, which is the whole point of showing it.
+    if (pj.ruleExpires) {
+      const gone = dayMs(pj.ruleExpires) < dayMs(new Date());
+      const t = 'CCP 660: the court\'s power to rule expires 75 days after ' + pj.expiresFrom
+        + (gone ? '. That date has passed — undetermined, the motion is denied by operation of law.' : '.');
+      pjParts.push(`<span style="color:${gone ? RED : DL_NEUTRAL}" title="${dlEsc(t)}">`
+        + (gone ? 'Power to Rule Expired ' : 'Power to Rule Expires ') + fmtShortDate(pj.ruleExpires) + '</span>');
+    }
+    return prefix + pjParts.join(NEXT_DL_GAP);
+  }
   const oppAbsent = absent(c.oppDue, f.opp);
   // A hearing on calendar whose moving papers never arrived — the reserved date
   // the party abandoned. This state was always being reported, but only as a red
@@ -1423,6 +1530,28 @@ async function computeFiledStatus(ctx, c) {
         filed.filedKnown = true;
         const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
         const hearings = await ctx.hearings();
+
+        // Post-judgment motions brief off the docket, not the hearing date, so
+        // their schedule is built here where the documents are in hand.
+        if (c.motionOnly) {
+          const sched = computePostJudgmentSchedule(c.cat, docs);
+          filed.pj = sched;
+          const pjMd = resolveMovingPaper(c.motionType, c.hearingWhen, hearings, docs);
+          filed.motion = pjMd ? pjMd.when : null;
+          // 659a chains off what was actually served: no moving papers, no
+          // opposition period; no opposition, no reply period.
+          if (sched && sched.kind === 'new_trial' && pjMd) {
+            sched.oppDue = pjFromService(pjMd.when, 10);
+            const o = earliest(docs.filter(d => d.when && d.when >= pjMd.when && isOppositionDoc(d.name)));
+            filed.opp = o ? o.when : null;
+            if (o) {
+              sched.replyDue = pjFromService(o.when, 5);
+              const r = earliest(docs.filter(d => d.when && d.when >= o.when && /\breply\b/i.test(d.name)));
+              filed.reply = r ? r.when : null;
+            }
+          }
+          return filed;
+        }
 
         // Identify the moving paper, disambiguating parallel same-named
         // demurrers/motions to strike by pairing them to their hearings by date
