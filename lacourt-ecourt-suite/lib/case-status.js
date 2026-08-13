@@ -662,6 +662,47 @@ function isPetitionDoc(name) {
   return /^(?:(?:verified|amended|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+)*petition\b/i.test(n);
 }
 
+/* Buckets a filing by the KIND of paper it is, for the filing-lag statistics.
+   Different papers go through different clerk queues and post at different
+   speeds — a minute order is entered by the clerk and appears the same day,
+   while a default prove-up packet has been measured at 11 court days — so the
+   lag distribution is only meaningful broken out by type.
+
+   Classification is by name (plus the Filed By column for clerk-entered
+   papers), so it runs retroactively over samples already collected. Order
+   matters: the specific patterns are tested before the generic ones, and
+   isMovingPaper() comes last because a moving paper is anything that isn't one
+   of the named kinds. */
+const DOC_LAG_CATEGORIES = [
+  ['Clerk-entered',       n => /^minute order\b|^clerk'?s? certificate\b|^certificate of mailing\b/i.test(n)],
+  ['Request for Default', n => /^request for entry of default\b/i.test(n)],
+  ['Opposition',          n => /^opposition\b/i.test(n)],
+  ['Reply',               n => /^reply\b/i.test(n)],
+  ['Separate Statement',  n => /^separate statement\b/i.test(n)],
+  ['Case Mgmt Statement', n => /^case management statement\b/i.test(n)],
+  ['Proof of Service',    n => /^proof of (?:personal )?service\b|^proof of service\b/i.test(n)],
+  ['Declaration',         n => /^declaration\b/i.test(n)],
+  ['Stipulation',         n => /^stipulation\b/i.test(n)],
+  ['Answer',              n => /^answer\b/i.test(n)],
+  ['Pleading',            n => /^summons\b/i.test(n) || isComplaintDoc(n) || isCrossComplaintDoc(n) || isPetitionDoc(n)],
+  ['Order',               n => /^order\b|\[\s*proposed\s*\]/i.test(n)],
+  ['Notice',              n => /^notice\b/i.test(n)],
+  ['Objection',           n => /^objection\b/i.test(n)],
+  ['Motion',              n => isMovingPaper(n)],
+];
+
+function docLagCategory(name, filedBy) {
+  const n = (name || '').trim();
+  if (!n) return 'Other';
+  // The clerk's own paperwork skips the intake queue entirely, so it is called
+  // out however it happens to be titled.
+  if (/^clerk\b/i.test((filedBy || '').trim())) return 'Clerk-entered';
+  for (const [label, test] of DOC_LAG_CATEGORIES) {
+    try { if (test(n)) return label; } catch (_) {}
+  }
+  return 'Other';
+}
+
 // Latest openable doc in a list (operative pleading).
 function latestDoc(list) {
   let best = null;
@@ -1503,7 +1544,7 @@ return {
   isPetitionDoc, latestDoc, findDefaultProveUp, sameCalendarDay,
   // Document ingest time (when eCourt actually posted a filing)
   decodeIngestTime, getIngestTime, fmtIngest, ingestDay, ingestLagCourtDays,
-  courtDaysBetween, withinIngestGrace, INGEST_GRACE_COURT_DAYS,
+  courtDaysBetween, withinIngestGrace, INGEST_GRACE_COURT_DAYS, docLagCategory,
   // Text helpers
   stripEventId, stripTrailingParenNumber, stripHearingOnPrefix, movantNormName,
   fmtShortDate, dayMs, dlEsc, dlLog,

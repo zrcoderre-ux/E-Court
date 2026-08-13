@@ -86,7 +86,7 @@
     // computed against exactly the date the row displays.
     const filedById = new Map();
     for (const r of parseDocRows(document)) {
-      if (r.when) filedById.set(r.docId, { when: r.when, name: r.name, dateStr: r.dateStr });
+      if (r.when) filedById.set(r.docId, { when: r.when, name: r.name, dateStr: r.dateStr, filedBy: r.filedBy });
     }
 
     const jobs = [];
@@ -107,6 +107,7 @@
         samples.push({
           docId: job.docId,
           name: (job.filed && job.filed.name || '').slice(0, 80),
+          filedBy: (job.filed && job.filed.filedBy || '').slice(0, 80),
           filed: job.filed.dateStr || '',
           posted: day.getTime(),
           postedText: fmtIngest(info),

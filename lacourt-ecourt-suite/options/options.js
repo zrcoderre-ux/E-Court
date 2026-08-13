@@ -431,13 +431,50 @@ function docTrackingStatus(msg) {
 /* should follow (INGEST_GRACE_COURT_DAYS in lib/case-status.js).       */
 /* ------------------------------------------------------------------ */
 
+// Classify from the stored name/Filed By, so samples collected before the
+// breakdown existed still bucket. Degrades to one pooled group if the shared
+// engine somehow didn't load.
+function lagCategory(row) {
+  try {
+    if (window.LACCaseStatus && LACCaseStatus.docLagCategory) {
+      return LACCaseStatus.docLagCategory(row.name, row.filedBy);
+    }
+  } catch (_) {}
+  return 'All filings';
+}
+
 function loadFilingLagRows(cb) {
   chrome.storage.local.get(['filingLag'], result => {
     const byDoc = (result && result.filingLag && result.filingLag.byDoc) || {};
     const rows = Object.keys(byDoc).map(id => Object.assign({ docId: id }, byDoc[id]));
+    rows.forEach(r => { r.category = lagCategory(r); });
     rows.sort((a, b) => (b.posted || 0) - (a.posted || 0));
     cb(rows);
   });
+}
+
+// Per-category statistics, slowest first — the point of the breakdown is to
+// surface the queues that run behind the others.
+function lagByCategory(rows) {
+  const groups = new Map();
+  rows.forEach(r => {
+    if (typeof r.lag !== 'number') return;
+    if (!groups.has(r.category)) groups.set(r.category, []);
+    groups.get(r.category).push(r.lag);
+  });
+  const out = [];
+  groups.forEach((lags, name) => {
+    lags.sort((a, b) => a - b);
+    out.push({
+      name, n: lags.length,
+      median: lags[Math.floor(lags.length / 2)],
+      mean: lags.reduce((a, b) => a + b, 0) / lags.length,
+      max: lags[lags.length - 1],
+      within1: Math.round(100 * lags.filter(n => n <= 1).length / lags.length),
+    });
+  });
+  out.sort((a, b) => (b.median - a.median) || (b.mean - a.mean) || (b.n - a.n));
+  return out;
 }
 
 function renderFilingLag() {
@@ -473,14 +510,48 @@ function renderFilingLag() {
     });
     html += '</tbody></table></div>';
 
+    // By document type. Different papers run through different clerk queues —
+    // a minute order is entered by the clerk and posts the same day, a default
+    // prove-up packet has been measured at 11 court days — so the pooled
+    // figures above hide the spread that actually matters when you're waiting
+    // on a specific paper.
+    const cats = lagByCategory(rows);
+    if (cats.length > 1) {
+      const slowest = cats[0].median;
+      html += '<div class="dt-summary">By document type — slowest first</div>'
+        + '<div class="dt-tablewrap"><table class="dt-table"><thead><tr>'
+        + '<th>Type</th><th>Filings</th><th>Median</th><th>Mean</th><th>Max</th>'
+        + '<th>Within 1 ct day</th></tr></thead><tbody>';
+      cats.forEach(c => {
+        // Flag a type that runs behind the briefing-widget grace window: a
+        // missing paper of this kind is not yet evidence it wasn't filed.
+        const over = c.median > 2;
+        html += '<tr>'
+          + '<td>' + dtEscHtml(c.name) + (over ? ' <span class="dt-missed">slow queue</span>' : '') + '</td>'
+          + '<td>' + c.n + '</td>'
+          + '<td>' + (over ? '<strong>' + c.median + '</strong>' : c.median) + '</td>'
+          + '<td>' + c.mean.toFixed(2) + '</td>'
+          + '<td>' + c.max + '</td>'
+          + '<td>' + c.within1 + '%</td>'
+          + '</tr>';
+      });
+      html += '</tbody></table></div>';
+      if (slowest > 2) {
+        html += '<p class="hint">The slowest type above posts later than the briefing widget\'s '
+          + 'grace window assumes, so an absent paper of that kind may still be in the queue '
+          + 'after the widget has turned it red.</p>';
+      }
+    }
+
     // The slowest recent filings — the ones that would have caught you out.
     const slow = rows.filter(r => typeof r.lag === 'number' && r.lag >= 2).slice(0, 15);
     if (slow.length) {
       html += '<div class="dt-summary">Slowest recent postings</div>'
         + '<div class="dt-tablewrap"><table class="dt-table"><thead><tr>'
-        + '<th>Document</th><th>Filed</th><th>Posted</th><th>Lag</th></tr></thead><tbody>';
+        + '<th>Document</th><th>Type</th><th>Filed</th><th>Posted</th><th>Lag</th></tr></thead><tbody>';
       slow.forEach(r => {
         html += '<tr><td>' + dtEscHtml(r.name || '') + '</td>'
+          + '<td>' + dtEscHtml(r.category || '') + '</td>'
           + '<td>' + dtEscHtml(r.filed || '') + '</td>'
           + '<td class="dt-when">' + dtEscHtml(r.postedText || '') + '</td>'
           + '<td>' + r.lag + '</td></tr>';
@@ -494,9 +565,10 @@ function renderFilingLag() {
 function filingLagCsv(cb) {
   loadFilingLagRows(rows => {
     const esc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-    const lines = [['docId', 'name', 'filed', 'posted', 'lagCourtDays'].join(',')];
+    const lines = [['docId', 'name', 'type', 'filedBy', 'filed', 'posted', 'lagCourtDays'].join(',')];
     rows.forEach(r => {
-      lines.push([r.docId, r.name || '', r.filed || '', r.postedText || '', r.lag].map(esc).join(','));
+      lines.push([r.docId, r.name || '', r.category || '', r.filedBy || '', r.filed || '',
+        r.postedText || '', r.lag].map(esc).join(','));
     });
     cb(lines.join('\r\n'));
   });

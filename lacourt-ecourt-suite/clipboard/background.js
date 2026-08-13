@@ -285,7 +285,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       for (const x of msg.samples) {
         if (!x || !x.docId || typeof x.lag !== 'number') continue;
         s.byDoc[String(x.docId)] = {
-          name: x.name || '', filed: x.filed || '',
+          name: x.name || '', filedBy: x.filedBy || '', filed: x.filed || '',
           posted: x.posted || 0, postedText: x.postedText || '', lag: x.lag,
         };
       }
