@@ -2438,6 +2438,14 @@ const NOTICE_OF_ENTRY_RE = /notice of (entry|ruling)/i;
 // on — the filing date stands in for it, so the proof of service or certificate
 // of mailing is still worth checking before relying on the computed date.
 const DISMISSAL_TRIGGER_RE = /^order\s*[-–—:]?\s*dismissal\b|^order of dismissal\b|notice of entry of dismissal\b/i;
+// The same principle for the judgment itself: eCourt shows the clerk's
+// filed-endorsed copy as a bare "Judgment / Filed by: Clerk". Anchored at the
+// start so "Abstract of Judgment" and "Request for Entry of Default / Judgment"
+// don't qualify. Restricted to clerk-filed papers because rule 8.104(a)(1)(A)
+// is about the CLERK's service; a party's own copy triggers only under (B),
+// which needs service plus proof of service that the docket doesn't show.
+const JUDGMENT_TRIGGER_RE = /^(?:amended\s+)?judgment\b/i;
+function isClerkFiledDoc(d) { return /\bclerk\b/i.test((d && d.filedBy) || ''); }
 const ENTRY_OF_JUDGMENT_RE = /\bjudgment\b/i;
 function isTriggerBasedMotion(motionType) {
   return /reconsideration|renewed?\s+motion|\b1008\b|new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/i.test(motionType || '')
@@ -2478,7 +2486,8 @@ async function detectTriggerDates(hearingDateStr) {
     // bounded to one appeal period so an older judgment in a long case can't
     // reach forward and claim this motion's trigger.
     const triggers = docs.filter(d => d.name && d.when
-      && (NOTICE_OF_ENTRY_RE.test(d.name) || DISMISSAL_TRIGGER_RE.test(d.name)));
+      && (NOTICE_OF_ENTRY_RE.test(d.name) || DISMISSAL_TRIGGER_RE.test(d.name)
+          || (JUDGMENT_TRIGGER_RE.test(d.name) && isClerkFiledDoc(d))));
     let noe = latestDocOnOrBefore(triggers, cutoff);
     if (noe) {
       const windowStart = new Date(noe.when); windowStart.setDate(windowStart.getDate() - 60);
