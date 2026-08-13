@@ -1296,6 +1296,11 @@ function statusHtml(c, filed, osc) {
     return `<span style="color:${RED}">No ${noun} (Due ${fmtShortDate(due)})</span>`;
   };
   const oppAbsent = absent(c.oppDue, f.opp);
+  // A hearing on calendar whose moving papers never arrived — the reserved date
+  // the party abandoned. This state was always being reported, but only as a red
+  // "Motion Due <date>"; it now reads "No Motion (Due <date>)" like the other
+  // papers, since the point is that nothing was filed, not that a date passed.
+  const motionAbsent = absent(c.motionDue, f.motion);
 
   // The Motion uses its own colour so a late-but-maybe-personally-served filing
   // reads yellow (a cue to check the proof of service) rather than red.
@@ -1303,10 +1308,16 @@ function statusHtml(c, filed, osc) {
   const motionTitle = motionColor === DL_YELLOW
     ? ' title="Late for electronic service, but timely if personally served — check the proof of service."'
     : '';
-  const motionSpan =
-    `<span style="color:${motionColor}"${motionTitle}>Motion Due ${fmtShortDate(c.motionDue)}</span>`;
+  const motionSpan = motionAbsent
+    ? absentSpan('Motion', c.motionDue)
+    : `<span style="color:${motionColor}"${motionTitle}>Motion Due ${fmtShortDate(c.motionDue)}</span>`;
 
   const parts = [motionSpan];
+  // With no moving papers on file there is nothing to brief, so the opposition
+  // and reply deadlines are moot — the same reasoning that drops the reply when
+  // no opposition was filed. A motion that is merely still in the clerk's intake
+  // queue keeps its schedule: those deadlines are days out and remain useful.
+  if (motionAbsent && !withinIngestGrace(c.motionDue)) return prefix + parts.join(NEXT_DL_GAP);
   const nonOpp = f.nonOpp || null;
   const nonOppSpan = '<span style="color:#1a6b3a">Notice of Non-Opposition</span>';
   // A demurrer or motion to strike answered by an amended complaint in lieu of
