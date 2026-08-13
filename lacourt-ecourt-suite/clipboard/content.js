@@ -41,7 +41,7 @@
     computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
     isOscDefaultJudgment, isWorkableHearing, loadExcludedTerms,
     isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
-    docWordOverlap, docReferencesMotion, docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
+    docWordOverlap, docReferencesMotion, postJudgmentAnchor, docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
     isDemurrerOrMotionToStrikeDoc, isPetitionDoc, latestDoc, findDefaultProveUp,
     sameCalendarDay, stripEventId, stripTrailingParenNumber, stripHearingOnPrefix,
     movantNormName, fmtShortDate, dlLog,
@@ -1941,8 +1941,16 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   // out, for the same reason as in the sweeps below — they belong to their own
   // hearings — unless the Hearings tab listed them for this one.
   if (!motionDoc) {
+    // A post-judgment motion's anchoring paper is also a floor: the notice of
+    // intention (or, for reconsideration, the notice of entry of the order)
+    // is what starts the matter, so nothing filed before it briefs it. Without
+    // that floor a new trial motion pulled in every "…Trial" document on the
+    // docket — the trial minute orders, months of them — on the shared word.
+    const pjAnchorDoc = postJudgmentAnchor(motionType, docs);
+    const floor = pjAnchorDoc && pjAnchorDoc.when ? pjAnchorDoc.when : null;
     for (const d of docs) {
       if (isMovingPaper(d.name) && !blobDocIds.has(d.docId)) continue;
+      if (floor && d.when && d.when < floor) continue;
       if (docReferencesMotion(d.name, motionType)) add(d);
     }
   }

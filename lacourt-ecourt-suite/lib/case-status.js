@@ -1110,6 +1110,18 @@ function computePostJudgmentSchedule(cat, docs) {
   return out;
 }
 
+// The paper a post-judgment motion runs from: the notice of intention for new
+// trial / JNOV, the notice of entry of the order for reconsideration. It is a
+// floor as well as a clock — nothing filed before it briefs the motion, so the
+// Documents button uses it to bound what it opens. Null for any other motion
+// category, or when the anchoring paper isn't on the docket.
+function postJudgmentAnchor(motionType, docs) {
+  const cat = DL.classifyMotion(motionType || '');
+  if (cat !== 'new_trial' && cat !== 'recon') return null;
+  const sched = computePostJudgmentSchedule(cat, docs);
+  return sched ? sched.anchor : null;
+}
+
 // California motion-deadline engine, inlined so the content script is
 // self-contained (no dependency on a separate file loading first).
 // KEEP IN SYNC with lib/deadlines.js, which the Deadline Calculator page uses.
@@ -1740,7 +1752,7 @@ return {
   isOscDefaultJudgment, isWorkableHearing, isHearingExcluded, excludedTermMatches,
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,
   isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
-  docWordOverlap, docReferencesMotion, docLinksToMotion, docPartyNames, docSharesParty,
+  docWordOverlap, docReferencesMotion, postJudgmentAnchor, docLinksToMotion, docPartyNames, docSharesParty,
   isOppositionDoc, isNonOppositionDoc, isComplaintDoc, isCrossComplaintDoc,
   isFirstAmendedComplaintDoc, isDemurrerOrMotionToStrikeDoc, isDemurrerOrStrikeMotion,
   isPetitionDoc, latestDoc, findDefaultProveUp, sameCalendarDay,
