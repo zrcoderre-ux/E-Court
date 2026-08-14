@@ -11,6 +11,19 @@
  * 1010.6; court holidays per CCP § 135 / Gov. Code § 6700 / CRC 1.11.
  */
 
+// Which rules take their base date from the TRIGGERING PAPER (service of the
+// notice of entry / dismissal) rather than from the hearing date. Kept in one
+// place: three separate ad-hoc copies of this test are how the fees mode ended
+// up computing its 60 days from the hearing instead of from service.
+const RUNS_FROM_TRIGGER = new Set(['new_trial', 'recon', 'fees', 'costs']);
+// Periods no service extension reaches. § 1013(a) and § 1010.6(a)(3)(B) both
+// carve out the notice of appeal — which rule 3.1702(b) borrows for fees — and
+// the notice of intention to move for new trial.
+const NO_SERVICE_EXTENSION = new Set(['new_trial', 'fees']);
+// Rules carrying a 180-day-from-entry outer limit, which needs the entry date.
+const HAS_ENTRY_OUTER_LIMIT = new Set(['new_trial', 'fees', 'costs']);
+
+
 // ── STATE ──────────────────────────────────────────────────────────────────
 let state = {
   baseDate: null,
@@ -118,7 +131,7 @@ function renderDetectedBanner() {
   if (d.rawMotion) bits.push(esc(d.rawMotion));
   if (d.hearingDate) bits.push(`hearing ${esc(d.hearingDate)}`);
   const rule = CATEGORY_LABEL[d.category] || CATEGORY_LABEL.standard;
-  const triggerBased = d.category === 'new_trial' || d.category === 'recon';
+  const triggerBased = RUNS_FROM_TRIGGER.has(d.category);
   let extra = '';
   // A motion to strike or tax costs is briefed on the standard § 1005 schedule
   // (which is what's selected), but the question it raises is whether the
@@ -306,7 +319,8 @@ function renderInteractiveMode() {
   // Fees run off the time to appeal, which no service extension reaches
   // (§ 1013(a), § 1010.6(a)(3)(B) both carve out the notice of appeal), so the
   // service chips are meaningless there and the row says so instead.
-  const triggerBased = mt === 'new_trial';
+  const noSvcExt = NO_SERVICE_EXTENSION.has(mt);
+  const showsEntryDate = HAS_ENTRY_OUTER_LIMIT.has(mt) && mt !== 'costs'; // costs renders its own below
 
   const MOTION_OPTS = [
     { v: 'standard', l: 'Standard Motion' },
@@ -460,17 +474,20 @@ function renderInteractiveMode() {
       <span class="field-label">Motion Type</span>
       <div class="chips">${chipsMT}</div>
     </div>
-    ${!triggerBased ? `
+    ${!noSvcExt ? `
     <div class="field-group">
       <span class="field-label">Service Method <span class="sub">&nbsp;(affects motion deadline only)</span></span>
       <div class="chips">${chipsSVC}</div>
       ${mailSub}
-    </div>` : `
+    </div>` : ''}
+    ${showsEntryDate ? `
     <div class="field-group">
-      <span class="field-label">Entry of Judgment Date <span class="sub">&nbsp;(for the 180-day outer limit, § 659(a)(2))</span></span>
+      <span class="field-label">Entry of Judgment Date <span class="sub">&nbsp;(for the 180-day outer limit, ${mt === 'fees' ? 'rule 8.104(a)(1)(C)' : '\u00a7 659(a)(2)'})</span></span>
       <input type="date" id="entryDate" value="${state.entryDate ? toInputValue(state.entryDate) : ''}">
-      <div class="svc-note">Service method does not affect this deadline (§ 659(b)). The date above is the notice of entry (15-day trigger); add the entry-of-judgment date here for the 180-day cap. The earlier of the two controls.</div>
-    </div>`}
+      <div class="svc-note">${mt === 'fees'
+        ? 'Service method does not affect this deadline: rule 3.1702(b)(1) measures it by the time for filing a notice of appeal, and \u00a7\u00a7 1013(a) and 1010.6(a)(3)(B) both exclude that. The date above is service of the trigger (60-day period); add the entry date here for the 180-day cap. The earlier controls.'
+        : 'Service method does not affect this deadline (\u00a7 659(b)). The date above is the notice of entry (15-day trigger); add the entry-of-judgment date here for the 180-day cap. The earlier of the two controls.'}</div>
+    </div>` : ''}
     ${mt === 'costs' ? `
     <div class="field-group">
       <span class="field-label">Entry of Judgment Date <span class="sub">&nbsp;(for the 180-day outer limit, rule 3.1700(a)(1))</span></span>
@@ -496,7 +513,7 @@ function applyDetected(data) {
   if (!data) return;
   const rawMotion = data.motionType || '';
   const category = classifyMotion(rawMotion);
-  const triggerBased = category === 'new_trial' || category === 'recon';
+  const triggerBased = RUNS_FROM_TRIGGER.has(category);
   state.detected = {
     rawMotion,
     hearingDate: data.hearingDate || '',
