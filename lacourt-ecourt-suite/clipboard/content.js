@@ -2485,6 +2485,46 @@ async function detectTriggerDates(hearingDateStr) {
   } catch (_) { return out; }
 }
 
+// The Deadlines hand-off, built once and reused. Detecting the statutory
+// trigger dates means fetching the case Documents, which took a beat every time
+// the button was pressed; building it when the page settles makes the press
+// instant. Never stamps createdAt — the caller does, at click time.
+let __deadlinePayloadPromise = null;
+async function buildDeadlinePayload() {
+  const hearing = await resolveEffectiveHearing(document);
+  const motionType = (hearing && hearing.motionType) || '';
+  // Trigger-based motions (fees, costs, new trial, reconsideration, vacate) run
+  // off a paper on the docket rather than the hearing date. Skipped for ordinary
+  // motions, which need no document fetch at all.
+  let trig = { noticeOfEntryDate: '', noticeOfEntryDoc: '', noticeOfEntryUnverified: false,
+               entryOfJudgmentDate: '', entryOfJudgmentDoc: '', memoServedDate: '', memoDoc: '' };
+  if (isTriggerBasedMotion(motionType)) {
+    trig = await detectTriggerDates(hearing && hearing.hearingDate);
+  }
+  return {
+    motionType,
+    hearingDate: (hearing && hearing.hearingDate) || '',
+    hearingType: (hearing && hearing.hearingType) || '',
+    caseNumber: parseCaseNumber() || '',
+    noticeOfEntryDate: trig.noticeOfEntryDate,
+    noticeOfEntryDoc: trig.noticeOfEntryDoc,
+    noticeOfEntryUnverified: trig.noticeOfEntryUnverified,
+    entryOfJudgmentDate: trig.entryOfJudgmentDate,
+    entryOfJudgmentDoc: trig.entryOfJudgmentDoc,
+    memoServedDate: trig.memoServedDate,
+    memoDoc: trig.memoDoc,
+  };
+}
+function getDeadlinePayloadCached() {
+  if (!__deadlinePayloadPromise) {
+    __deadlinePayloadPromise = buildDeadlinePayload();
+    // Don't cache a failure: a transient fetch error would otherwise leave the
+    // button permanently handing over an empty payload.
+    __deadlinePayloadPromise.catch(() => { __deadlinePayloadPromise = null; });
+  }
+  return __deadlinePayloadPromise;
+}
+
 function renderDeadlineButton() {
   if (document.getElementById('__lacourt_deadline_btn__')) return;
   const caseReady = document.querySelector('a[href*="/ecourt/ecms/case"]');
@@ -2525,34 +2565,14 @@ function renderDeadlineButton() {
 
   btn.addEventListener('click', async () => {
     btn.disabled = true;
-    setDlLabel('Detecting…');
+    setDlLabel('Opening…');
     btn.style.opacity = '0.7';
     try {
-      const hearing = await resolveEffectiveHearing(document);
-      const motionType = (hearing && hearing.motionType) || '';
-
-      // For trigger-based motions, detect the statutory trigger dates (notice of
-      // entry, and entry of judgment for the new-trial 180-day cap) from the
-      // case documents. Skipped for ordinary motions so the common path is fast.
-      let trig = { noticeOfEntryDate: '', noticeOfEntryDoc: '', entryOfJudgmentDate: '', entryOfJudgmentDoc: '' };
-      if (isTriggerBasedMotion(motionType)) {
-        trig = await detectTriggerDates(hearing && hearing.hearingDate);
-      }
-
-      const payload = {
-        motionType,
-        hearingDate: (hearing && hearing.hearingDate) || '',
-        hearingType: (hearing && hearing.hearingType) || '',
-        caseNumber: parseCaseNumber() || '',
-        noticeOfEntryDate: trig.noticeOfEntryDate,
-        noticeOfEntryDoc: trig.noticeOfEntryDoc,
-        noticeOfEntryUnverified: trig.noticeOfEntryUnverified,
-        entryOfJudgmentDate: trig.entryOfJudgmentDate,
-        entryOfJudgmentDoc: trig.entryOfJudgmentDoc,
-        memoServedDate: trig.memoServedDate,
-        memoDoc: trig.memoDoc,
-        createdAt: Date.now(),
-      };
+      // Prefetched on page load, so this is normally already resolved. The
+      // timestamp is stamped HERE rather than in the payload: the calculator
+      // drops hand-offs older than ten minutes, and one prepared when the page
+      // loaded could easily be older than that by the time it is used.
+      const payload = Object.assign({}, await getDeadlinePayloadCached(), { createdAt: Date.now() });
       await new Promise(res => {
         try {
           chrome.storage.local.set({ deadlineCalcData: payload }, () => { void chrome.runtime.lastError; res(); });
@@ -3236,7 +3256,12 @@ function setupFillFormButton() {
   // Prefetch the relevant-documents set once the page has settled, so pressing
   // the Documents button opens instantly. This only fetches/computes — it never
   // opens tabs; the button does that.
-  const prefetchDocs = () => { try { getRelevantDocumentsCached(); } catch (_) {} };
+  const prefetchDocs = () => {
+    try { getRelevantDocumentsCached(); } catch (_) {}
+    // Same for the Deadlines hand-off: detecting the trigger dates reads the
+    // Documents tab, and doing it now means the button opens without a pause.
+    try { getDeadlinePayloadCached(); } catch (_) {}
+  };
   if (document.readyState === 'complete') setTimeout(prefetchDocs, 1000);
   else window.addEventListener('load', () => setTimeout(prefetchDocs, 1000), { once: true });
 }
