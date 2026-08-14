@@ -1126,7 +1126,19 @@ function computePostJudgmentSchedule(cat, docs) {
     NOTICE_OF_INTENTION_RE.test(d.name || '') && NEW_TRIAL_SUBJECT_RE.test(d.name || '')));
   if (!intent) return null;
   const out = { kind: 'new_trial', anchor: intent, motionDue: pjFromFiling(intent.when, 10) };
-  const entry = pjEarliest((docs || []).filter(d => NOTICE_OF_ENTRY_JUDGMENT_RE.test(d.name || '')));
+  // Party prong, per Palmer: a file-stamped copy served BY A PARTY is written
+  // notice of entry for § 660, with no captioned document required. eCourt shows
+  // that as a party-filed "Judgment" — but the same docket line is also what a
+  // prevailing party lodging a proposed judgment produces, and the title cannot
+  // tell them apart. Admitted anyway, because the error runs the safe way: an
+  // extra trigger only makes the period EARLIER, while missing a real one leaves
+  // the court believing it still has power it has lost. The tooltip flags it.
+  const noticed = pjEarliest((docs || []).filter(d => NOTICE_OF_ENTRY_JUDGMENT_RE.test(d.name || '')));
+  const partyCopy = pjEarliest((docs || []).filter(d =>
+    ENTRY_JUDGMENT_DOC_RE.test(d.name || '') && !/\bclerk\b/i.test(d.filedBy || '')));
+  const entry = (noticed && partyCopy)
+    ? (noticed.when <= partyCopy.when ? noticed : partyCopy)
+    : (noticed || partyCopy);
   // Deliberately NOT rolled forward: §660 is a jurisdictional cutoff, not a
   // filing deadline, so the 75th day is reported as it falls.
   const from = entry || intent;
@@ -1140,6 +1152,9 @@ function computePostJudgmentSchedule(cat, docs) {
   out.ruleExpiresRaw = raw;
   out.expiresAnchor = from;
   out.expiresFrom = entry ? 'notice of entry of judgment' : 'the first notice of intention';
+  // True when the anchor is a party-filed judgment rather than a captioned
+  // notice of entry — the Palmer prong, and the one the docket can't confirm.
+  out.expiresFromPartyCopy = !!(entry && entry === partyCopy && entry !== noticed);
   return out;
 }
 
@@ -1561,6 +1576,9 @@ function statusHtml(c, filed, osc) {
       const clerkAnchored = pj.expiresAnchor
         && /\bclerk\b/i.test(pj.expiresAnchor.filedBy || '')
         && pj.expiresFrom === 'notice of entry of judgment';
+      const partyCopyCaveat = pj.expiresFromPartyCopy
+        ? ' Anchored on a party-filed judgment: under Palmer (2003) 30 Cal.4th 1265, 1274 a file-stamped copy SERVED by a party is written notice of entry, but the docket cannot show whether this one was served or merely lodged — check the proof of service. If it was not served, the period runs from the first notice of intention instead.'
+        : '';
       const caveat = clerkAnchored
         ? ' The clerk\'s notice starts this period only if it affirmatively states it is given under § 664.5 or upon order of the court (Van Beurden (1997) 15 Cal.4th 51, 64) — check the served document.'
         : '';
@@ -1569,7 +1587,7 @@ function statusHtml(c, filed, osc) {
         : '';
       const t = 'CCP 660(c): the court\'s power to rule expires 75 days after ' + from + rolled
         + (gone ? '. That date has passed — undetermined, the motion is denied by operation of law.' : '.')
-        + caveat;
+        + caveat + partyCopyCaveat;
       pjParts.push(`<span style="color:${gone ? RED : DL_NEUTRAL}" title="${dlEsc(t)}">`
         + (gone ? 'Power to Rule Expired ' : 'Power to Rule Expires ') + fmtShortDate(pj.ruleExpires) + '</span>');
     }
