@@ -116,6 +116,23 @@ scraping the current tab.
   — clerk-entered minute orders post same-day, default prove-up packets have
   been measured at 11 court days — so read the per-type breakdown, not the
   pooled median, before changing the window.
+- **The § 660 clock and the appeal clock are NOT parallel — do not "fix" this.**
+  A clerk-served file-endorsed copy of the judgment starts the 60-day appeal
+  period under CRC 8.104(a)(1)(A) (and so the CRC 3.1702 fee deadline that
+  borrows it), but does **not** start CCP § 660's 75 days: to be a mailing
+  "pursuant to Section 664.5" the notice must affirmatively state it is given
+  "upon order of the court" or "under section 664.5" (*Van Beurden* (1997) 15
+  Cal.4th 51, 64, clerk holding reaffirmed in *Palmer v. GTE California* (2003)
+  30 Cal.4th 1265, 1274). *Palmer* answered the appeal-rule analogy directly at
+  p. 1277 — rule 8.104 "at most confirms" that § 664.5's requirements *exceed*
+  those of §§ 659 and 660; the rule was amended in 2002 to add a file-stamped
+  copy, the statutes never were. So the same paper can start one clock and not
+  the other, and `NOTICE_OF_ENTRY_JUDGMENT_RE` stays narrow while the 8.104
+  trigger in `clipboard/content.js` accepts a clerk-filed `Judgment`. *Palmer*
+  **did** relax the party prong: a file-stamped copy served by a party suffices
+  there. § 660(c) is **75** days (amended eff. 1/1/2019; *Kabran* (2017) 2
+  Cal.5th 330 addresses the old 60-day version) and rolls under § 12a, which its
+  own opening clause incorporates.
 - **New Outlook** is in use (no COM/`.oft`/`CreateItemFromTemplate`), so email
   drafting uses `mailto:` and the Word mail merge is launched via the native host.
 

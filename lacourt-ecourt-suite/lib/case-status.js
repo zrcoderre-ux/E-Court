@@ -1077,6 +1077,23 @@ const NEW_TRIAL_SUBJECT_RE = /\bnew\s+trial\b|\bjnov\b|judgment\s+notwithstandin
 // the notice; an unanchored match picked it up, and since the earliest match
 // wins, a docket where that order predates the notice anchored the whole
 // 75-day computation on the wrong paper.
+// DO NOT widen this to a bare clerk-filed "Judgment" on the rule 8.104 analogy.
+// The two clocks are not parallel and the Supreme Court has said so directly.
+//
+// Van Beurden Ins. Services v. Customized Worldwide Weather Ins. Agency (1997)
+// 15 Cal.4th 51, 64: the clerk mailed a file-stamped judgment with proof of
+// service and it did NOT start § 660's period — to be a mailing "pursuant to
+// Section 664.5" the notice must affirmatively state it is given "upon order of
+// the court" or "under section 664.5". A file-endorsed copy does neither.
+// Palmer v. GTE California (2003) 30 Cal.4th 1265, 1274 reaffirmed that clerk
+// holding, and at 1277 answered the appeal-rule analogy itself: rule 8.104 "at
+// most confirms our view that the requirements of section 664.5 . . . exceed
+// those of sections 659 and 660". The rule was amended in 2002 to add a
+// file-stamped copy as a triggering document; §§ 660 and 664.5 never were.
+//
+// So the same clerk-served paper can start the 60-day appeal clock (and the fee
+// clock that borrows it) while not starting this one. What Palmer DID relax is
+// the party prong: a file-stamped copy served by a party suffices there.
 const NOTICE_OF_ENTRY_JUDGMENT_RE = /^(?:certificate of mailing for\s+)?notice of entry of (?:the\s+)?judgment\b/i;
 const NOTICE_OF_ENTRY_ORDER_RE = /^(?:certificate of mailing for\s+)?notice of (?:entry of (?:the\s+)?order|ruling)\b/i;
 const PJ_SERVICE_EXT_COURT_DAYS = 2; // §1010.6(a)(3)(B), electronic service
@@ -1536,11 +1553,23 @@ function statusHtml(c, filed, osc) {
       const from = pj.expiresAnchor
         ? '"' + pj.expiresAnchor.name + '" filed ' + fmtShortDate(pj.expiresAnchor.when)
         : pj.expiresFrom;
+      // A clerk-filed notice only qualifies if the served document itself recites
+      // § 664.5 or a court order (Van Beurden, supra, 15 Cal.4th at p. 64) —
+      // which the docket title cannot show. Say so, because if it doesn't
+      // recite, the period runs instead from party service or, absent that,
+      // from the first notice of intention, and this date is then too early.
+      const clerkAnchored = pj.expiresAnchor
+        && /\bclerk\b/i.test(pj.expiresAnchor.filedBy || '')
+        && pj.expiresFrom === 'notice of entry of judgment';
+      const caveat = clerkAnchored
+        ? ' The clerk\'s notice starts this period only if it affirmatively states it is given under § 664.5 or upon order of the court (Van Beurden (1997) 15 Cal.4th 51, 64) — check the served document.'
+        : '';
       const rolled = pj.ruleExpiresRaw && dayMs(pj.ruleExpiresRaw) !== dayMs(pj.ruleExpires)
         ? ', which falls on ' + fmtShortDate(pj.ruleExpiresRaw) + ' — a non-court day, carried to the next court day under CCP 12a'
         : '';
       const t = 'CCP 660(c): the court\'s power to rule expires 75 days after ' + from + rolled
-        + (gone ? '. That date has passed — undetermined, the motion is denied by operation of law.' : '.');
+        + (gone ? '. That date has passed — undetermined, the motion is denied by operation of law.' : '.')
+        + caveat;
       pjParts.push(`<span style="color:${gone ? RED : DL_NEUTRAL}" title="${dlEsc(t)}">`
         + (gone ? 'Power to Rule Expired ' : 'Power to Rule Expires ') + fmtShortDate(pj.ruleExpires) + '</span>');
     }
