@@ -143,6 +143,11 @@ function renderDetectedBanner() {
     if (d.noticeOfEntryDate) {
       extra = `<div class="det-rule">Base set to detected notice of entry: <strong>${esc(d.noticeOfEntryDate)}</strong>` +
         (d.noticeOfEntryDoc ? ` (${esc(d.noticeOfEntryDoc)})` : '') +
+        (d.noticeOfEntryUnverified
+          ? ` <strong>&mdash; no proof of service filed with it.</strong> A party-filed judgment with no
+             accompanying proof of service may be a lodged proposed judgment rather than the served
+             file-endorsed copy rule 8.104(a)(1)(B) requires. Check the document before relying on this date.`
+          : '') +
         `. Adjust if a different order controls.</div>`;
     } else {
       extra = `<div class="det-rule">No notice of entry found in the case documents — set the date to the notice of entry of the order being challenged.</div>`;

@@ -1154,8 +1154,30 @@ function computePostJudgmentSchedule(cat, docs) {
   out.expiresFrom = entry ? 'notice of entry of judgment' : 'the first notice of intention';
   // True when the anchor is a party-filed judgment rather than a captioned
   // notice of entry — the Palmer prong, and the one the docket can't confirm.
-  out.expiresFromPartyCopy = !!(entry && entry === partyCopy && entry !== noticed);
+  // Flagged only when no proof of service backs it: with one on file the
+  // rule's own condition is met and there is nothing left uncertain.
+  out.expiresFromPartyCopy = !!(entry && entry === partyCopy && entry !== noticed
+    && !hasAccompanyingProofOfService(entry, docs));
   return out;
+}
+
+/* A party's service of a filed-endorsed judgment is a trigger under both rule
+   8.104(a)(1)(B) and — per Palmer — CCP § 660's party prong. eCourt shows it as
+   a party-filed "Judgment", which is also exactly what LODGING a proposed
+   judgment produces; the title cannot separate them. What can be checked is the
+   condition rule 8.104(a)(1)(B) states outright: a proof of service filed the
+   same day by the same party. Present, the document is a served copy and there
+   is nothing to flag. Absent, it is admitted anyway and flagged, because the
+   reader can resolve in a glance what the docket cannot. */
+const PROOF_OF_SERVICE_RE = /^proof of (?:personal |substituted )?service\b/i;
+
+function hasAccompanyingProofOfService(doc, docs) {
+  if (!doc || !doc.when) return false;
+  const party = docPartyNames(doc.filedBy);
+  return (docs || []).some(p => p !== doc && p.name && p.when
+    && PROOF_OF_SERVICE_RE.test(p.name)
+    && sameCalendarDay(p.when, doc.when)
+    && (!party.length || !p.filedBy || docSharesParty(docPartyNames(p.filedBy), party)));
 }
 
 /* ---- Memorandum of costs (CRC 3.1700(a)(1)) ------------------------------
@@ -1885,7 +1907,7 @@ return {
   isOscDefaultJudgment, isWorkableHearing, isHearingExcluded, excludedTermMatches,
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,
   isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
-  docWordOverlap, docReferencesMotion, postJudgmentAnchor, docLinksToMotion, docPartyNames, docSharesParty,
+  docWordOverlap, docReferencesMotion, postJudgmentAnchor, hasAccompanyingProofOfService, docLinksToMotion, docPartyNames, docSharesParty,
   isOppositionDoc, isNonOppositionDoc, isComplaintDoc, isCrossComplaintDoc,
   isFirstAmendedComplaintDoc, isDemurrerOrMotionToStrikeDoc, isDemurrerOrStrikeMotion,
   isPetitionDoc, latestDoc, findDefaultProveUp, sameCalendarDay,
