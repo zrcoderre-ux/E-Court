@@ -1212,6 +1212,58 @@ function hasAccompanyingProofOfService(doc, docs) {
     && (!party.length || !p.filedBy || docSharesParty(docPartyNames(p.filedBy), party)));
 }
 
+/* ---- Appeal-time trigger, and the fee deadline that borrows it ----------
+   CRC 3.1702(b)(1): a notice of motion claiming fees for services through
+   rendition of judgment is served and filed within the time for filing a NOTICE
+   OF APPEAL — rule 8.104(a)(1), the earliest of 60 days from the clerk's
+   service of a "Notice of Entry" or a filed-endorsed copy of the judgment,
+   60 days from a party's service of either with proof of service, or 180 days
+   from entry. Rule 8.104(e) makes an appealable order the judgment, so a
+   clerk's "Order - Dismissal" after a settlement is a trigger.
+
+   No service extension: § 1013(a) and § 1010.6(a)(3)(B) both exclude the notice
+   of appeal. Rule 8.108 and a rule 3.1702(b)(2) stipulation can extend the
+   period and neither is visible from the docket, so this is the unextended
+   date. Docket filing dates stand in for service dates. */
+const APPEAL_NOTICE_OF_ENTRY_RE = /notice of (entry|ruling)/i;
+const APPEAL_DISMISSAL_RE = /^order\s*[-\u2013\u2014:]?\s*dismissal\b|^order of dismissal\b|notice of entry of dismissal\b/i;
+const APPEAL_JUDGMENT_RE = /^(?:amended\s+)?judgment\b/i;
+
+// The paper that started the appeal clock, and whether the docket can confirm
+// it. Rule 8.104(a)(1) takes the EARLIEST of the triggering events, bounded to
+// one appeal period so an older judgment can't claim a later motion's trigger.
+function findAppealTimeTrigger(docs, cutoff) {
+  const triggers = (docs || []).filter(d => d.name && d.when
+    && (!cutoff || d.when <= cutoff)
+    && (APPEAL_NOTICE_OF_ENTRY_RE.test(d.name) || APPEAL_DISMISSAL_RE.test(d.name)
+        || APPEAL_JUDGMENT_RE.test(d.name)));
+  if (!triggers.length) return null;
+  let doc = triggers.slice().sort((a, b) => b.when - a.when)[0];
+  const windowStart = new Date(doc.when); windowStart.setDate(windowStart.getDate() - 60);
+  for (const d of triggers) if (d.when >= windowStart && d.when < doc.when) doc = d;
+  // A party-filed judgment with no proof of service beside it may be a lodged
+  // proposed judgment rather than the served copy (a)(1)(B) requires.
+  const unverified = APPEAL_JUDGMENT_RE.test(doc.name)
+    && !/\bclerk\b/i.test(doc.filedBy || '')
+    && !hasAccompanyingProofOfService(doc, docs);
+  return { doc, unverified };
+}
+
+function computeFeeMotionStatus(docs, motionWhen) {
+  const trig = findAppealTimeTrigger(docs);
+  if (!trig) return null;
+  const due = pjRoll(pjAddCal(trig.doc.when, 60));
+  const entry = pjEarliest((docs || []).filter(d => ENTRY_JUDGMENT_DOC_RE.test(d.name || '')));
+  const outer = entry ? pjRoll(pjAddCal(entry.when, 180)) : null;
+  const effective = (outer && outer < due) ? outer : due;
+  return {
+    trigger: trig.doc, unverified: trig.unverified, due: effective,
+    basis: (effective === due ? '60 days after service of ' + trig.doc.name : '180 days after entry of judgment'),
+    motionWhen,
+    late: motionWhen != null && dayMs(motionWhen) > dayMs(effective),
+  };
+}
+
 /* ---- Memorandum of costs (CRC 3.1700(a)(1)) ------------------------------
    The prevailing party's memorandum is due on the FIRST of: 15 days after
    service of the notice of entry of judgment or dismissal (the clerk's under
@@ -1669,6 +1721,20 @@ function statusHtml(c, filed, osc) {
   // in front of you on a motion to strike or tax it — the memo may be untimely
   // on its face. Shown ONLY when it is late; a timely memo is the ordinary case
   // and would just be another date to read past.
+  // A fee motion filed after rule 3.1702(b)(1)'s deadline. The § 1005 dates
+  // beside it are the notice period for the HEARING and say nothing about
+  // whether the motion could be brought at all, so the timeliness question
+  // leads the line. Shown only when late, like the costs memorandum.
+  const fd = f.feeDeadline;
+  if (fd && fd.late && fd.due) {
+    const t = 'Fee motion filed ' + fmtShortDate(fd.motionWhen || fd.filedWhen || new Date(0))
+      + '. Rule 3.1702(b)(1) gives it the time for filing a notice of appeal — '
+      + fd.basis + ', so ' + fmtShortDate(fd.due) + '. '
+      + (fd.unverified ? 'The trigger is a party-filed judgment with no proof of service beside it, so check whether it was served. ' : '')
+      + 'Rule 8.108 (post-trial motion pending) or a rule 3.1702(b)(2) stipulation can extend the period; neither shows on the docket.';
+    parts.unshift(`<span style="color:${RED}" title="${dlEsc(t)}">Fee Motion Late `
+      + `(due ${fmtShortDate(fd.due)})</span>`);
+  }
   const cm = f.costsMemo;
   if (cm && cm.late && cm.due) {
     const t = 'Memorandum of costs filed ' + fmtShortDate(cm.memo.when) + ', after the '
@@ -1729,6 +1795,12 @@ async function computeFiledStatus(ctx, c) {
         // On a motion to strike or tax costs, whether the memorandum it attacks
         // was itself timely is worth knowing before reading the motion.
         if (c.cat === 'costs') filed.costsMemo = computeCostsMemoStatus(docs);
+        // A fee motion's real deadline is rule 3.1702(b)(1)'s, not the § 1005
+        // notice period for its hearing — and the docket can date it.
+        if (c.cat === 'fees') {
+          const fm = resolveMovingPaper(c.motionType, c.hearingWhen, hearings, docs);
+          filed.feeDeadline = computeFeeMotionStatus(docs, fm ? fm.when : null);
+        }
 
         // Post-judgment motions brief off the docket, not the hearing date, so
         // their schedule is built here where the documents are in hand.
@@ -1935,6 +2007,7 @@ return {
   parsePartiesTable, parseFutureHearings, parseHearingDateTime,
   // Status
   computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml, computeCostsMemoStatus,
+  findAppealTimeTrigger, computeFeeMotionStatus,
   // Hearing / document classification
   isOscDefaultJudgment, isWorkableHearing, isHearingExcluded, excludedTermMatches,
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,

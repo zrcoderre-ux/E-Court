@@ -41,7 +41,7 @@
     computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
     isOscDefaultJudgment, isWorkableHearing, loadExcludedTerms,
     isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
-    docWordOverlap, docReferencesMotion, postJudgmentAnchor, hasAccompanyingProofOfService,
+    docWordOverlap, docReferencesMotion, postJudgmentAnchor, findAppealTimeTrigger,
     docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
     isDemurrerOrMotionToStrikeDoc, isPetitionDoc, latestDoc, findDefaultProveUp,
     sameCalendarDay, stripEventId, stripTrailingParenNumber, stripHearingOnPrefix,
@@ -2429,28 +2429,9 @@ function renderDocumentsButton() {
 // run from service of the notice of entry, not the upcoming hearing. For those
 // we scan the case's Documents for the operative notice-of-entry filing so the
 // calculator can seed the correct trigger date.
-const NOTICE_OF_ENTRY_RE = /notice of (entry|ruling)/i;
-// Rule 8.104(a)(1)(A) does not require the trigger to be TITLED "Notice of
-// Entry": the clerk serving a filed-endorsed copy of the judgment starts the
-// period just as well, and under rule 8.104(e) an appealable order is the
-// judgment. eCourt's "Order - Dismissal / Issued and Filed by: Clerk" after a
-// settlement is exactly that, so it is a trigger in its own right rather than a
-// second choice. What the docket cannot show is the SERVICE date the rule keys
-// on — the filing date stands in for it, so the proof of service or certificate
-// of mailing is still worth checking before relying on the computed date.
-const DISMISSAL_TRIGGER_RE = /^order\s*[-–—:]?\s*dismissal\b|^order of dismissal\b|notice of entry of dismissal\b/i;
-// The same principle for the judgment itself: eCourt shows the clerk's
-// filed-endorsed copy as a bare "Judgment / Filed by: Clerk". Anchored at the
-// start so "Abstract of Judgment" and "Request for Entry of Default / Judgment"
-// don't qualify. Restricted to clerk-filed papers because rule 8.104(a)(1)(A)
-// is about the CLERK's service; a party's own copy triggers only under (B),
-// which needs service plus proof of service that the docket doesn't show.
-const JUDGMENT_TRIGGER_RE = /^(?:amended\s+)?judgment\b/i;
-// The prevailing party's memorandum of costs. The motion to strike or tax runs
-// 15 days from its SERVICE (CRC 3.1700(b)(1)); the docket shows filing, which
-// stands in for it, so the calculator states which document it used.
-const COSTS_MEMO_DOC_RE = /^memorandum of costs\b/i;
-function isClerkFiledDoc(d) { return /\bclerk\b/i.test((d && d.filedBy) || ''); }
+// The appeal-time trigger regexes and their selection live in lib/case-status.js
+// (findAppealTimeTrigger) so the calculator hand-off and the briefing widget's
+// fee-deadline computation can't drift apart.
 const ENTRY_OF_JUDGMENT_RE = /\bjudgment\b/i;
 function isTriggerBasedMotion(motionType) {
   return /reconsideration|renewed?\s+motion|\b1008\b|new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/i.test(motionType || '')
@@ -2485,26 +2466,13 @@ async function detectTriggerDates(hearingDateStr) {
     const docs = await fetchAllDocuments(docsUrl);
     if (!docs || !docs.length) return out;
     const cutoff = hearingDateStr ? parseHearingDateTime(hearingDateStr) : null;
-    // One pool, both shapes equal. Rule 8.104(a)(1) then takes the EARLIEST of
-    // the triggering events, so among papers serving the SAME judgment the
-    // earliest controls — a clerk's dismissal order on the 18th is not
-    // displaced by a party's notice of entry on the 22nd. The look-back is
-    // bounded to one appeal period so an older judgment in a long case can't
-    // reach forward and claim this motion's trigger.
-    const triggers = docs.filter(d => d.name && d.when
-      && (NOTICE_OF_ENTRY_RE.test(d.name) || DISMISSAL_TRIGGER_RE.test(d.name)
-          || JUDGMENT_TRIGGER_RE.test(d.name)));   // (a)(1)(A) clerk / (a)(1)(B) party service
-    let noe = latestDocOnOrBefore(triggers, cutoff);
-    if (noe) {
-      const windowStart = new Date(noe.when); windowStart.setDate(windowStart.getDate() - 60);
-      for (const d of triggers) if (d.when >= windowStart && d.when < noe.when) noe = d;
-      out.noticeOfEntryDate = noe.dateStr; out.noticeOfEntryDoc = noe.name;
-      // A party-filed judgment with no proof of service beside it may be a
-      // lodged proposed judgment rather than a served copy — rule 8.104(a)(1)(B)
-      // requires the service. Still used, but reported as unverified so the
-      // reader can settle in a glance what the docket cannot.
-      out.noticeOfEntryUnverified = JUDGMENT_TRIGGER_RE.test(noe.name)
-        && !isClerkFiledDoc(noe) && !hasAccompanyingProofOfService(noe, docs);
+    // Shared with the briefing widget's fee-deadline computation, so the two
+    // can't disagree about which paper started the clock.
+    const trig = findAppealTimeTrigger(docs, cutoff);
+    if (trig) {
+      out.noticeOfEntryDate = trig.doc.dateStr;
+      out.noticeOfEntryDoc = trig.doc.name;
+      out.noticeOfEntryUnverified = trig.unverified;
     }
     const eoj = latestDocOnOrBefore(docs.filter(d => d.name && d.when && isEntryOfJudgmentDoc(d.name)), cutoff);
     if (eoj) { out.entryOfJudgmentDate = eoj.dateStr; out.entryOfJudgmentDoc = eoj.name; }
