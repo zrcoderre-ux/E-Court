@@ -2450,6 +2450,19 @@ const JUDGMENT_TRIGGER_RE = /^(?:amended\s+)?judgment\b/i;
 // stands in for it, so the calculator states which document it used.
 const COSTS_MEMO_DOC_RE = /^memorandum of costs\b/i;
 function isClerkFiledDoc(d) { return /\bclerk\b/i.test((d && d.filedBy) || ''); }
+// Rule 8.104(a)(1)(B): a PARTY's service of a filed-endorsed copy of the
+// judgment also starts the period — but only "accompanied by proof of service".
+// The docket can show that much: a proof of service filed the same day by the
+// same party. Without one, a party-filed judgment is as likely to be a lodged
+// proposed judgment as a served copy, so it is not admitted.
+const PROOF_OF_SERVICE_RE = /^proof of (?:personal |substituted )?service\b/i;
+function hasAccompanyingProofOfService(doc, docs) {
+  const party = docPartyNames(doc.filedBy);
+  return (docs || []).some(p => p !== doc && p.name && p.when
+    && PROOF_OF_SERVICE_RE.test(p.name)
+    && sameCalendarDay(p.when, doc.when)
+    && (!party.length || !p.filedBy || docSharesParty(docPartyNames(p.filedBy), party)));
+}
 const ENTRY_OF_JUDGMENT_RE = /\bjudgment\b/i;
 function isTriggerBasedMotion(motionType) {
   return /reconsideration|renewed?\s+motion|\b1008\b|new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/i.test(motionType || '')
@@ -2492,7 +2505,9 @@ async function detectTriggerDates(hearingDateStr) {
     // reach forward and claim this motion's trigger.
     const triggers = docs.filter(d => d.name && d.when
       && (NOTICE_OF_ENTRY_RE.test(d.name) || DISMISSAL_TRIGGER_RE.test(d.name)
-          || (JUDGMENT_TRIGGER_RE.test(d.name) && isClerkFiledDoc(d))));
+          || (JUDGMENT_TRIGGER_RE.test(d.name)
+              && (isClerkFiledDoc(d)                              // (a)(1)(A) clerk service
+                  || hasAccompanyingProofOfService(d, docs)))));  // (a)(1)(B) party service
     let noe = latestDocOnOrBefore(triggers, cutoff);
     if (noe) {
       const windowStart = new Date(noe.when); windowStart.setDate(windowStart.getDate() - 60);
