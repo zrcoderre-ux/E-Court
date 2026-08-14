@@ -702,6 +702,24 @@ function resolveMovingPaper(motionType, hearingWhen, hearings, docs) {
       md = pendingChallenges[idx];
     }
   }
+  // Summary judgment and summary adjudication are coextensive: § 437c governs
+  // both, classifyMotion puts them in one bucket, and a hearing captioned one
+  // way is routinely briefed by a paper captioned the other — so the caption is
+  // not what tells them apart. TIMING is. Where a case carries several, pair
+  // them by date exactly as parallel demurrers are paired, so an MSA hearing
+  // doesn't adopt the moving paper of an MSJ set months later; where there is
+  // one of each, they pair regardless of what either is called.
+  const isSummaryJudgmentFamily = t => DL.classifyMotion(t || '') === 'msj';
+  if (isSummaryJudgmentFamily(motionType) && hearingWhen) {
+    const sjHearings = (hearings || []).filter(h => isSummaryJudgmentFamily(h.type));
+    const sjPapers = (docs || [])
+      .filter(d => d.when && isMovingPaper(d.name) && isSummaryJudgmentFamily(d.name))
+      .sort((a, b) => a.when - b.when);
+    const sjIdx = sjHearings.findIndex(h => dayMs(h.when) === dayMs(hearingWhen));
+    if (sjIdx >= 0 && sjHearings.length === sjPapers.length && sjPapers[sjIdx]) {
+      md = sjPapers[sjIdx];
+    }
+  }
   return md;
 }
 
