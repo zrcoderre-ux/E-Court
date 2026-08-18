@@ -1847,7 +1847,8 @@ async function getExportContext() {
 //
 // Identifies and opens (as background tabs) the documents relevant to the
 // selected motion, all sourced from the Documents tab (deduped by docId):
-//   - the operative complaint + cross-complaint (latest, not fictitious-name
+//   - the complaint chain (original + every amended complaint through the
+//     operative one) + operative cross-complaint (not fictitious-name
 //     amendments)
 //   - the moving paper + anything the moving party filed the same day
 //   - documents the Hearings tab lists for that motion
@@ -1863,11 +1864,16 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   const rel = new Map();
   const add = d => { if (d && d.docId && d.openUrl) rel.set(d.docId, d); };
 
-  // Operative complaint + cross-complaint. When the case has no complaint at
-  // all, fall back to the operative petition (another initial pleading).
-  let initialPleading = latestDoc(docs.filter(d => isComplaintDoc(d.name)));
-  if (!initialPleading) initialPleading = latestDoc(docs.filter(d => isPetitionDoc(d.name)));
-  add(initialPleading);
+  // The complaint chain: the original complaint AND every amended complaint
+  // through the operative one — an operative Second Amended Complaint implies a
+  // First (often titled just "Amended Complaint (1st)") that is read alongside
+  // it. isComplaintDoc anchors to the START of the title, so filings that merely
+  // mention "complaint" (answers, demurrers, proofs of service, cross-complaints,
+  // fictitious-name amendments) stay out. When the case has no complaint at all,
+  // fall back to the operative petition (another initial pleading).
+  const complaintChain = docs.filter(d => isComplaintDoc(d.name));
+  if (complaintChain.length) for (const d of complaintChain) add(d);
+  else add(latestDoc(docs.filter(d => isPetitionDoc(d.name))));
   add(latestDoc(docs.filter(d => isCrossComplaintDoc(d.name))));
 
   // Identify the moving paper up front so the Hearings-tab blob match below can
