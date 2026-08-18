@@ -289,7 +289,9 @@ function stripMotionQualifiers(s) {
 function movantTokenHit(a, b) {
   if (a === b) return true;
   if (a.length >= 4 && b.length >= 4 && (b.startsWith(a) || a.startsWith(b))) return true;
-  return false;
+  // Neither "bifurcate" nor "bifurcation" is a prefix of the other, so the
+  // startsWith test above misses the pair the shared-stem test catches.
+  return sameWordFamily(a, b);
 }
 
 function movantMatchScore(motionType, docName) {
@@ -574,10 +576,30 @@ function docReferencesMotion(name, motionType) {
   return dn.some(d => a.some(t => (t.length >= 5 && d.length >= 5) ? withinOneEdit(t, d) : t === d));
 }
 
+/* Two tokens name the same thing when one is an inflection of the other:
+   "bifurcate"/"bifurcation", "adjudicate"/"adjudication", "dismiss"/"dismissal".
+   Motions get captioned with the verb and briefed with the noun, so demanding
+   exact equality lost the opposition on a motion to bifurcate.
+
+   The test is a shared prefix of six characters. Six because five would pair
+   "appeal" with "appear"; six is still short enough for every motion-word pair
+   a docket actually produces ("bifurcat", "adjudicat", "reconsider"). Tokens
+   under six characters must match exactly — "trial" and "trail" stay apart, as
+   do "stay" and "stab". */
+const DOC_STEM_MIN = 6;
+function sameWordFamily(a, b) {
+  if (a === b) return true;
+  if (a.length < DOC_STEM_MIN || b.length < DOC_STEM_MIN) return false;
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i++;
+  return i >= DOC_STEM_MIN;
+}
+
 function docWordOverlap(name, motionType) {
-  const a = new Set(docSigTokens(motionType));
-  if (!a.size) return false;
-  return docSigTokens(name).some(t => a.has(t));
+  const a = docSigTokens(motionType);
+  if (!a.length) return false;
+  return docSigTokens(name).some(t => a.some(x => sameWordFamily(x, t)));
 }
 
 // Common motion abbreviations, so a filing that names the motion by its shorthand
