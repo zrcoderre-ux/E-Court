@@ -279,9 +279,18 @@ function movantSigTokens(s) {
 // "Motion to Strike (not anti-SLAPP) - without Demurrer" or "Demurrer - without
 // Motion to Strike". Strip parentheticals and any trailing dash-prefixed
 // "with/without …" clause so matching keys on the core motion phrase.
+//
+// A leading "Motion - Other" is eCourt's catch-all hearing CATEGORY, not part
+// of the motion's name — the free text after it is the name ("Motion - Other
+// Motion to Substitute Executor of Estate …"). No filing title ever carries
+// the word "other", so leaving the wrapper in only dilutes the hearing-side
+// coverage; a substitute-executor hearing scored exactly 0.5 against its own
+// moving paper and read "No Motion". Strip it too (only when text follows —
+// a bare "Motion - Other" keeps its tokens rather than matching nothing).
 function stripMotionQualifiers(s) {
   return (s || '')
     .replace(/\([^)]*\)/g, ' ')
+    .replace(/^\s*motion\s*[-–—]\s*other\s+(?=\S)/i, '')
     .replace(/\s[-–—]\s*(?:with|without)\b.*$/i, ' ')
     .replace(/\s+/g, ' ').trim();
 }
@@ -294,18 +303,26 @@ function movantTokenHit(a, b) {
   return sameWordFamily(a, b);
 }
 
-function movantMatchScore(motionType, docName) {
+// Directional token coverage between a hearing's motion type and a filing
+// title: mtCov = the fraction of the motion type's significant tokens the doc
+// name accounts for, dnCov = the reverse.
+function movantMatchCoverages(motionType, docName) {
   const mt = [...new Set(movantSigTokens(stripMotionQualifiers(motionType)))];
   const dn = [...new Set(movantSigTokens(stripMotionQualifiers(docName)))];
-  if (!mt.length || !dn.length) return 0;
+  if (!mt.length || !dn.length) return { mtCov: 0, dnCov: 0 };
   let mtHit = 0;
   for (const t of mt) if (dn.some(d => movantTokenHit(t, d))) mtHit++;
   let dnHit = 0;
   for (const d of dn) if (mt.some(t => movantTokenHit(t, d))) dnHit++;
+  return { mtCov: mtHit / mt.length, dnCov: dnHit / dn.length };
+}
+
+function movantMatchScore(motionType, docName) {
+  const { mtCov, dnCov } = movantMatchCoverages(motionType, docName);
   // Bidirectional: a concise doc name that fully matches the motion type's key
   // terms scores high even when the motion type carries extra descriptors
   // (e.g. "Demurrer - without Motion to Strike" vs a doc named "Demurrer").
-  return Math.max(mtHit / mt.length, dnHit / dn.length);
+  return Math.max(mtCov, dnCov);
 }
 
 // Is this document Name an actual moving paper (motion/demurrer/etc.), not a
@@ -320,11 +337,20 @@ function isMovingPaper(name) {
 }
 
 function bestFilingMatch(motionType, filings) {
-  let best = null, bestScore = 0;
+  let best = null, bestScore = 0, bestMin = 0;
   for (const f of filings) {
     if (!isMovingPaper(f.name)) continue;
-    const s = movantMatchScore(motionType, f.name);
-    if (s > bestScore) { bestScore = s; best = f; }
+    const { mtCov, dnCov } = movantMatchCoverages(motionType, f.name);
+    const s = Math.max(mtCov, dnCov), sMin = Math.min(mtCov, dnCov);
+    // Rival motions can cover the hearing type EQUALLY — two "Motion to
+    // Substitute Personal Representative…" papers, one per decedent capacity,
+    // each set for its own hearing. The coverage in the other direction (how
+    // much of the doc's own title the hearing type accounts for) then
+    // separates the paper actually noticed for THIS hearing from its
+    // longer-titled rival, instead of docket order deciding the tie.
+    if (s > bestScore || (s === bestScore && sMin > bestMin)) {
+      bestScore = s; bestMin = sMin; best = f;
+    }
   }
   // Strictly greater than half: a score of exactly 0.50 is usually a name that
   // overlaps the hearing type by one incidental word and diverges on the rest —
