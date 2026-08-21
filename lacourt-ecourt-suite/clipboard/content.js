@@ -2036,6 +2036,17 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   // administrative filing that is never relevant to a motion — always drop it.
   for (const [id, d] of rel) if (ALWAYS_IRRELEVANT_RE.test(d.name || '')) rel.delete(id);
 
+  // Ex parte papers belong to their own proceeding, not to the noticed motion:
+  // an application for an order shortening time, an application to advance or
+  // continue the hearing, the opposition to one. They ride in on the word-overlap
+  // sweeps (an ex parte application to continue an MSJ names the MSJ) and are
+  // noise on a law-and-motion work-up — "ex parte" is already an excluded HEARING
+  // term for the same reason. The Hearings tab is authoritative, as everywhere
+  // else here: a paper it listed for THIS hearing stays in.
+  for (const [id, d] of rel) {
+    if (EX_PARTE_RE.test(d.name || '') && !blobDocIds.has(d.docId)) rel.delete(id);
+  }
+
   return Array.from(rel.values());
 }
 
@@ -2047,6 +2058,12 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
 //   - anything mentioning "Jury Fees" (e.g. "Notice of Posting of Jury Fees"):
 //     an administrative fee posting, not substantive to any hearing.
 const ALWAYS_IRRELEVANT_RE = /request to waive (additional )?court fees|\[?\s*proposed\s*\]?\s+order\b|jury fees/i;
+
+// An ex parte paper, wherever "Ex Parte" falls in the title — the application
+// itself ("Ex Parte Application to Continue Trial"), the opposition to one, the
+// order on one. The separator is optional so a run-together "ExParte" (docket
+// titles are typed by hand) is caught too.
+const EX_PARTE_RE = /\bex[\s-]?parte\b/i;
 
 
 
