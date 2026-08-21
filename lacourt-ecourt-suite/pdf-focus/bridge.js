@@ -30,31 +30,88 @@ window.addEventListener('LACOURT_OPEN_DOC', (event) => {
   }
 });
 
+// The case page's floating Documents button (clipboard/content.js) opens and
+// closes relevant documents as background tabs directly, bypassing the
+// window.open() interception above — so it reports what it did here instead.
+window.addEventListener('LACOURT_DOCS_BUTTON_OPENED', (event) => {
+  const docIds = (event.detail && event.detail.docIds) || [];
+  if (!docIds.length) return;
+  for (const id of docIds) rememberOpened(id, 'button');
+  log('button opened docIds=', docIds);
+  scanAndStampAll();
+});
+
+window.addEventListener('LACOURT_DOCS_BUTTON_CLOSED', (event) => {
+  const docIds = (event.detail && event.detail.docIds) || [];
+  if (!docIds.length) return;
+  if (forgetButtonOpened(docIds)) {
+    log('button closed docIds=', docIds);
+    scanAndStampAll();
+  }
+});
+
 // ============================================================
 // Session storage of opened doc IDs
 // ============================================================
+//
+// Tracked as two sets — 'manual' (the user clicked the document itself) and
+// 'button' (the case page's floating Documents button opened it as a
+// background tab) — so the button's own close/re-open toggle can drop its
+// marks without touching one the user opened by hand. The checkmark shows
+// for the union of both; only forgetButtonOpened() ever removes an entry.
 
 const STORAGE_KEY = 'lacourtPdfFocus.openedDocIds';
 
-function getOpenedSet() {
+function getOpenedSets() {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return new Set();
-    return new Set(JSON.parse(raw));
+    if (!raw) return { manual: new Set(), button: new Set() };
+    const parsed = JSON.parse(raw);
+    // Back-compat with the old flat-array format from a session that started
+    // before this file tracked source.
+    if (Array.isArray(parsed)) return { manual: new Set(parsed), button: new Set() };
+    return {
+      manual: new Set(parsed.manual || []),
+      button: new Set(parsed.button || []),
+    };
   } catch (e) {
-    return new Set();
+    return { manual: new Set(), button: new Set() };
   }
 }
 
-function rememberOpened(docId) {
-  const set = getOpenedSet();
-  set.add(docId);
+function saveOpenedSets(sets) {
   try {
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(set)));
-    log('remembered docId', docId, '— total:', set.size);
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+      manual: Array.from(sets.manual),
+      button: Array.from(sets.button),
+    }));
   } catch (e) {
     log('sessionStorage write failed:', e);
   }
+}
+
+function getOpenedSet() {
+  const sets = getOpenedSets();
+  return new Set([...sets.manual, ...sets.button]);
+}
+
+function rememberOpened(docId, source) {
+  const sets = getOpenedSets();
+  (source === 'button' ? sets.button : sets.manual).add(String(docId));
+  saveOpenedSets(sets);
+  log('remembered docId', docId, 'source=', source || 'manual');
+}
+
+// Un-mark button-opened docIds (used when the Documents button closes the
+// tabs it opened). A docId the user also opened manually stays marked.
+function forgetButtonOpened(docIds) {
+  const sets = getOpenedSets();
+  let changed = false;
+  for (const id of docIds) {
+    if (sets.button.delete(String(id))) changed = true;
+  }
+  if (changed) saveOpenedSets(sets);
+  return changed;
 }
 
 // ============================================================
