@@ -2447,7 +2447,17 @@ function renderDocumentsButton() {
       chrome.runtime.sendMessage({ type: 'toggleDocsBackground', docs: docsPayload }, resp => {
         void chrome.runtime.lastError;
         const r = resp || {};
-        if (r.action === 'closed') { reset('Closed ' + (r.count || 0)); return; }
+        if (r.action === 'closed') {
+          // Un-mark these docs' green checkmarks (pdf-focus/bridge.js) — but only
+          // the ones the button itself opened; a doc the user opened by hand stays
+          // checked even though its tab just closed.
+          try {
+            window.dispatchEvent(new CustomEvent('LACOURT_DOCS_BUTTON_CLOSED', {
+              detail: { docIds: opened.map(d => String(d.docId)) },
+            }));
+          } catch (_) {}
+          reset('Closed ' + (r.count || 0)); return;
+        }
 
         // Debug tracking: record only the documents actually opened.
         const openedIds = new Set((r.openedDocIds || []).map(String));
@@ -2460,6 +2470,15 @@ function renderDocumentsButton() {
               caseNumber: parseCaseNumber(),
               docs: recorded.map(d => ({ docId: d.docId, name: d.name })),
             }, () => void chrome.runtime.lastError);
+          } catch (_) {}
+        }
+        if (r.action === 'opened') {
+          // Mark every relevant doc's green checkmark, not just the ones newly
+          // opened this click — the rest were already open (button or manual).
+          try {
+            window.dispatchEvent(new CustomEvent('LACOURT_DOCS_BUTTON_OPENED', {
+              detail: { docIds: opened.map(d => String(d.docId)) },
+            }));
           } catch (_) {}
         }
         reset('Opened ' + (r.count || 0) + (capped ? '+' : ''));
