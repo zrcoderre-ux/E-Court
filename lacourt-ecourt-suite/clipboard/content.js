@@ -41,7 +41,7 @@
     computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
     isOscDefaultJudgment, isWorkableHearing, loadExcludedTerms,
     isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
-    docWordOverlap, docReferencesMotion, postJudgmentAnchor, findAppealTimeTrigger,
+    docWordOverlap, docReferencesMotion, docNameIsGeneric, postJudgmentAnchor, findAppealTimeTrigger,
     docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
     isDemurrerOrMotionToStrikeDoc, isPetitionDoc, latestDoc, findDefaultProveUp,
     sameCalendarDay, stripEventId, stripTrailingParenNumber, stripHearingOnPrefix,
@@ -1990,7 +1990,19 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
       // Multiple hearings: match by shared words + Opposition/Reply co-filings.
       for (const d of docs) if (d.when && mw && d.when >= mw && docWordOverlap(d.name, motionType) && !isOtherMotion(d)) add(d);
       const after = docs.filter(d => d.when && mw && d.when >= mw);
-      for (const opp of after) if (/\bopposition\b/i.test(opp.name) && docWordOverlap(opp.name, motionType)) {
+      // A generically titled paper ("Opposition OPPOSITION", "Reply REPLY") has
+      // no word to overlap with — every word in it is a stop word — so it takes
+      // the filer instead: the movant doesn't oppose its own motion, and the
+      // reply is the movant's paper. Looser than the status engine's calendar
+      // test, deliberately: here a wrong guess costs one extra tab, and missing
+      // the opposition costs the briefing.
+      const genericOpp = d => docNameIsGeneric(d.name)
+        && !docSharesParty(docPartyNames(d.filedBy), mov);
+      const genericReply = d => docNameIsGeneric(d.name)
+        && !(docPartyNames(d.filedBy).length && mov.length
+             && !docSharesParty(docPartyNames(d.filedBy), mov));
+      for (const opp of after) if (/\bopposition\b/i.test(opp.name)
+          && (docWordOverlap(opp.name, motionType) || genericOpp(opp))) {
         add(opp); const P = docPartyNames(opp.filedBy);
         for (const d of docs) if (sameCalendarDay(d.when, opp.when) && docSharesParty(docPartyNames(d.filedBy), P) && !isOtherMotion(d)) add(d);
       }
@@ -1999,7 +2011,8 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
       // party or a mangled title (e.g. "…BERNARDSDEMURRER" with no space, which
       // no word-overlap can catch).
       for (const rep of after) if (/\breply\b/i.test(rep.name)
-          && (docWordOverlap(rep.name, motionType) || docSharesParty(docPartyNames(rep.filedBy), mov))) {
+          && (docWordOverlap(rep.name, motionType) || docSharesParty(docPartyNames(rep.filedBy), mov)
+              || genericReply(rep))) {
         add(rep); const P = docPartyNames(rep.filedBy);
         for (const d of docs) if (sameCalendarDay(d.when, rep.when) && docSharesParty(docPartyNames(d.filedBy), P) && !isOtherMotion(d)) add(d);
       }
