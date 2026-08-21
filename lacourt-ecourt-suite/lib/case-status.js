@@ -643,6 +643,17 @@ function docLinksToMotion(name, motionType) {
   return docWordOverlap(name, motionType) || motionAbbrevMatch(name, motionType);
 }
 
+/* A paper whose title says only what KIND of paper it is — "Opposition
+   OPPOSITION", "Reply REPLY", "Opposition to Motion" — names no motion at all:
+   every word in it is a DOC_STOP word, so docSigTokens comes back empty and
+   docLinksToMotion can never be true for it, however the motion is captioned.
+   A paper like that has to be attributed by something other than its name (who
+   filed it, what is on calendar) rather than dropped — dropping it reported
+   "No Opposition" with the opposition sitting on the docket. */
+function docNameIsGeneric(name) {
+  return !docSigTokens(name).length;
+}
+
 // A real opposition — NOT a "Notice of Non-Opposition", which the moving party
 // files to note the ABSENCE of an opposition and must not count as one.
 function isOppositionDoc(name) {
@@ -1896,6 +1907,27 @@ async function computeFiledStatus(ctx, c) {
         // motion also counts (covers replies named only by party/abbreviation).
         const movantParties = md ? docPartyNames(md.filedBy) : [];
         const sharesMovant = d => movantParties.length && docSharesParty(docPartyNames(d.filedBy), movantParties);
+        const filedByNonMovant = d => {
+          const p = docPartyNames(d.filedBy);
+          return !!(p.length && movantParties.length && !docSharesParty(p, movantParties));
+        };
+
+        /* A generically titled paper ("Opposition OPPOSITION", "Reply REPLY")
+           names no motion, so the name test below can never link it and the
+           multi-motion branch dropped it. What the name can't say, the calendar
+           can: briefing is filed for the NEXT hearing, so such a paper belongs
+           to this motion when this motion's hearing is the earliest filed-motion
+           hearing on or after the filing day AND no other filed motion sits on
+           calendar that day to claim it. Rival motions heard the same day leave
+           it unattributed rather than guessed at. */
+        const genericPaperIsThisMotions = d => {
+          if (!docNameIsGeneric(d.name) || !d.when || !c.hearingWhen) return false;
+          const upcoming = filedMotions.filter(h => h.when && dayMs(h.when) >= dayMs(d.when));
+          if (!upcoming.length) return false;
+          const nearest = Math.min(...upcoming.map(h => dayMs(h.when)));
+          return nearest === dayMs(c.hearingWhen)
+            && upcoming.filter(h => dayMs(h.when) === nearest).length === 1;
+        };
 
         let o, r;
         if (singleMotion) {
@@ -1903,8 +1935,15 @@ async function computeFiledStatus(ctx, c) {
           const afterOpp = o ? o.when : mw;
           r = earliest(docs.filter(d => d.when && (!afterOpp || d.when >= afterOpp) && /\breply\b/i.test(d.name)));
         } else {
-          o = earliest(after.filter(d => isOppositionDoc(d.name) && docLinksToMotion(d.name, c.motionType)));
-          r = earliest(after.filter(d => /\breply\b/i.test(d.name) && (docLinksToMotion(d.name, c.motionType) || sharesMovant(d))));
+          // The movant does not oppose its own motion, so a generic opposition
+          // filed by the movant is opposing something else; a generic reply,
+          // conversely, is the movant's paper and can't come from the other side.
+          o = earliest(after.filter(d => isOppositionDoc(d.name)
+            && (docLinksToMotion(d.name, c.motionType)
+                || (genericPaperIsThisMotions(d) && !sharesMovant(d)))));
+          r = earliest(after.filter(d => /\breply\b/i.test(d.name)
+            && (docLinksToMotion(d.name, c.motionType) || sharesMovant(d)
+                || (genericPaperIsThisMotions(d) && !filedByNonMovant(d)))));
         }
         filed.opp = o ? o.when : null;
         filed.reply = r ? r.when : null;
@@ -1921,7 +1960,8 @@ async function computeFiledStatus(ctx, c) {
         // for the movant's, be filed by the movant) so it isn't misattributed.
         if (!o) {
           const nonOpps = after.filter(d => isNonOppositionDoc(d.name)
-            && (singleMotion || docLinksToMotion(d.name, c.motionType) || sharesMovant(d)));
+            && (singleMotion || docLinksToMotion(d.name, c.motionType) || sharesMovant(d)
+                || genericPaperIsThisMotions(d)));
           const byNonMovant = earliest(nonOpps.filter(d => {
             const p = docPartyNames(d.filedBy);
             return p.length && !docSharesParty(p, movantParties);
@@ -2060,7 +2100,7 @@ return {
   isOscDefaultJudgment, isWorkableHearing, isHearingExcluded, excludedTermMatches,
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,
   isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
-  docWordOverlap, docReferencesMotion, postJudgmentAnchor, hasAccompanyingProofOfService, docLinksToMotion, docPartyNames, docSharesParty,
+  docWordOverlap, docReferencesMotion, postJudgmentAnchor, hasAccompanyingProofOfService, docLinksToMotion, docNameIsGeneric, docPartyNames, docSharesParty,
   isOppositionDoc, isNonOppositionDoc, isComplaintDoc, isCrossComplaintDoc,
   isFirstAmendedComplaintDoc, isDemurrerOrMotionToStrikeDoc, isDemurrerOrStrikeMotion,
   isPetitionDoc, latestDoc, findDefaultProveUp, sameCalendarDay,
