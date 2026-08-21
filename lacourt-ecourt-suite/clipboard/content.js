@@ -2047,6 +2047,26 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
     if (EX_PARTE_RE.test(d.name || '') && !blobDocIds.has(d.docId)) rel.delete(id);
   }
 
+  // The papers that ride in on an ex parte application — a supporting
+  // declaration, a memorandum, a proposed order — are routinely titled without
+  // the words "Ex Parte" at all. A document filed by the SAME party as an actual
+  // ex parte paper, on the SAME calendar day, belongs to that ex parte matter
+  // too and gets swept out on the same theory — unless its own title is a close
+  // match to the hearing being worked up, meaning it really is this motion's
+  // paper and just happens to share a filing date with an unrelated ex parte.
+  const exParteDocs = docs.filter(d => EX_PARTE_RE.test(d.name || ''));
+  if (exParteDocs.length) {
+    for (const [id, d] of rel) {
+      if (blobDocIds.has(d.docId) || EX_PARTE_RE.test(d.name || '')) continue;
+      if (docWordOverlap(d.name, motionType)) continue;
+      const dParty = docPartyNames(d.filedBy);
+      if (!dParty.length) continue;
+      const isExParteCompanion = exParteDocs.some(ep =>
+        sameCalendarDay(ep.when, d.when) && docSharesParty(docPartyNames(ep.filedBy), dParty));
+      if (isExParteCompanion) rel.delete(id);
+    }
+  }
+
   return Array.from(rel.values());
 }
 
