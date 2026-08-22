@@ -680,14 +680,16 @@ function isComplaintDoc(name) {
   const n = (name || '').trim();
   if (/^amendment to /i.test(n)) return false;              // "Amendment to Complaint (Fictitious/Incorrect Name)"
   if (/fictitious|incorrect\s+name/i.test(n)) return false;
-  return /^(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+)?amended\s+complaint\b/i.test(n)
+  // eCourt clerks sometimes double up the ordinal word, e.g. "Amended Amended
+  // Complaint (1st)" — accept one or more "amended" repeats, not just one.
+  return /^(?:(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+)?(?:amended\s+)+complaint\b/i.test(n)
       || /^complaint\b/i.test(n);
 }
 
 function isCrossComplaintDoc(name) {
   const n = (name || '').trim();
   if (/^amendment to /i.test(n)) return false;
-  return /^(?:(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+)?(?:amended\s+)?cross-?complaint\b/i.test(n);
+  return /^(?:(?:first|second|third|fourth|fifth|\d+(?:st|nd|rd|th))\s+)?(?:amended\s+)*cross-?complaint\b/i.test(n);
 }
 
 // An AMENDED complaint (not the original, not a cross-complaint). The
