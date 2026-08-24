@@ -1902,7 +1902,14 @@ async function computeFiledStatus(ctx, c) {
         // multiple filed motions, require the name to link to THIS motion so we
         // don't attribute the wrong paper.
         const workable = hearings.filter(h => isWorkableHearing(h.type));
-        const filedMotions = workable.filter(h => bestFilingMatch(h.type, docs));
+        // Each workable hearing whose moving papers are on file, carrying the
+        // party that brought it: WHO moved is what tells a generically titled
+        // paper apart from the motions its own name can't name (below).
+        const filedMotions = [];
+        for (const h of workable) {
+          const hm = resolveMovingPaper(h.type, h.when, hearings, docs);
+          if (hm) filedMotions.push({ when: h.when, movant: docPartyNames(hm.filedBy) });
+        }
         const singleMotion = !!md && filedMotions.length === 1;
 
         // The movant files the reply, so a "Reply …" by the same party as the
@@ -1917,18 +1924,42 @@ async function computeFiledStatus(ctx, c) {
         /* A generically titled paper ("Opposition OPPOSITION", "Reply REPLY")
            names no motion, so the name test below can never link it and the
            multi-motion branch dropped it. What the name can't say, the calendar
-           can: briefing is filed for the NEXT hearing, so such a paper belongs
-           to this motion when this motion's hearing is the earliest filed-motion
-           hearing on or after the filing day AND no other filed motion sits on
-           calendar that day to claim it. Rival motions heard the same day leave
-           it unattributed rather than guessed at. */
+           and the filer can: briefing is filed for the NEXT hearing, so such a
+           paper belongs to this motion when this motion's hearing is the
+           earliest filed-motion hearing on or after the filing day.
+
+           Motions heard that SAME day compete for it, but two of them are only
+           genuinely rival when they come from different sides. Papers filed
+           together by one moving party — a demurrer and its companion motion to
+           strike, two discovery motions on one calendar — are one side's
+           papers, and a generic opposition to them opposes this motion whichever
+           of them it meant to name. Treating that as ambiguous is what reported
+           "No Opposition" with the opposition sitting on the docket, on the most
+           ordinary multi-motion calendar there is.
+
+           Cross-motions set on one date (each side moving) stay separable, by
+           the filer: a party neither opposes nor replies to its own motion, so
+           drop the same-day motions brought by this paper's filer and the paper
+           belongs to this motion if it is the one left standing. Anything still
+           spanning two moving parties is left unattributed rather than guessed
+           at, as before. */
         const genericPaperIsThisMotions = d => {
           if (!docNameIsGeneric(d.name) || !d.when || !c.hearingWhen) return false;
           const upcoming = filedMotions.filter(h => h.when && dayMs(h.when) >= dayMs(d.when));
           if (!upcoming.length) return false;
           const nearest = Math.min(...upcoming.map(h => dayMs(h.when)));
-          return nearest === dayMs(c.hearingWhen)
-            && upcoming.filter(h => dayMs(h.when) === nearest).length === 1;
+          if (nearest !== dayMs(c.hearingWhen)) return false;
+          const sameDay = upcoming.filter(h => dayMs(h.when) === nearest);
+          if (sameDay.length <= 1) return true;
+          const isThisSide = h => !!(h.movant.length && movantParties.length
+            && docSharesParty(h.movant, movantParties));
+          // All of that day's filed motions are this motion's own side's papers.
+          if (sameDay.every(isThisSide)) return true;
+          // Otherwise let the filer eliminate the motions it cannot be aimed at.
+          const filer = docPartyNames(d.filedBy);
+          if (!filer.length) return false;
+          const aimedAt = sameDay.filter(h => !(h.movant.length && docSharesParty(h.movant, filer)));
+          return aimedAt.length === 1 && isThisSide(aimedAt[0]);
         };
 
         let o, r;
