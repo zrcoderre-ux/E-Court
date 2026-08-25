@@ -1935,9 +1935,10 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   }
 
   // For an OSC Re: Failure to Prosecute Default Judgment, the prove-up packet is
-  // the request for default judgment (the second Request for Entry of Default,
-  // filed after the one that entered the default) plus everything the plaintiff
-  // filed on or after it.
+  // the paper asking the court to enter judgment on the default — a second
+  // Request for Entry of Default, a CIV-100 whose title says it asked for a
+  // court judgment, or the judgment papers themselves (see findDefaultProveUp)
+  // — plus everything the plaintiff filed on or after it.
   if (isOscDefaultJudgment(motionType)) {
     // Every Request for Dismissal is relevant on a default-judgment prove-up:
     // dismissals of individual defendants drive severability (CCP 578-579) and

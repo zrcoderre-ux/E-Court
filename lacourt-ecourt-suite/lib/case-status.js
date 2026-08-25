@@ -932,31 +932,73 @@ function parseDocRows(root) {
   return rows;
 }
 
-// The default prove-up packet for an OSC Re: Failure to Prosecute Default
-// Judgment. eCourt files two "Request for Entry of Default / Judgment" papers:
-// the first (Result = "Entered") is the request that entered the default; a
-// second one filed afterward is the request for default JUDGMENT (the prove-up).
-// Returns { base, proveUp } — base is the most recent entered request, proveUp
-// is the earliest later request (or null if the judgment request isn't filed
-// yet). Returns null when no entered default request exists at all.
+/* The default prove-up packet for an OSC Re: Failure to Prosecute Default
+   Judgment.
+
+   The default itself is taken by a CIV-100 whose Result column reads
+   "Entered" — that is the `base`. The prove-up is whatever asks the court to
+   ENTER JUDGMENT on that default, and it takes more than one shape:
+
+     - a SECOND "Request for Entry of Default / Judgment" filed afterward (the
+       shape this used to assume was the only one);
+     - the SAME CIV-100, when its own title says it asked for a court or clerk
+       judgment — eCourt appends the relief in brackets, "Request for Entry of
+       Default / Judgment [Court Judgment]". One paper both entered the default
+       and requested judgment, so there is no second request to wait for, and
+       insisting on one reported "No Default Packet" over a complete packet;
+     - the judgment papers themselves — the proposed default judgment (JUD-100),
+       the § 585(d) declaration, a prove-up declaration — which a plaintiff may
+       file without any further CIV-100.
+
+   Returns { base, proveUp }: `base` is the most recent entered request (null
+   when the default was never entered — a separate fact the OSC status reports
+   on its own), `proveUp` is the earliest judgment paper on or after it, and
+   `proveUp.when` is the floor for the rest of the packet. Null when the docket
+   shows neither. */
 const DEFAULT_REQUEST_RE = /request for entry of default/i;
 
+// eCourt names the relief a CIV-100 asked for in brackets. A request for a
+// COURT or CLERK judgment is itself the judgment request; a bare "Request for
+// Entry of Default / Judgment" only took the default.
+const JUDGMENT_REQUEST_RE = /\b(?:court|clerk)'?s?\s+judgment\b/i;
+
+// A paper that asks the court to enter judgment on an entered default, as
+// opposed to the request that took the default.
+function isDefaultJudgmentPacketDoc(name) {
+  const n = (name || '').trim();
+  if (!n) return false;
+  if (DEFAULT_REQUEST_RE.test(n)) return JUDGMENT_REQUEST_RE.test(n);
+  if (/\bdefault\s+prove[-\s]?up\b/i.test(n)) return true;
+  // The proposed judgment itself (JUD-100), however eCourt qualifies it.
+  if (/^(?:\[?\s*proposed\s*\]?\s*)?(?:default\s+judgment|judgment\s+by\s+default)\b/i.test(n)) return true;
+  // "Declaration Pursuant to 585 CCP in Support of Default Judgment", and the
+  // other declarations filed to prove the judgment up.
+  if (/\bdeclaration\b/i.test(n) && /\b(?:585|default\s+judgment|prove[-\s]?up)\b/i.test(n)) return true;
+  return false;
+}
+
 function findDefaultProveUp(docs) {
-  const reqs = (docs || []).filter(d => d && DEFAULT_REQUEST_RE.test(d.name || ''));
-  if (!reqs.length) return null;
-  // base = most recent request whose Result column reads "Entered".
+  const list = (docs || []).filter(d => d && d.when);
+  // base = most recent Request for Entry of Default whose Result reads "Entered".
   let base = null;
-  for (const d of reqs) {
-    if (!d.when || !/\bentered\b/i.test(d.result || '')) continue;
-    if (!base || (base.when && d.when > base.when)) base = d;
+  for (const d of list) {
+    if (!DEFAULT_REQUEST_RE.test(d.name || '')) continue;
+    if (!/\bentered\b/i.test(d.result || '')) continue;
+    if (!base || d.when > base.when) base = d;
   }
-  if (!base) return null;
-  // proveUp = earliest Request for Entry of Default filed after the entered one.
+  // proveUp = the earliest judgment paper. A plain second CIV-100 counts by
+  // POSITION (filed after the default was entered, so it can only be the
+  // judgment request); everything else counts by what its title says it is, so
+  // a packet on a docket whose default was never entered is still reported.
   let proveUp = null;
-  for (const d of reqs) {
-    if (!d.when || !d.openUrl || d.docId === base.docId) continue;
-    if (d.when > base.when && (!proveUp || d.when < proveUp.when)) proveUp = d;
+  for (const d of list) {
+    if (!d.openUrl) continue;
+    if (base && d.when < base.when) continue;   // predates the default it proves up
+    const secondRequest = !!base && d.docId !== base.docId && DEFAULT_REQUEST_RE.test(d.name || '');
+    if (!secondRequest && !isDefaultJudgmentPacketDoc(d.name)) continue;
+    if (!proveUp || d.when < proveUp.when) proveUp = d;
   }
+  if (!base && !proveUp) return null;
   return { base, proveUp };
 }
 
@@ -2228,7 +2270,7 @@ return {
   isOppositionDoc, isNonOppositionDoc, isComplaintDoc, isCrossComplaintDoc,
   isFirstAmendedComplaintDoc, isDemurrerOrMotionToStrikeDoc, isDemurrerOrStrikeMotion,
   isPetitionDoc, isPetitionMotion, docsHaveComplaint,
-  latestDoc, findDefaultProveUp, sameCalendarDay,
+  latestDoc, findDefaultProveUp, isDefaultJudgmentPacketDoc, sameCalendarDay,
   // Document ingest time (when eCourt actually posted a filing)
   decodeIngestTime, getIngestTime, fmtIngest, ingestDay, ingestLagCourtDays,
   courtDaysBetween, withinIngestGrace, INGEST_GRACE_COURT_DAYS, docLagCategory,
