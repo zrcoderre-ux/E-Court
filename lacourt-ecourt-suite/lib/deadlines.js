@@ -167,8 +167,35 @@
   // ── CLASSIFICATION ────────────────────────────────────────────────────────
   // Map an e-court motion-type string to a rule bucket. Most motions use the
   // standard § 1005 schedule; only these carry their own counting rules.
+
+  /* A motion's title routinely names ANOTHER motion it merely relates to: a
+     motion to seal is captioned "Motion to Seal the Exhibits of CCTV Video in
+     Support of Defendant's Motion for Summary Judgment." The relief sought is
+     sealing — an ordinary § 1005 motion — but the nested reference to the MSJ
+     put it on § 437c's 81-day clock and reported a timely motion as LATE. Cut
+     the title at the clause that introduces the other motion; what is left is
+     this motion's own relief.
+
+     Only the "in <support|opposition|…> of/to" forms are cut, so a paper
+     captioned from the start as a response ("Opposition to Motion for Summary
+     Judgment") keeps its whole title. */
+  function stripAncillaryMotionReference(mt) {
+    return (mt || '')
+      .replace(/\s+(?:filed\s+)?in\s+(?:support|opposition|connection|conjunction|response|reply|regard|regards|relation)\s+(?:of|to|with)\b.*$/i, ' ')
+      .replace(/\s+/g, ' ').trim();
+  }
+
+  /* A motion to seal is a § 1005 motion however the papers it seals are
+     described — including where the title names them with no "in support of"
+     clause to cut ("Motion to Seal Exhibits to Defendant's Motion for Summary
+     Judgment"). The relief a title LEADS with is the motion's own, so the test
+     is anchored: sealing has to be what the caption reaches within its opening
+     words, not a word appearing anywhere in it. */
+  const SEAL_MOTION_RE = /^[^;]{0,40}?\b(?:seal|sealing|unseal|unsealing)\b/i;
+
   function classifyMotion(mt) {
-    const s = (mt || '').toLowerCase();
+    const s = stripAncillaryMotionReference(mt).toLowerCase();
+    if (SEAL_MOTION_RE.test(s)) return 'standard';
     if (/summary\s+judgment|summary\s+adjudication|\bmsj\b|\bmsa\b/.test(s)) return 'msj';
     if (/new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/.test(s)) return 'new_trial';
     if (/reconsideration|renewed?\s+motion|\bccp?\s*1008\b|\b1008\b/.test(s)) return 'recon';
@@ -194,7 +221,7 @@
     getHolidays, isCourtDay, nextCourtDay, prevCourtDay, addCD, addCAL,
     stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply, newTrialDL, reconDL,
     addServiceExtension, costsMemoDL, costsMemoOuterDL, costsTaxDL, feesDL, feesOuterDL,
-    classifyMotion, parseDateFlexible,
+    classifyMotion, stripAncillaryMotionReference, parseDateFlexible,
   };
   (typeof window !== 'undefined' ? window : globalThis).LACourtDeadlines = api;
 })();

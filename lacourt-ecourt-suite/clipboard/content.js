@@ -45,7 +45,7 @@
     docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
     isDemurrerOrMotionToStrikeDoc, isPetitionDoc, latestDoc, findDefaultProveUp,
     sameCalendarDay, stripEventId, stripTrailingParenNumber, stripHearingOnPrefix,
-    movantNormName, fmtShortDate, dlLog,
+    stripAncillaryMotionReference, movantNormName, fmtShortDate, dlLog,
   } = LACCaseStatus;
 
   /* ------------------------------------------------------------------ */
@@ -212,7 +212,10 @@
    */
   function motionExcludesDismissed(motionType) {
     if (!motionType) return false;
-    const m = motionType.toLowerCase();
+    // Read the relief THIS motion seeks, not the motion its title says it
+    // supports: a motion to seal exhibits "in support of Defendant's Motion for
+    // Summary Judgment" is not itself a summary judgment motion.
+    const m = stripAncillaryMotionReference(motionType).toLowerCase();
     return dismissedMotionExclusions.some(term => term && m.includes(term));
   }
 
@@ -2520,6 +2523,9 @@ function renderDocumentsButton() {
 // fee-deadline computation can't drift apart.
 const ENTRY_OF_JUDGMENT_RE = /\bjudgment\b/i;
 function isTriggerBasedMotion(motionType) {
+  // Same rule as classifyMotion: a motion filed "in support of" a new trial
+  // motion is not itself keyed to the notice of entry.
+  motionType = stripAncillaryMotionReference(motionType);
   return /reconsideration|renewed?\s+motion|\b1008\b|new\s+trial|\bjnov\b|judgment\s+notwithstanding|vacate\s+(the\s+)?judgment/i.test(motionType || '')
     // Fees (CRC 3.1702) and costs (3.1700) run off the same notice-of-entry
     // trigger, so they need the dates detected too.
