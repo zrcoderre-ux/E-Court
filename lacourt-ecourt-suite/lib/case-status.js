@@ -333,6 +333,11 @@ function isMovingPaper(name) {
   if (/^(Opposition|Reply|Response|Declaration|Proof of (Personal )?Service|Order\b|Minute Order|Notice\b|Brief|Request\b|Certificate|Summons|Appeal\b|Case Management|Ex Parte Proposed Order|Points and Authorities|Memorandum|Stipulation|Objection|Separate Statement)/i.test(n)) {
     return false;
   }
+  // A petition is a moving paper however eCourt qualifies its title — "Verified
+  // Petition …", "First Amended Petition …" — not only as a bare leading
+  // "Petition …". isPetitionDoc carries those prefixes, and rejects the papers
+  // that merely reference a petition.
+  if (isPetitionDoc(n)) return true;
   return /^(Motion|Demurrer|Petition|Application|Ex Parte Application|Anti-SLAPP|Special Motion|Amended Motion|Renewed Motion|Cross-?Motion)/i.test(n);
 }
 
@@ -781,6 +786,27 @@ function resolveMovingPaper(motionType, hearingWhen, hearings, docs) {
       md = sjPapers[sjIdx];
     }
   }
+  // A petition heard in a case that HAS a complaint is a motion, but the
+  // calendar's caption and the paper's own caption routinely describe the same
+  // relief in different words: eCourt calendars "Petition to Confirm Minor's
+  // Compromise" while the paper filed is the Judicial Council form, "Petition to
+  // Approve Compromise of Disputed Claim …". Those share only "petition" and
+  // "compromise" — a score of exactly 0.50, which bestFilingMatch rejects by
+  // design — so the widget read "No Motion" with the petition on the docket.
+  // Pair petition hearings to petition papers by date instead, exactly as
+  // parallel demurrers are: where a case has one of each they pair whatever
+  // either is called, and where it has several the Nth petition answers the Nth
+  // petition hearing.
+  if (isPetitionMotion(motionType) && hearingWhen && docsHaveComplaint(docs)) {
+    const petHearings = (hearings || []).filter(h => isPetitionMotion(h.type));
+    const petPapers = (docs || [])
+      .filter(d => d.when && isPetitionDoc(d.name) && !isResolvedChallengeResult(d.result))
+      .sort((a, b) => a.when - b.when);
+    const pIdx = petHearings.findIndex(h => dayMs(h.when) === dayMs(hearingWhen));
+    if (pIdx >= 0 && petHearings.length === petPapers.length && petPapers[pIdx]) {
+      md = petPapers[pIdx];
+    }
+  }
   return md;
 }
 
@@ -795,6 +821,29 @@ function isPetitionDoc(name) {
   if (/^amendment to /i.test(n)) return false;
   if (/fictitious|incorrect\s+name/i.test(n)) return false;
   return /^(?:(?:verified|amended|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+)*petition\b/i.test(n);
+}
+
+// A hearing ON a petition — the Hearings-tab form ("Petition to Confirm Minor's
+// Compromise") or the case header's ("Hearing on Verified Petition for Writ of
+// Mandate").
+function isPetitionMotion(motionType) {
+  return isPetitionDoc(stripHearingOnPrefix(motionType || ''));
+}
+
+/* Does this docket carry a complaint?
+
+   A PETITION is a MOTION in a case that has one — a minor's compromise, a
+   petition to confirm an arbitration award, a petition for approval brought
+   inside an ordinary civil action — and is the initiating COMPLAINT in a case
+   that has none (a standalone petition to compel arbitration, a writ petition).
+   That is the whole of the rule, and it decides two things: whether the petition
+   can be the moving paper for its own hearing, and whether that hearing carries
+   a § 1005 briefing schedule at all.
+
+   A cross-complaint counts as a complaint: it presupposes the pleading it
+   answers, which may sit on a Documents page that failed to fetch. */
+function docsHaveComplaint(docs) {
+  return (docs || []).some(d => isComplaintDoc(d.name) || isCrossComplaintDoc(d.name));
 }
 
 /* Buckets a filing by the KIND of paper it is, for the filing-lag statistics.
@@ -1656,6 +1705,8 @@ function statusHtml(c, filed, osc) {
     return html;
   }
   const f = filed || {};
+  // The petition IS the pleading in a case with no complaint — nothing to brief.
+  if (f.petitionIsPleading) return '';
   const RED = '#c0392b';
   // A motion whose deadlines don't run from the hearing (new trial, JNOV,
   // reconsideration). There is no briefing schedule to paint, so the only thing
@@ -1850,6 +1901,15 @@ async function computeFiledStatus(ctx, c) {
       const docs = await ctx.docs();
       if (docs && docs.length) {
         filed.filedKnown = true;
+        // No complaint on the docket, so this petition is the case's initiating
+        // PLEADING rather than a motion (see docsHaveComplaint). A hearing on a
+        // pleading has no § 1005 schedule to paint and no missing moving paper
+        // to report — statusHtml renders nothing at all, the way it does for a
+        // conference or a trial.
+        if (isPetitionMotion(c.motionType) && !docsHaveComplaint(docs)) {
+          filed.petitionIsPleading = true;
+          return filed;
+        }
         const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
         const hearings = await ctx.hearings();
 
@@ -2136,7 +2196,8 @@ return {
   docWordOverlap, docReferencesMotion, postJudgmentAnchor, hasAccompanyingProofOfService, docLinksToMotion, docNameIsGeneric, docPartyNames, docSharesParty,
   isOppositionDoc, isNonOppositionDoc, isComplaintDoc, isCrossComplaintDoc,
   isFirstAmendedComplaintDoc, isDemurrerOrMotionToStrikeDoc, isDemurrerOrStrikeMotion,
-  isPetitionDoc, latestDoc, findDefaultProveUp, sameCalendarDay,
+  isPetitionDoc, isPetitionMotion, docsHaveComplaint,
+  latestDoc, findDefaultProveUp, sameCalendarDay,
   // Document ingest time (when eCourt actually posted a filing)
   decodeIngestTime, getIngestTime, fmtIngest, ingestDay, ingestLagCourtDays,
   courtDaysBetween, withinIngestGrace, INGEST_GRACE_COURT_DAYS, docLagCategory,

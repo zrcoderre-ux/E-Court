@@ -572,7 +572,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // Auto-detect the Movant (background-fetches the Documents page; roster
         // read from the same parties root), then stash the fields and reply
         // only once the write has landed so the popup can't load first.
-        computeMovant(ctx.data.labeled.motionType, result.partiesRoot).then(movant => {
+        computeMovant(ctx.data.labeled.motionType, result.partiesRoot, ctx.data.labeled.hearingDate).then(movant => {
           if (movant) ctx.data.labeled.movant = movant;
           storeOrderTemplateData(ctx.data.labeled).then(() => sendResponse(reply));
         });
@@ -1783,7 +1783,7 @@ function parseDocumentsFilingsFrom(doc) {
 // Async: resolves to the Movant string, or '' on any failure / no match.
 // `partiesRoot` is the document the party roster is read from (the live page
 // when on Parties, or a fetched Parties document otherwise).
-async function computeMovant(motionType, partiesRoot) {
+async function computeMovant(motionType, partiesRoot, hearingDate) {
   try {
     if (!motionType) return '';
 
@@ -1803,6 +1803,17 @@ async function computeMovant(motionType, partiesRoot) {
         .filter(d => d && d.name && d.filedBy && isMovingPaper(d.name))
         .map(d => ({ name: d.name, filedBy: d.filedBy }));
       best = bestFilingMatch(motionType, filings);
+    }
+
+    // Last resort: let the CALENDAR name the moving paper. A petition's hearing
+    // caption and the petition's own caption routinely describe the same relief
+    // in different words ("Petition to Confirm Minor's Compromise" heard on a
+    // "Petition to Approve Compromise of Disputed Claim …"), so neither name
+    // match above finds it; resolveMovingPaper pairs them by hearing date.
+    if (!best) {
+      const [all, hearings] = await Promise.all([getAllDocumentsCached(), getFutureHearingsCached()]);
+      const md = resolveMovingPaper(motionType, parseHearingDateTime(hearingDate), hearings, all || []);
+      if (md && md.filedBy) best = md;
     }
     if (!best) return '';
 
@@ -2355,7 +2366,7 @@ function renderFillFormButton() {
       // parsed fields are stored before opening the popup window. OSC cases open
       // the real form.
       if (ctx.isOrderTemplate) {
-        computeMovant(ctx.data.labeled.motionType, result.partiesRoot).then(movant => {
+        computeMovant(ctx.data.labeled.motionType, result.partiesRoot, ctx.data.labeled.hearingDate).then(movant => {
           if (movant) ctx.data.labeled.movant = movant;
           storeOrderTemplateData(ctx.data.labeled).then(openWindow);
         });
