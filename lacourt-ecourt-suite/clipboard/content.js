@@ -39,7 +39,7 @@
     makeCaseCtx, emptyDoc, caseTabUrlFrom, fetchCaseDoc, fetchAllDocuments,
     parsePartiesTable, parseFutureHearings, parseHearingDateTime,
     computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
-    isOscDefaultJudgment, isWorkableHearing, loadExcludedTerms,
+    isOscDefaultJudgment, isWorkableHearing, groupWorkableHearings, loadExcludedTerms,
     isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
     docWordOverlap, docReferencesMotion, docNameIsGeneric, postJudgmentAnchor, findAppealTimeTrigger,
     docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
@@ -1708,7 +1708,25 @@ function getHearingsUrl() {
 // otherwise the soonest future scheduled hearing on the Hearings tab that IS a
 // motion we work up or a default judgment. Returns { motionType, hearingDate,
 // hearingType }.
+// The hearing everything on the page is keyed to: the first (or only) motion on
+// the selected hearing date. Falls back to reading the header directly when the
+// hearing list can't be built (no workable hearing on the case, or the Hearings
+// tab was unreachable).
 async function resolveEffectiveHearing(root) {
+  const g = await getSelectedHearingGroup().catch(() => null);
+  if (g && g.items.length) {
+    const it = g.items[0];
+    return {
+      motionType: it.motionType,
+      hearingDate: it.hearingDate,
+      hearingType: it.hearingType,
+      lookedAhead: !it.native,
+    };
+  }
+  return resolveEffectiveHearingFromHeader(root);
+}
+
+async function resolveEffectiveHearingFromHeader(root) {
   root = root || document;
   const nextType = parseHearingType(root);
   const base = {
@@ -1851,6 +1869,13 @@ async function getExportContext() {
   // 2) Resolve the effective hearing (may fetch the Hearings tab when the Next
   //    event is excluded), then build the context with that override.
   const hearing = await resolveEffectiveHearing(partiesRoot);
+  // Two motions heard the same morning are worked up together and go out on ONE
+  // order template, so the form's Motion Type box names both, separated by "; ".
+  const group = await getSelectedHearingGroup().catch(() => null);
+  if (group && group.items.length > 1) {
+    const both = group.items.map(it => it.motionType).filter(Boolean).join('; ');
+    if (both) hearing.motionType = both;
+  }
   const ctx = getFillFormContext(partiesRoot, hearing);
   return ctx ? { ctx, partiesRoot } : null;
 }
@@ -2158,17 +2183,25 @@ function getFutureHearingsCached() {
 // Orchestrates: resolve the motion, fetch all documents + hearings, compute the
 // relevant set. Resolves to { relevant, motionType, docCount, singleHearing }.
 async function getRelevantDocuments() {
-  const hearing = await resolveEffectiveHearing(document);
+  // Every motion set for the selected hearing date — two motions heard the same
+  // morning are read together, so the button opens both sets at once (deduped).
+  const group = await getSelectedHearingGroup().catch(() => null);
+  const hearings = (group && group.items.length)
+    ? group.items
+    : [await resolveEffectiveHearing(document)];
+
   // The type used to match the Hearings-tab row and any moving paper. Normally
   // the motion type; for an OSC Re: Failure to Prosecute Default Judgment (which
   // isn't a "Hearing on <motion>" event, so has no motion type) fall back to the
   // OSC hearing type — the operative complaint and the Hearings-tab documents are
   // still the relevant set.
-  let matchType = hearing && hearing.motionType;
-  if (!matchType && hearing && isOscDefaultJudgment(hearing.hearingType)) {
-    matchType = hearing.hearingType;
-  }
-  if (!matchType) return { relevant: [], reason: 'no-motion' };
+  const matchTypeOf = h => {
+    const mt = h && h.motionType;
+    if (mt) return mt;
+    return (h && isOscDefaultJudgment(h.hearingType)) ? h.hearingType : '';
+  };
+  const targets = hearings.filter(h => matchTypeOf(h));
+  if (!targets.length) return { relevant: [], reason: 'no-motion' };
 
   const docs = await getAllDocumentsCached();
   if (!docs.length) return { relevant: [], reason: 'no-documents' };
@@ -2177,18 +2210,28 @@ async function getRelevantDocuments() {
   const hearingsDoc = hearingsUrl ? await fetchCaseDoc(hearingsUrl) : null;
   const futureHearings = hearingsDoc ? parseFutureHearings(hearingsDoc) : [];
   const singleHearing = futureHearings.length <= 1;
-  const hearingDocBlob = hearingsDoc ? findHearingDocBlob(hearingsDoc, matchType) : '';
 
-  // Pick the moving paper for THIS hearing, disambiguating parallel same-named
-  // demurrers/motions to strike by pairing them to their hearings by date.
-  const hearingWhen = hearing && hearing.hearingDate ? parseHearingDateTime(hearing.hearingDate) : null;
-  const movingPaper = resolveMovingPaper(matchType, hearingWhen, futureHearings, docs);
+  const merged = new Map();
+  const types = [];
+  for (const hearing of targets) {
+    const matchType = matchTypeOf(hearing);
+    types.push(matchType);
+    const hearingDocBlob = hearingsDoc ? findHearingDocBlob(hearingsDoc, matchType) : '';
+    // Pick the moving paper for THIS hearing, disambiguating parallel same-named
+    // demurrers/motions to strike by pairing them to their hearings by date.
+    const hearingWhen = hearing.hearingDate ? parseHearingDateTime(hearing.hearingDate) : null;
+    const movingPaper = resolveMovingPaper(matchType, hearingWhen, futureHearings, docs);
+    for (const d of computeRelevantDocuments(docs, matchType, hearingDocBlob, singleHearing, movingPaper)) {
+      if (d && d.docId && !merged.has(d.docId)) merged.set(d.docId, d);
+    }
+  }
 
-  const relevant = computeRelevantDocuments(docs, matchType, hearingDocBlob, singleHearing, movingPaper);
+  const relevant = Array.from(merged.values());
+  const motionType = types.join('; ');
   console.log('[LACourt] relevant documents:', {
-    motionType: matchType, docCount: docs.length, singleHearing, relevant: relevant.map(d => d.name),
+    motionType, docCount: docs.length, singleHearing, relevant: relevant.map(d => d.name),
   });
-  return { relevant, motionType: matchType, docCount: docs.length, singleHearing };
+  return { relevant, motionType, docCount: docs.length, singleHearing };
 }
 
 // Memoized wrapper so the Documents button opens instantly: the fetch + relevance
@@ -2693,7 +2736,7 @@ function renderDeadlineButton() {
 // Shown only when the effective hearing is an OSC Re: Failure to Prosecute
 // Default Judgment (resolved by the inline deadline widget).
 function isDefaultJudgmentPage() {
-  return !!(__nextDlComputed && __nextDlComputed.osc);
+  return slotsHaveOsc();
 }
 
 function renderDefaultJudgmentFeesButton() {
@@ -3049,13 +3092,175 @@ function findNextHeaderSpan() {
   return null;
 }
 
-// Computed once per page: { osc } or { skip } or { motionType, cat, motionDue, oppDue, replyDue }.
-let __nextDlComputed = null;
-// Filing status once the Documents fetch resolves: { filedKnown, motion, opp, reply }.
-let __nextDlFiled = null;
-let __nextDlFetchStarted = false;
-// OSC Re: Failure to Prosecute Default Judgment status: { text, color } or null.
-let __oscStatus = null;
+/* ------------------------------------------------------------------ */
+/* Which hearing (or hearings) the page is working up                   */
+/* ------------------------------------------------------------------ */
+//
+// eCourt's header names exactly ONE upcoming event, and a case routinely has
+// several hearings we work up — on different days, or two set for the same
+// morning. So every workable hearing is bundled one group per hearing DATE:
+// ‹ › arrows on the header step between days, and each motion set for the
+// selected day gets its own "Next:" line, its own briefing deadlines, its
+// documents opened alongside the others', and its motion type on the Export
+// form.
+
+const NEXT_HEADER_RE = /Next:?\s*(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2}:\d{2}\s*(?:AM|PM))\s+(.+?)\s*$/i;
+
+// The page's own "Next:" line, split into date / time / event name.
+function nextHeaderMatch(root) {
+  root = root || document;
+  for (const span of root.querySelectorAll('span[title]')) {
+    const title = (span.getAttribute('title') || '').trim();
+    let m = title && title.match(NEXT_HEADER_RE);
+    if (m) return m;
+    const text = (span.textContent || '').trim().replace(/\s+/g, ' ');
+    m = text && text.match(NEXT_HEADER_RE);
+    if (m) return m;
+  }
+  return null;
+}
+
+// The Next event, in the shape groupWorkableHearings wants. Read ONCE and kept:
+// once the arrows have rewritten the header to a later hearing, the live DOM no
+// longer says what eCourt itself put there, and the original is what tells us
+// whether the page's own line is a hearing we work up (and what to restore).
+let __nativeSnapshot = null;
+function nativeSnapshot() {
+  if (__nativeSnapshot) return __nativeSnapshot;
+  const hearingType = parseHearingType(document);
+  if (!hearingType) return null; // header hasn't rendered yet
+  const m = nextHeaderMatch(document);
+  __nativeSnapshot = {
+    motionType: parseMotionType(document),
+    hearingType,
+    hearingDate: parseHearingDate(document),
+    timeText: m ? m[2].replace(/\s+/g, ' ').toUpperCase() : '',
+    // "… in Department 73" is where the event is heard, not part of its name.
+    raw: m ? stripEventId(m[3]).replace(/\s+in\s+Department\b.*$/i, '').trim() : '',
+  };
+  return __nativeSnapshot;
+}
+
+// The header is rendered by site scripts a beat after the rest of the page, and
+// the hearing list is worthless without it, so wait rather than resolve early.
+function waitForNativeSnapshot(maxMs) {
+  const deadline = Date.now() + (maxMs || 10000);
+  return new Promise(resolve => {
+    const tick = () => {
+      const s = nativeSnapshot();
+      if (s || Date.now() > deadline) { resolve(s); return; }
+      setTimeout(tick, 250);
+    };
+    tick();
+  });
+}
+
+let __hearingGroups = null;
+let __hearingGroupsPromise = null;
+let __selGroupIdx = 0;
+
+function getHearingGroupsCached() {
+  if (__hearingGroupsPromise) return __hearingGroupsPromise;
+  __hearingGroupsPromise = (async () => {
+    await loadExcludedTerms();
+    const native = await waitForNativeSnapshot();
+    let hearings = [];
+    try { hearings = await getFutureHearingsCached(); } catch (_) { hearings = []; }
+    return groupWorkableHearings(native, hearings);
+  })();
+  // Don't cache a failure: a transient Hearings-tab error would otherwise pin
+  // the page to an empty hearing list for the rest of its life.
+  __hearingGroupsPromise.catch(() => { __hearingGroupsPromise = null; });
+  return __hearingGroupsPromise;
+}
+
+// The selected day survives a sub-tab reload (each one is a full page load), so
+// stepping to a later hearing and then opening Documents or Parties keeps it.
+const __HSEL_PREFIX = 'lacourt.hsel.';
+function hselKey() {
+  const cn = parseCaseNumber(document) || '';
+  return cn ? __HSEL_PREFIX + cn : null;
+}
+function readSelDate() {
+  const k = hselKey(); if (!k) return '';
+  try { return sessionStorage.getItem(k) || ''; } catch (_) { return ''; }
+}
+function writeSelDate(d) {
+  const k = hselKey(); if (!k) return;
+  try { if (d) sessionStorage.setItem(k, d); else sessionStorage.removeItem(k); } catch (_) {}
+}
+
+function selectedGroup() {
+  const groups = __hearingGroups || [];
+  if (!groups.length) return null;
+  if (__selGroupIdx < 0 || __selGroupIdx >= groups.length) __selGroupIdx = 0;
+  return groups[__selGroupIdx];
+}
+
+// Resolves the hearing groups once and restores the remembered day.
+let __groupsReadyPromise = null;
+function getSelectedHearingGroup() {
+  // Answer with the day selected RIGHT NOW — the arrows move it after this has
+  // already resolved once, and every caller wants the current one.
+  if (__hearingGroups) return Promise.resolve(selectedGroup());
+  if (!__groupsReadyPromise) {
+    __groupsReadyPromise = getHearingGroupsCached().then(groups => {
+      __hearingGroups = groups;
+      const want = readSelDate();
+      const i = want ? groups.findIndex(g => g.date === want) : -1;
+      __selGroupIdx = i >= 0 ? i : 0;
+    });
+    __groupsReadyPromise.catch(() => { __groupsReadyPromise = null; });
+  }
+  return __groupsReadyPromise.then(() => selectedGroup());
+}
+
+// Every hearing on the selected day as an effective-hearing record. Index 0 is
+// the one the page would have worked up on its own.
+function selectedHearingEffs() {
+  const g = selectedGroup();
+  if (!g) return [];
+  // The ▸ "these figures are for…" prefix belongs only on the page's own header
+  // line, and only while that line names a DIFFERENT event than the figures
+  // describe (a CMC, a trial, another OSC). Lines we render name their own.
+  const snap = __nativeSnapshot;
+  const nativeShows = !!(snap && isWorkableHearing(snap.hearingType));
+  return g.items.map((it, i) => ({
+    motionType: it.motionType,
+    hearingType: it.hearingType,
+    hearingDate: it.hearingDate,
+    timeText: it.timeText || '',
+    raw: it.raw || '',
+    native: !!it.native,
+    lookedAhead: i === 0 && !nativeShows,
+  }));
+}
+
+/* ------------------------------------------------------------------ */
+/* Inline deadlines — one set per hearing on the selected day           */
+/* ------------------------------------------------------------------ */
+
+// One slot per hearing: { eff, computed, filed, osc, fetchStarted }. Slot 0
+// rides the page's own header line; the rest get header lines of their own
+// directly beneath it.
+let __dlSlots = [];
+
+function slotKey(eff) {
+  return (eff.hearingDate || '') + '|' + (eff.hearingType || '');
+}
+function makeSlot(eff) {
+  return { eff, computed: computeDueDatesFor(eff), filed: null, osc: null, fetchStarted: false };
+}
+// Same test the single-hearing widget always used: an OSC or a briefable motion
+// paints; a motion whose deadlines aren't hearing-based paints only if it still
+// has to report whether its moving papers arrived.
+function paintableSlot(s) {
+  const c = s && s.computed;
+  return !!c && !(c.skip && !c.motionOnly);
+}
+function slotsHaveOsc() {
+  return __dlSlots.some(s => s.computed && s.computed.osc);
+}
 
 let __dlNoMotionLogged = 0;
 
@@ -3079,69 +3284,385 @@ function pageCaseCtx() {
   return __pageCaseCtx;
 }
 
-// Deadlines for the Next event (or for `eff`, a hearing resolved by looking past
-// it). Reads the hearing off the page, then hands it to the shared engine.
-function computeDueDates(eff) {
-  const resolved = eff || {
-    hearingType: parseHearingType(document),
-    motionType: parseMotionType(document),
-    hearingDate: parseHearingDate(document),
-  };
-  const c = computeDueDatesFor(resolved);
-  if (!c && !eff && __dlNoMotionLogged++ < 2) {
-    dlLog('parseMotionType empty (no "Hearing on <motion>" yet). hearingType=', resolved.hearingType);
-  }
-  return c;
-}
-
-function nextDlHtml() {
-  return statusHtml(__nextDlComputed, __nextDlFiled, __oscStatus);
-}
-
 // Fetch the case Documents once and recolour by whether each paper was filed on
 // time. Best-effort — the dates are already shown regardless.
-async function fetchNextDeadlineFilings() {
+async function fetchSlotFilings(slot) {
+  if (!slot || slot.fetchStarted || !slot.computed) return;
+  if (slot.computed.osc) return fetchSlotOsc(slot);
   // motionOnly hearings have no deadlines, but still need the Documents fetch:
   // whether the moving papers are on file is the whole of what they report.
-  if (__nextDlFetchStarted || !__nextDlComputed) return;
-  if (__nextDlComputed.skip && !__nextDlComputed.motionOnly) return;
-  __nextDlFetchStarted = true;
-  __nextDlFiled = await computeFiledStatus(pageCaseCtx(), __nextDlComputed);
+  if (slot.computed.skip && !slot.computed.motionOnly) return;
+  slot.fetchStarted = true;
+  slot.filed = await computeFiledStatus(pageCaseCtx(), slot.computed);
   dlCacheWrite();        // persist so the next sub-tab load paints final colours
   injectNextDeadlines(); // recolour
 }
 
-function computeOscDefaultStatus() {
-  return computeOscStatus(pageCaseCtx());
-}
-
-
-
 // Idempotent: injects the widget if missing, else refreshes its colours. Re-finds
 // the header each time so it survives e-court's React re-renders.
 function injectNextDeadlines() {
-  if (!__nextDlComputed) return;
-  if (__nextDlComputed.skip && !__nextDlComputed.motionOnly) return;
-  const span = findNextHeaderSpan();
-  if (!span || !span.parentNode) return;
-  const host = span.parentNode;
-  if (host.querySelector('.__lacourt_next_dl__') || (span.nextElementSibling && span.nextElementSibling.classList && span.nextElementSibling.classList.contains('__lacourt_next_dl__'))) {
-    const existing = host.querySelector('.__lacourt_next_dl__');
-    if (existing) existing.innerHTML = nextDlHtml();
-    return;
-  }
-  const el = document.createElement('span');
-  el.className = '__lacourt_next_dl__';
-  // OSC status can be a longer sentence, so let it wrap; deadlines stay on one line.
-  const ws = __nextDlComputed.osc ? 'white-space:normal' : 'white-space:nowrap';
-  el.setAttribute('style', 'margin-left:22px;font-weight:600;' + ws + ';font-family:inherit;display:inline-block;');
-  el.innerHTML = nextDlHtml();
-  host.insertBefore(el, span.nextSibling);
-  dlLog('injected deadlines next to header:', (span.textContent || '').slice(0, 60));
+  if (!__dlSlots.length) return;
+  const anchor = findNextHeaderAnchor();
+  if (!anchor || !anchor.row.parentNode) return;
+  paintNativeHeaderLine(anchor);
+  renderHearingArrows(anchor);
+  syncExtraHeaderRows(anchor);
+  const rows = [anchor.row].concat(
+    [].slice.call(extraRowHost(anchor).querySelectorAll('.' + EXTRA_ROW_CLASS)));
+  __dlSlots.forEach((slot, i) => {
+    const row = rows[i];
+    if (!row) return;
+    const label = row === anchor.row ? anchor.span : (row.querySelector('.' + NEXT_LABEL_CLASS) || row.firstElementChild);
+    paintSlotWidget(label, slot);
+  });
 }
 
+function paintSlotWidget(labelEl, slot) {
+  if (!labelEl || !labelEl.parentNode) return;
+  const host = labelEl.parentNode;
+  let el = null;
+  for (const n of host.children) {
+    if (n.classList && n.classList.contains(DL_CLASS)) { el = n; break; }
+  }
+  if (!paintableSlot(slot)) { if (el) el.remove(); return; }
+  const html = statusHtml(slot.computed, slot.filed, slot.osc);
+  if (el) { if (el.innerHTML !== html) el.innerHTML = html; return; }
+  el = document.createElement('span');
+  el.className = DL_CLASS;
+  // OSC status can be a longer sentence, so let it wrap; deadlines stay on one line.
+  const ws = slot.computed.osc ? 'white-space:normal' : 'white-space:nowrap';
+  el.setAttribute('style', 'margin-left:22px;font-weight:600;' + ws + ';font-family:inherit;display:inline-block;');
+  el.innerHTML = html;
+  // Sit after the arrows when they're there, so the hearing text and the control
+  // that changes it stay together.
+  let ref = labelEl;
+  const nx = labelEl.nextElementSibling;
+  if (nx && nx.classList && nx.classList.contains(NAV_CLASS)) ref = nx;
+  host.insertBefore(el, ref.nextSibling);
+  dlLog('injected deadlines next to header:', (labelEl.textContent || '').slice(0, 60));
+}
 
+/* ---- The header line, the green band, and the lines we add to it ---- */
 
+const DL_CLASS = '__lacourt_next_dl__';
+const NAV_CLASS = '__lacourt_hnav__';
+const EXTRA_ROW_CLASS = '__lacourt_extra_next__';
+const NEXT_LABEL_CLASS = '__lacourt_next_label__';
+
+// The header line and the band it sits in. The band is the nearest ancestor that
+// actually PAINTS a background — eCourt's green strip — so a line inserted into
+// it picks up that background and pushes the rest of the page down, exactly as a
+// second native hearing line would.
+function findNextHeaderAnchor() {
+  const span = findNextHeaderSpan();
+  if (!span || !span.parentElement) return null;
+  const painted = el => {
+    const bg = (getComputedStyle(el).backgroundColor || '').replace(/\s+/g, '');
+    return !!bg && bg !== 'transparent' && bg !== 'rgba(0,0,0,0)';
+  };
+  let row = span, band = null;
+  for (let i = 0; i < 8 && row.parentElement; i++) {
+    if (painted(row.parentElement)) { band = row.parentElement; break; }
+    row = row.parentElement;
+  }
+  if (!band) { row = span; band = span.parentElement; }
+  return { span, row, band };
+}
+
+// Index path from an ancestor to a descendant, so the same node can be found
+// again inside a clone of that ancestor.
+function childPath(root, node) {
+  const path = [];
+  let n = node;
+  while (n && n !== root) {
+    const p = n.parentNode;
+    if (!p) return null;
+    path.unshift([].indexOf.call(p.childNodes, n));
+    n = p;
+  }
+  return n === root ? path : null;
+}
+function nodeAtPath(root, path) {
+  let n = root;
+  for (const i of path) { n = n && n.childNodes[i]; if (!n) return null; }
+  return n;
+}
+
+// The line eCourt would itself have written for this hearing, had it been the
+// Next event: "Next: 08/31/2026 8:30 AM Hearing on Motion to Strike Costs (6258)".
+function hearingHeaderLabel(eff) {
+  let name = stripEventId(eff.raw || eff.hearingType || '').trim();
+  if (!name) name = 'Hearing';
+  // The Hearings tab names a motion directly; the header prefixes it. Events
+  // that aren't "Hearing on" anything (an OSC) are written as they stand.
+  if (!/^hearing on\b/i.test(name) && !/^(?:order to show cause|osc)\b/i.test(name)) {
+    name = 'Hearing on ' + name;
+  }
+  return 'Next: ' + (eff.hearingDate || '') + (eff.timeText ? ' ' + eff.timeText : '') + ' ' + name;
+}
+
+// What actually holds the hearing text: the header element itself when it is a
+// plain text line, else the text node inside it that carries the date — so a
+// header built out of markup ("<b>Next:</b> <span>08/31/2026 …</span>") is
+// rewritten without disturbing that markup.
+function nativeLineCarrier(span) {
+  if (!span.children || !span.children.length) {
+    return { get: () => span.textContent || '', set: v => { if (span.textContent !== v) span.textContent = v; } };
+  }
+  for (const n of span.childNodes) {
+    if (n.nodeType === 3 && /\d{1,2}\/\d{1,2}\/\d{4}/.test(n.nodeValue || '')) {
+      return { get: () => n.nodeValue || '', set: v => { if (n.nodeValue !== v) n.nodeValue = v; } };
+    }
+  }
+  return null;
+}
+
+// The page's own line shows whichever hearing the arrows have selected, and is
+// restored verbatim once the selection is back on the event eCourt named.
+function paintNativeHeaderLine(anchor) {
+  const snap = __nativeSnapshot;
+  const slot = __dlSlots[0];
+  if (!snap || !slot) return;
+  // A line naming an event we DON'T work up (a CMC, a trial) is left as eCourt
+  // wrote it — the widget beside it leads with a ▸ naming the hearing its
+  // figures belong to, which is what that line has always done.
+  if (!isWorkableHearing(snap.hearingType)) return;
+  const span = anchor.span;
+  const carrier = span.dataset ? nativeLineCarrier(span) : null;
+  if (!carrier) return;
+  if (span.dataset.lacNextOrig === undefined) {
+    span.dataset.lacNextOrig = carrier.get();
+    span.dataset.lacNextOrigTitle = span.getAttribute('title') || '';
+  }
+  const isNative = slot.eff.hearingDate === snap.hearingDate
+    && (slot.eff.hearingType || '') === (snap.hearingType || '');
+  let text = span.dataset.lacNextOrig;
+  if (!isNative) {
+    text = hearingHeaderLabel(slot.eff);
+    // Don't repeat a "Next:" that lives in markup beside the text we're rewriting.
+    if (!/^\s*next\b/i.test(span.dataset.lacNextOrig)) {
+      const lead = (span.dataset.lacNextOrig.match(/^\s*/) || [''])[0] || ' ';
+      text = text.replace(/^Next:\s*/i, lead);
+    }
+  }
+  carrier.set(text);
+  if (span.hasAttribute('title')) {
+    const t = isNative ? span.dataset.lacNextOrigTitle : hearingHeaderLabel(slot.eff);
+    if (t && span.getAttribute('title') !== t) span.setAttribute('title', t);
+  }
+}
+
+const squash = el => ((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+
+// Where added lines live. Normally they are siblings of the native line inside
+// the green band, so the band grows around them. When the band is a table row
+// they can't be — a <div> is not a legal sibling of a <td> — so they go inside
+// the native line's own cell instead, which renders the same way.
+function extraRowHost(anchor) {
+  return /^(?:TR|TBODY|THEAD|TFOOT|TABLE)$/.test(anchor.band.tagName || '')
+    ? anchor.row : anchor.band;
+}
+
+// One added header line per further hearing on the selected day, cloned from the
+// native line so it carries the page's own font, colour and spacing.
+function buildExtraHeaderRow(anchor, eff) {
+  const wrap = document.createElement('div');
+  wrap.className = EXTRA_ROW_CLASS;
+  // Force its own line whether the band lays its children out as blocks, flex
+  // items or grid cells.
+  wrap.setAttribute('style', 'display:block;width:100%;flex:0 0 100%;grid-column:1/-1;');
+  const text = hearingHeaderLabel(eff);
+
+  const clone = anchor.row.cloneNode(true);
+  // Drop anything of ours the clone inherited, and every id (they must stay unique).
+  clone.querySelectorAll('.' + DL_CLASS + ', .' + NAV_CLASS + ', .' + EXTRA_ROW_CLASS)
+    .forEach(n => n.remove());
+  clone.removeAttribute('id');
+  clone.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+
+  // Clone the line only when the line really IS the hearing text. If the nearest
+  // painted ancestor sits well above it, `row` is a container holding much more
+  // than the "Next:" line, and duplicating it would duplicate the whole header —
+  // so build a bare line and copy the native text's typography onto it instead.
+  const path = childPath(anchor.row, anchor.span);
+  const label = path ? nodeAtPath(clone, path) : null;
+  const tight = squash(clone).length <= squash(anchor.span).length + 80;
+  if (tight && label && label.nodeType === 1) {
+    label.textContent = text;
+    if (label.hasAttribute('title')) label.setAttribute('title', text);
+    label.classList.add(NEXT_LABEL_CLASS);
+    wrap.appendChild(clone);
+    return wrap;
+  }
+
+  const line = document.createElement('span');
+  line.className = NEXT_LABEL_CLASS;
+  line.textContent = text;
+  try {
+    const cs = getComputedStyle(anchor.span);
+    line.style.font = cs.font || '';
+    if (!line.style.fontSize) {
+      line.style.fontFamily = cs.fontFamily;
+      line.style.fontSize = cs.fontSize;
+      line.style.fontWeight = cs.fontWeight;
+      line.style.fontStyle = cs.fontStyle;
+    }
+    line.style.color = cs.color;
+    line.style.letterSpacing = cs.letterSpacing;
+    // Line the added text up under the native one.
+    const rs = getComputedStyle(anchor.row);
+    wrap.style.paddingLeft = rs.paddingLeft;
+    wrap.style.marginLeft = rs.marginLeft;
+  } catch (_) {}
+  wrap.appendChild(line);
+  return wrap;
+}
+
+let __extraRowSig = '';
+function syncExtraHeaderRows(anchor) {
+  const extras = __dlSlots.slice(1);
+  const sig = extras.map(s => slotKey(s.eff)).join('||');
+  const host = extraRowHost(anchor);
+  const present = host.querySelectorAll('.' + EXTRA_ROW_CLASS);
+  if (sig === __extraRowSig && present.length === extras.length) return;
+  present.forEach(n => n.remove());
+  __extraRowSig = sig;
+  let after = host === anchor.row ? null : anchor.row;
+  // Step past our own additions to the native line (the arrows, the deadlines)
+  // so the added lines land beneath the whole line rather than inside it.
+  if (after) {
+    let n = after.nextElementSibling;
+    while (n && n.classList && (n.classList.contains(NAV_CLASS) || n.classList.contains(DL_CLASS))) {
+      after = n;
+      n = n.nextElementSibling;
+    }
+  }
+  for (const s of extras) {
+    const wrap = buildExtraHeaderRow(anchor, s.eff);
+    if (after) {
+      if (!after.parentNode) break;
+      after.parentNode.insertBefore(wrap, after.nextSibling);
+    } else {
+      host.appendChild(wrap);
+    }
+    after = wrap;
+  }
+  // A band sized for exactly one line has to grow to hold the ones we added.
+  if (extras.length) {
+    try { anchor.band.style.height = 'auto'; anchor.band.style.overflow = 'visible'; } catch (_) {}
+  }
+}
+
+/* ---- ‹ › : step between hearing dates ---- */
+
+function renderHearingArrows(anchor) {
+  const groups = __hearingGroups || [];
+  const host = anchor.span.parentNode;
+  if (!host) return;
+  let nav = null;
+  for (const n of host.children) {
+    if (n.classList && n.classList.contains(NAV_CLASS)) { nav = n; break; }
+  }
+  if (groups.length < 2) { if (nav) nav.remove(); return; }
+  if (!nav) {
+    nav = document.createElement('span');
+    nav.className = NAV_CLASS;
+    nav.setAttribute('style', 'margin-left:8px;font-family:inherit;white-space:nowrap;user-select:none;');
+    const mk = (glyph, delta, title) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = glyph;
+      b.title = title;
+      b.setAttribute('style', 'background:transparent;border:none;color:inherit;font:inherit;'
+        + 'font-weight:bold;font-size:1.15em;cursor:pointer;padding:0 4px;line-height:1;');
+      b.addEventListener('click', e => {
+        e.preventDefault(); e.stopPropagation();
+        stepHearingGroup(delta);
+      });
+      return b;
+    };
+    nav.appendChild(mk('‹', -1, 'Earlier hearing date'));
+    const lbl = document.createElement('span');
+    lbl.className = '__lac_hnav_count__';
+    lbl.setAttribute('style', 'font-size:0.85em;opacity:0.8;');
+    nav.appendChild(lbl);
+    nav.appendChild(mk('›', 1, 'Later hearing date'));
+    host.insertBefore(nav, anchor.span.nextSibling);
+  }
+  const btns = nav.querySelectorAll('button');
+  const setState = (b, off) => {
+    if (!b) return;
+    b.disabled = off;
+    b.style.opacity = off ? '0.3' : '1';
+    b.style.cursor = off ? 'default' : 'pointer';
+  };
+  setState(btns[0], __selGroupIdx <= 0);
+  setState(btns[1], __selGroupIdx >= groups.length - 1);
+  const lbl = nav.querySelector('.__lac_hnav_count__');
+  const count = (__selGroupIdx + 1) + '/' + groups.length;
+  if (lbl && lbl.textContent !== count) lbl.textContent = count;
+}
+
+function stepHearingGroup(delta) {
+  const groups = __hearingGroups || [];
+  if (!groups.length) return;
+  const next = Math.max(0, Math.min(groups.length - 1, __selGroupIdx + delta));
+  if (next === __selGroupIdx) return;
+  __selGroupIdx = next;
+  writeSelDate(groups[next].date);
+  dlLog('hearing date selected:', groups[next].date);
+  // A different hearing means different deadlines, different documents to open
+  // and a different motion type on the order template, so everything keyed to
+  // the old one is dropped and rebuilt.
+  __relevantDocsPromise = null;
+  __deadlinePayloadPromise = null;
+  applySelectedHearings();
+  try { getRelevantDocumentsCached(); } catch (_) {}
+  try { getDeadlinePayloadCached(); } catch (_) {}
+}
+
+/* ---- Committing a selection ---- */
+
+// Rebuild the slots for the selected day and paint them. A slot already resolved
+// for the same hearing keeps its filing status, so stepping away and back
+// doesn't re-fetch the Documents tab.
+function applySelectedHearings() {
+  const effs = selectedHearingEffs();
+  if (!effs.length) return;
+  const prev = __dlSlots;
+  __dlSlots = effs.map(eff => {
+    const slot = makeSlot(eff);
+    const hit = prev.find(s => slotKey(s.eff) === slotKey(eff));
+    if (hit) {
+      // Keep what's already known for this hearing: a resolved slot doesn't
+      // re-fetch, and a slot seeded from the per-tab cache keeps its colours
+      // while the fresh fetch runs behind it.
+      slot.filed = hit.filed;
+      slot.osc = hit.osc;
+      slot.fetchStarted = hit.fetchStarted;
+    }
+    return slot;
+  });
+  if (!__dlSlots.some(paintableSlot) && __dlNoMotionLogged++ < 2) {
+    dlLog('no briefable hearing on', effs[0].hearingDate, '— hearingType=', effs[0].hearingType);
+  }
+  dlLog('hearings on the selected day:',
+    __dlSlots.map(s => (s.eff.hearingType || '') + ' @ ' + (s.eff.hearingDate || '')));
+  dlCacheWrite();
+  injectNextDeadlines();
+  __dlSlots.forEach(s => { fetchSlotFilings(s); });
+  syncDefaultJudgmentFeesButton();
+}
+
+// The Fees calculator belongs to a default-judgment OSC, so it comes and goes
+// with the selected hearing rather than sticking once shown.
+function syncDefaultJudgmentFeesButton() {
+  if (slotsHaveOsc()) { try { renderDefaultJudgmentFeesButton(); } catch (_) {} return; }
+  const btn = document.getElementById('__lacourt_djfees_btn__');
+  if (btn) btn.remove();
+}
+
+/* ---- OSC Re: Failure to Prosecute Default Judgment ---- */
 
 // Session-scoped cache for the OSC status, keyed by case number, so it is
 // computed once per browser session instead of re-fetched on every tab change.
@@ -3165,28 +3686,29 @@ function oscCacheSet(key, val) {
   try { chrome.storage.session.set({ [key]: val }, () => { void chrome.runtime.lastError; }); } catch (_) {}
 }
 
-async function fetchOscStatus() {
-  if (__nextDlFetchStarted || !__nextDlComputed || !__nextDlComputed.osc) return;
-  __nextDlFetchStarted = true;
+async function fetchSlotOsc(slot) {
+  if (!slot || slot.fetchStarted) return;
+  slot.fetchStarted = true;
   const key = oscCacheKey();
   if (key) {
     const cached = await oscCacheGet(key);
-    if (cached && cached.text) { __oscStatus = cached; injectNextDeadlines(); return; }
+    if (cached && cached.text) { slot.osc = cached; injectNextDeadlines(); return; }
   }
-  __oscStatus = await computeOscDefaultStatus();
+  slot.osc = await computeOscStatus(pageCaseCtx());
   injectNextDeadlines();
   // Cache real answers only — not transient failures, which should retry.
-  if (key && __oscStatus && __oscStatus.text && __oscStatus.text !== 'Default status unavailable') {
-    oscCacheSet(key, __oscStatus);
+  if (key && slot.osc && slot.osc.text && slot.osc.text !== 'Default status unavailable') {
+    oscCacheSet(key, slot.osc);
   }
 }
 
-// Per-tab cache of the computed motion deadlines + filing status, keyed by case
-// number, in synchronous sessionStorage. A case sub-tab switch is a full page
-// reload, so without this the widget recomputes (and re-fetches Documents) on
-// every tab — making the dates/colours flash each time. Seeding from the cache
-// lets the first paint show the final answer; a background refresh still runs.
-// OSC status has its own (chrome.storage.session) cache and is skipped here.
+/* ---- Per-tab cache so a sub-tab reload paints the final answer ---- */
+
+// A case sub-tab switch is a full page reload, so without this the widget
+// recomputes (and re-fetches Documents) on every tab — making the dates/colours
+// flash each time. The deadlines themselves are pure arithmetic and are simply
+// recomputed; only the filing status, which costs a fetch, is carried over. OSC
+// status has its own (chrome.storage.session) cache and is skipped here.
 const __DL_CACHE_PREFIX = 'lacourt.dl.';
 function dlCacheKey() {
   const cn = parseCaseNumber(document) || '';
@@ -3194,24 +3716,6 @@ function dlCacheKey() {
 }
 function dlEpoch(d) { return (d && !isNaN(d)) ? d.getTime() : null; }
 function dlUnepoch(v) { return (typeof v === 'number') ? new Date(v) : null; }
-function dlSerComp(c) {
-  if (!c || c.osc || c.skip) return null; // nothing paintable worth caching
-  const e = c.eff;
-  return {
-    motionType: c.motionType || '', cat: c.cat || '', hearingWhen: dlEpoch(c.hearingWhen),
-    motionDue: dlEpoch(c.motionDue), motionDuePersonal: dlEpoch(c.motionDuePersonal),
-    oppDue: dlEpoch(c.oppDue), replyDue: dlEpoch(c.replyDue),
-    eff: e ? { motionType: e.motionType || '', hearingDate: e.hearingDate || '', hearingType: e.hearingType || '', lookedAhead: !!e.lookedAhead } : null,
-  };
-}
-function dlDeserComp(s) {
-  return {
-    skip: false, motionType: s.motionType, cat: s.cat, hearingWhen: dlUnepoch(s.hearingWhen),
-    motionDue: dlUnepoch(s.motionDue), motionDuePersonal: dlUnepoch(s.motionDuePersonal),
-    oppDue: dlUnepoch(s.oppDue), replyDue: dlUnepoch(s.replyDue),
-    eff: s.eff || null,
-  };
-}
 function dlSerFiled(f) {
   return f ? {
     filedKnown: !!f.filedKnown, motion: dlEpoch(f.motion), opp: dlEpoch(f.opp), reply: dlEpoch(f.reply),
@@ -3228,67 +3732,70 @@ function dlDeserFiled(s) {
 }
 function dlCacheWrite() {
   const key = dlCacheKey(); if (!key) return;
-  const comp = dlSerComp(__nextDlComputed); if (!comp) return;
-  try { sessionStorage.setItem(key, JSON.stringify({ comp, filed: dlSerFiled(__nextDlFiled) })); } catch (_) {}
+  const slots = __dlSlots.map(s => ({
+    eff: {
+      motionType: s.eff.motionType || '', hearingType: s.eff.hearingType || '',
+      hearingDate: s.eff.hearingDate || '', timeText: s.eff.timeText || '',
+      raw: s.eff.raw || '', native: !!s.eff.native, lookedAhead: !!s.eff.lookedAhead,
+    },
+    // Ordinary briefing status only: an OSC has its own cache, and a
+    // post-judgment slot's schedule is rebuilt from the docket, not from here.
+    filed: (s.computed && !s.computed.osc && !s.computed.skip) ? dlSerFiled(s.filed) : null,
+  }));
+  if (!slots.length) return;
+  try { sessionStorage.setItem(key, JSON.stringify({ slots })); } catch (_) {}
 }
-// Seed the globals from the cache (once) so the first paint is the final answer.
+// Seed the slots from the cache (once) so the first paint is the final answer.
 function seedDeadlinesFromCache() {
-  if (__nextDlComputed) return false;
+  if (__dlSlots.length) return false;
   const key = dlCacheKey(); if (!key) return false;
   let raw; try { raw = JSON.parse(sessionStorage.getItem(key) || 'null'); } catch (_) { raw = null; }
-  if (!raw || !raw.comp) return false;
-  __nextDlComputed = dlDeserComp(raw.comp);
-  if (raw.filed) __nextDlFiled = dlDeserFiled(raw.filed);
+  if (!raw || !Array.isArray(raw.slots) || !raw.slots.length) return false;
+  __dlSlots = raw.slots.map(r => {
+    const slot = makeSlot(r.eff);
+    if (r.filed) slot.filed = dlDeserFiled(r.filed);
+    return slot;
+  });
   return true;
-}
-
-// Commit a computed result and paint it (+ kick off the follow-up fetch).
-function applyNextDlComputed(c) {
-  if (!c) return;
-  __nextDlComputed = c;
-  if (c.osc) {
-    dlLog('OSC re failure to prosecute default judgment detected', c.eff ? '(looked ahead)' : '');
-    injectNextDeadlines();  // "Checking defaults…"
-    fetchOscStatus();       // then fill in the default/dismissal status
-    try { renderDefaultJudgmentFeesButton(); } catch (_) {} // reveal the DJ Fees button
-    return;
-  }
-  dlLog('computed:', c.skip ? 'skip (' + (c.reason || 'not hearing-based') + ')'
-    : { motionType: c.motionType, cat: c.cat, lookedAhead: !!c.eff, motionDue: fmtShortDate(c.motionDue), oppDue: fmtShortDate(c.oppDue), replyDue: fmtShortDate(c.replyDue) });
-  if (c.skip && !c.motionOnly) return;
-  dlCacheWrite();               // cache the dates (keeps any seeded filing status)
-  injectNextDeadlines();        // paint dates immediately (seeded/known colours)
-  fetchNextDeadlineFilings();   // then refine with filing status
 }
 
 let __dlComputeStarted = false;
 function renderNextHeaderDeadlines() {
   try {
+    // Read the page's own Next line before anything of ours can overwrite it.
+    nativeSnapshot();
+
     // On a sub-tab reload the module state is cold; paint instantly from the
     // per-tab cache so the dates/colours don't visibly recompute.
-    if (!__nextDlComputed) seedDeadlinesFromCache();
-    if (__nextDlComputed) injectNextDeadlines();
+    if (!__dlSlots.length) seedDeadlinesFromCache();
+    if (__dlSlots.length) injectNextDeadlines();
 
-    // Compute fresh once (refreshes the cache + repaints if anything changed).
-    if (!__dlComputeStarted) {
-      const nextType = parseHearingType(document);
-      // If the Next event is something we work up, use it directly (synchronous).
-      if (isWorkableHearing(nextType)) {
-        __dlComputeStarted = true;
-        applyNextDlComputed(computeDueDates());
-        return;
-      }
-      if (!nextType) return; // header not ready — a later poll/observer will retry
-      // The Next event isn't worked up (CMC, trial, status conf, other OSC…).
-      // Look ahead on the Hearings tab for the next motion / default judgment.
-      __dlComputeStarted = true;
-      resolveEffectiveHearing(document).then(h => {
-        if (!h || !isWorkableHearing(h.hearingType)) { dlLog('no workable hearing to look ahead to for', nextType); return; }
-        applyNextDlComputed(computeDueDates(h));
-      }).catch(e => dlLog('lookahead failed:', e && e.message || e));
+    if (__dlComputeStarted) return;
+    const snap = nativeSnapshot();
+    if (!snap) return; // header not ready — a later poll/observer will retry
+    __dlComputeStarted = true;
+
+    // When the Next event is one we work up, paint it at once: the Hearings-tab
+    // round trip that finds its companions shouldn't hold up the first paint.
+    if (isWorkableHearing(snap.hearingType) && !__dlSlots.length) {
+      __dlSlots = [makeSlot({
+        motionType: snap.motionType, hearingType: snap.hearingType,
+        hearingDate: snap.hearingDate, timeText: snap.timeText, raw: snap.raw,
+        native: true, lookedAhead: false,
+      })];
+      injectNextDeadlines();
+      __dlSlots.forEach(s => { fetchSlotFilings(s); });
+      syncDefaultJudgmentFeesButton();
     }
+
+    // Then resolve every workable hearing on the case and commit the selection —
+    // adding the arrows, and a header line for each further motion set that day.
+    getSelectedHearingGroup()
+      .then(() => applySelectedHearings())
+      .catch(e => dlLog('hearing resolution failed:', e && e.message || e));
   } catch (e) { dlLog('render error:', e && e.message || e); }
 }
+
 
 // Re-inject if e-court re-renders the header and strips our node (the render
 // poll stops after ~10s, so an observer keeps it pinned thereafter).

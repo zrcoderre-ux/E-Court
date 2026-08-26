@@ -515,7 +515,17 @@ function parseFutureHearings(doc) {
       const when = parseHearingDateTime(dateTime);
       const dm = dateTime.match(/\d{1,2}\/\d{1,2}\/\d{4}/);
       if (!when || !dm) continue;
-      rows.push({ type: stripTrailingParenNumber(stripEventId(name)), date: dm[0], when });
+      // `raw` keeps the docket's own wording (event number and all) so a row the
+      // case page has to RENDER reads exactly as eCourt would have written it;
+      // `timeText` is the clock time, which the MM/DD/YYYY-only `date` drops.
+      const tm = dateTime.match(/\d{1,2}:\d{2}\s*(?:AM|PM)/i);
+      rows.push({
+        type: stripTrailingParenNumber(stripEventId(name)),
+        raw: name,
+        date: dm[0],
+        timeText: tm ? tm[0].replace(/\s+/g, ' ').toUpperCase() : '',
+        when,
+      });
     }
   }
 
@@ -542,6 +552,80 @@ function isWorkableHearing(type) {
   if (isOscDefaultJudgment(type)) return true;
   if (isHearingExcluded(type)) return false;
   return MOTION_HEARING_RE.test(type);
+}
+
+// A demurrer filed "with Motion to Strike" is ONE work-up that eCourt calendars
+// as two hearing rows. The standalone strike row is the duplicate, so it drops
+// out when a demurrer shares its date — except a motion to strike or tax COSTS,
+// which is its own motion on its own schedule and merely shares a verb.
+function isDuplicateStrikeOf(item, sameDay) {
+  if (!/\bmotion to strike\b/i.test(item.hearingType || '')) return false;
+  if (DL.classifyMotion(item.motionType || item.hearingType || '') === 'costs') return false;
+  return sameDay.some(o => o !== item && /\bdemurrer\b/i.test(o.hearingType || ''));
+}
+
+// Every hearing on this case that we work up, bundled by hearing DATE: one group
+// per calendar day, each holding the motions set for that day soonest-first.
+// `native` is the case page's own "Next:" event ({ motionType, hearingType,
+// hearingDate, timeText, raw }); `hearings` is the Hearings tab. The Next event
+// leads its group when it's workable — it is the one hearing whose wording the
+// page already shows — and the Hearings tab supplies the rest. Groups come back
+// soonest-first, so index 0 is the hearing the page would have used on its own.
+function groupWorkableHearings(native, hearings) {
+  const items = [];
+  const seen = new Set();
+  const push = it => {
+    if (!it.hearingDate) return;
+    const key = it.hearingDate + '|' + stripHearingOnPrefix(it.hearingType || '').toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    items.push(it);
+  };
+
+  if (native && isWorkableHearing(native.hearingType)) {
+    push({
+      // Left as the page reads it — an OSC Re: Failure to Prosecute Default
+      // Judgment is not a "Hearing on <motion>" event and has no motion type,
+      // and the order template has always had that box empty for one.
+      motionType: native.motionType || '',
+      hearingType: native.hearingType,
+      hearingDate: native.hearingDate,
+      timeText: native.timeText || '',
+      raw: native.raw || native.hearingType || '',
+      when: parseHearingDateTime(native.hearingDate),
+      native: true,
+    });
+  }
+  for (const h of (hearings || [])) {
+    if (!isWorkableHearing(h.type)) continue;
+    push({
+      motionType: stripHearingOnPrefix(h.type),
+      hearingType: h.type,
+      hearingDate: h.date,
+      timeText: h.timeText || '',
+      raw: h.raw || h.type,
+      when: h.when,
+      native: false,
+    });
+  }
+
+  const byDay = new Map();
+  for (const it of items) {
+    if (!byDay.has(it.hearingDate)) byDay.set(it.hearingDate, []);
+    byDay.get(it.hearingDate).push(it);
+  }
+  const groups = [];
+  for (const [date, list] of byDay) {
+    // The page's own event first, then the docket's order (which carries the
+    // clock time the MM/DD/YYYY string doesn't).
+    list.sort((a, b) => (b.native ? 1 : 0) - (a.native ? 1 : 0)
+      || ((a.when ? a.when.getTime() : 0) - (b.when ? b.when.getTime() : 0)));
+    const kept = list.filter(it => !isDuplicateStrikeOf(it, list));
+    if (!kept.length) continue;
+    groups.push({ date, when: kept[0].when, items: kept });
+  }
+  groups.sort((a, b) => (a.when ? a.when.getTime() : 0) - (b.when ? b.when.getTime() : 0));
+  return groups;
 }
 
 function fetchWithTimeout(url, ms) {
@@ -2263,7 +2347,7 @@ return {
   computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml, computeCostsMemoStatus,
   findAppealTimeTrigger, computeFeeMotionStatus,
   // Hearing / document classification
-  isOscDefaultJudgment, isWorkableHearing, isHearingExcluded, excludedTermMatches,
+  isOscDefaultJudgment, isWorkableHearing, groupWorkableHearings, isHearingExcluded, excludedTermMatches,
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,
   isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
   docWordOverlap, docReferencesMotion, postJudgmentAnchor, hasAccompanyingProofOfService, docLinksToMotion, docNameIsGeneric, docPartyNames, docSharesParty,

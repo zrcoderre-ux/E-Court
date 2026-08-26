@@ -90,6 +90,18 @@ scraping the current tab.
   JNOV and reconsideration have no §1005 schedule (their deadlines run from notice
   of entry of judgment) and carry `motionOnly`, so the widget says only whether the
   moving papers are on the docket at all.
+- **Several hearings we work up = one group per hearing DATE.** `groupWorkableHearings`
+  (in `lib/case-status.js`) bundles the Next event plus every workable hearing on
+  the Hearings tab into groups keyed by date; ‹ › arrows on the "Next" header step
+  between days. The page's own header line is rewritten to the selected hearing
+  (and restored verbatim on return); every FURTHER motion set for that same day
+  gets its own full "Next: <date> <time> Hearing on <motion>" line cloned from the
+  native one, inside the green band, each with its own Motion/Opposition/Reply
+  display. Same-day hearings are worked up together: Documents opens the union of
+  both sets (deduped by docId) and Export puts both motion types in the Motion
+  Type box separated by "; ". A demurrer and a standalone motion to strike set the
+  same day stay ONE work-up (the strike row collapses into the demurrer) — but a
+  motion to strike or tax COSTS is its own motion and is never collapsed.
 - **A hearing whose motion was never filed** is a real and common state (a reserved
   date the party abandoned). `bestFilingMatch` requires a score **strictly above
   0.5** so one incidental shared word can't nominate the wrong moving paper —
