@@ -564,6 +564,20 @@ function isDuplicateStrikeOf(item, sameDay) {
   return sameDay.some(o => o !== item && /\bdemurrer\b/i.test(o.hearingType || ''));
 }
 
+/* eCourt writes the SAME hearing's caption two different ways, so it cannot be
+   compared letter-for-letter. The page's own "Next" header reads it out of a
+   title attribute, spaced as a person typed it; the Hearings tab reads it out of
+   table cells whose caption is split across child elements, and textContent
+   joins those with nothing at all — "Motion To Seal … In Support Of" on the
+   header comes back as "MotionTo Seal … In SupportOf" from the tab, with
+   "Judgment(0753)" for "Judgment (0753)" and a straight apostrophe for a curly
+   one. Keying on the letters and digits alone makes the two spellings one
+   hearing again; before this, the case page showed it twice, once per source.
+   Two genuinely different motions never differ only in whitespace. */
+function hearingIdentityKey(type) {
+  return stripHearingOnPrefix(type || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
 // Every hearing on this case that we work up, bundled by hearing DATE: one group
 // per calendar day, each holding the motions set for that day soonest-first.
 // `native` is the case page's own "Next:" event ({ motionType, hearingType,
@@ -576,7 +590,7 @@ function groupWorkableHearings(native, hearings) {
   const seen = new Set();
   const push = it => {
     if (!it.hearingDate) return;
-    const key = it.hearingDate + '|' + stripHearingOnPrefix(it.hearingType || '').toLowerCase();
+    const key = it.hearingDate + '|' + hearingIdentityKey(it.hearingType);
     if (seen.has(key)) return;
     seen.add(key);
     items.push(it);
@@ -2205,24 +2219,46 @@ async function computeFiledStatus(ctx, c) {
         //     does not oppose — more meaningful than, and taking the place of, its
         //     Opposition, so it fills the Opposition slot (and moots the reply);
         //   - filed by the MOVING party, it notes the absence of any opposition
-        //     and takes the place of the reply.
+        //     and takes the place of the reply — but only once the opposition
+        //     deadline has run. Before that day there is no non-opposition to
+        //     notice: the opposition is not late and may still be filed. So a
+        //     movant's notice dated on or before c.oppDue is premature as a
+        //     report of the other side's silence and is not read as one. (The
+        //     non-movant's is a statement about ITSELF — a party may concede
+        //     whenever it likes — and carries no such cutoff.)
         // Multi-motion cases still require the notice to link to THIS motion (or,
         // for the movant's, be filed by the movant) so it isn't misattributed.
         if (!o) {
           const nonOpps = after.filter(d => isNonOppositionDoc(d.name)
             && (singleMotion || docLinksToMotion(d.name, c.motionType) || sharesMovant(d)
                 || genericPaperIsThisMotions(d)));
-          const byNonMovant = earliest(nonOpps.filter(d => {
+          /* Which paper the notice stands in for turns on WHO filed it, so it
+             takes an identified filer on BOTH sides of the comparison. With no
+             movant to compare against, "not the movant" is not a finding —
+             reading it as one dropped every notice into the Opposition slot on
+             any motion whose moving paper carries no Filed By, and reported the
+             movant's own notice as the other side's concession. */
+          const byNonMovant = movantParties.length ? earliest(nonOpps.filter(d => {
             const p = docPartyNames(d.filedBy);
             return p.length && !docSharesParty(p, movantParties);
-          }));
+          })) : null;
           if (byNonMovant) {
             filed.nonOpp = { slot: 'opp', when: byNonMovant.when };
           } else {
-            // The movant's own notice (or one whose filer we can't identify).
+            /* The movant's own notice (or one whose filer we can't identify),
+               dropped when it predates the opposition deadline it purports to
+               report on: a caption that names a motion for summary judgment is
+               enough to link such a paper to an MSJ still weeks from its
+               opposition date. */
             const byMovant = earliest(nonOpps.filter(d => {
               const p = docPartyNames(d.filedBy);
-              return !p.length || docSharesParty(p, movantParties);
+              if (p.length && movantParties.length && !docSharesParty(p, movantParties)) return false;
+              if (c.oppDue && d.when && dayMs(d.when) <= dayMs(c.oppDue)) {
+                dlLog('non-opposition notice filed', d.when, 'is premature — opposition not due until',
+                  c.oppDue, ':', d.name);
+                return false;
+              }
+              return true;
             }));
             if (byMovant) filed.nonOpp = { slot: 'reply', when: byMovant.when };
           }
@@ -2347,7 +2383,7 @@ return {
   computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml, computeCostsMemoStatus,
   findAppealTimeTrigger, computeFeeMotionStatus,
   // Hearing / document classification
-  isOscDefaultJudgment, isWorkableHearing, groupWorkableHearings, isHearingExcluded, excludedTermMatches,
+  isOscDefaultJudgment, isWorkableHearing, groupWorkableHearings, hearingIdentityKey, isHearingExcluded, excludedTermMatches,
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,
   isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
   docWordOverlap, docReferencesMotion, postJudgmentAnchor, hasAccompanyingProofOfService, docLinksToMotion, docNameIsGeneric, docPartyNames, docSharesParty,
