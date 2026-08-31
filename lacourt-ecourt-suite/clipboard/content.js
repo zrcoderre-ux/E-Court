@@ -3888,11 +3888,292 @@ function observeNextHeader() {
     requestAnimationFrame(() => {
       pending = false;
       try { renderNextHeaderDeadlines(); } catch (_) {}
+      try { initHeaderExpanders(); } catch (_) {}
       // Keep the floating buttons sized to the blue bar if the SPA re-rendered it.
       try { scheduleButtonCollapse(); } catch (_) {}
     });
   });
   try { obs.observe(document.body, { childList: true, subtree: true }); __nextDlObserver = obs; } catch (_) {}
+}
+
+/* ------------------------------------------------------------------ */
+/* Expandable case name / case type in the header                      */
+/* ------------------------------------------------------------------ */
+//
+// eCourt truncates both the case name and the case-type designation in the
+// case header (server-side, with a literal "..." — same habit as the agenda's
+// hearing names). Clicking either now expands it; clicking again restores the
+// original. eCourt keeps no full copy of these strings on the page, so the
+// full text comes from, in order:
+//   1. a title attribute on or near the element, when eCourt provides one;
+//   2. for the CASE TYPE — the designations are the standard civil case types
+//      (the CM-010 / LASC catalog), a finite list embedded below, matched by
+//      prefix against the truncated text;
+//   3. for the CASE NAME — the Parties tab, which carries every party in
+//      full: the title is rebuilt as "<first claimant>[, et al.] vs
+//      <first defendant>[, et al.]" (the format eCourt itself uses) and used
+//      only when the truncated text is a prefix of it;
+//   4. failing all of those, the click still lifts any CSS clipping so a
+//      style-truncated header shows its own full text.
+
+// The standard civil case-type names (CM-010 / LASC). Matching is punctuation-
+// insensitive, so "Unlawful Detainer/Commercial" and "Unlawful Detainer -
+// Commercial" both hit the same entry. Extend the list if a type on a real
+// case fails to expand (the miss is logged to the console).
+const CASE_TYPE_CATALOG = [
+  'Motor Vehicle - Personal Injury/Property Damage/Wrongful Death',
+  'Uninsured Motorist - Personal Injury/Property Damage/Wrongful Death',
+  'Asbestos Property Damage',
+  'Asbestos - Personal Injury/Wrongful Death',
+  'Product Liability (not asbestos or toxic/environmental)',
+  'Medical Malpractice - Physicians & Surgeons',
+  'Other Professional Health Care Malpractice',
+  'Premises Liability (e.g., slip and fall)',
+  'Intentional Bodily Injury/Property Damage/Wrongful Death (e.g., assault, vandalism)',
+  'Intentional Infliction of Emotional Distress',
+  'Negligent Infliction of Emotional Distress',
+  'Other Personal Injury/Property Damage/Wrongful Death',
+  'Business Tort/Unfair Business Practice',
+  'Civil Rights (e.g., discrimination, false arrest) (not civil harassment)',
+  'Defamation (e.g., slander, libel)',
+  'Fraud (no contract)',
+  'Intellectual Property',
+  'Legal Malpractice',
+  'Other Professional Malpractice (not medical or legal)',
+  'Other Non-Personal Injury/Property Damage Tort',
+  'Wrongful Termination',
+  'Other Employment Complaint Case',
+  'Labor Commissioner Appeals',
+  'Breach of Rental/Lease Contract (not unlawful detainer or wrongful eviction)',
+  'Contract/Warranty Breach - Seller Plaintiff (no fraud/negligence)',
+  'Negligent Breach of Contract/Warranty (no fraud)',
+  'Other Breach of Contract/Warranty (not fraud or negligence)',
+  'Collections Case - Seller Plaintiff',
+  'Other Promissory Note/Collections Case',
+  'Insurance Coverage (not complex)',
+  'Contractual Fraud',
+  'Tortious Interference',
+  'Other Contract Dispute (not breach/insurance/fraud/negligence)',
+  'Eminent Domain/Inverse Condemnation',
+  'Wrongful Eviction Case',
+  'Mortgage Foreclosure',
+  'Quiet Title',
+  'Other Real Property (not eminent domain, landlord/tenant, foreclosure)',
+  'Unlawful Detainer/Commercial (not drugs or wrongful eviction)',
+  'Unlawful Detainer/Residential (not drugs or wrongful eviction)',
+  'Unlawful Detainer/Post-Foreclosure',
+  'Unlawful Detainer/Drugs',
+  'Asset Forfeiture Case',
+  'Petition re Arbitration Award',
+  'Writ - Administrative Mandamus',
+  'Writ - Mandamus on Limited Court Case Matter',
+  'Writ - Other Limited Court Case Review',
+  'Other Writ/Judicial Review',
+  'Antitrust/Trade Regulation',
+  'Construction Defect',
+  'Claims Involving Mass Tort',
+  'Securities Litigation',
+  'Toxic Tort/Environmental',
+  'Insurance Coverage Claims from Provisionally Complex Case',
+  'Sister State Judgment',
+  'Abstract of Judgment',
+  'Confession of Judgment (non-domestic relations)',
+  'Administrative Agency Award (not unpaid taxes)',
+  'Petition/Certificate for Entry of Judgment on Unpaid Taxes',
+  'Other Enforcement of Judgment Case',
+  'RICO Case',
+  'Declaratory Relief Only',
+  'Injunctive Relief Only (not domestic/harassment)',
+  'Other Commercial Complaint Case (non-tort/non-complex)',
+  'Other Civil Complaint (non-tort/non-complex)',
+  'Partnership and Corporate Governance Case',
+  'Civil Harassment',
+  'Workplace Violence',
+  'Elder/Dependent Adult Abuse Case',
+  'Election Contest',
+  'Petition for Change of Name/Change of Gender',
+  'Petition for Relief from Late Claim Law',
+  'Other Civil Petition',
+];
+
+const TRUNC_TEXT_RE = /(?:\.{3,}|…)\s*$/;
+
+function expNorm(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+
+function isCssClipped(el) {
+  try { return el.scrollWidth > el.clientWidth + 1; } catch (_) { return false; }
+}
+
+// Expand a truncated case-type line against the catalog. The "Civil
+// Unlimited"/"Civil Limited" lead is kept; the remainder is prefix-matched
+// punctuation-insensitively, and the shortest (most conservative) hit wins.
+function expandCaseTypeText(displayed) {
+  const m = (displayed || '').match(/^(\s*civil\s+(?:unlimited|limited)\b)\s*(.*)$/i);
+  const lead = m ? m[1].replace(/\s+/g, ' ').trim() : '';
+  const rest = ((m ? m[2] : displayed) || '').replace(TRUNC_TEXT_RE, '').trim();
+  const p = expNorm(rest);
+  if (!p) return '';
+  const hits = CASE_TYPE_CATALOG
+    .filter(tp => { const n = expNorm(tp); return n.startsWith(p) && n.length > p.length; })
+    .sort((a, b) => a.length - b.length);
+  if (!hits.length) return '';
+  if (hits.length > 1) dlLog('case-type expansion: multiple catalog hits for', rest, '→ using', hits[0]);
+  return (lead ? lead + ' ' : '') + hits[0];
+}
+
+// A title attribute on or near the element that carries the displayed text in
+// full — eCourt uses title attributes for full text elsewhere (the Next
+// header), so check before anything costlier.
+function titleAttrExpansion(el, displayedCore) {
+  const prefix = expNorm((displayedCore || '').replace(TRUNC_TEXT_RE, ''));
+  if (!prefix) return '';
+  const pool = [el];
+  for (let n = el.parentElement, i = 0; n && i < 3; n = n.parentElement, i++) pool.push(n);
+  try { for (const d of el.querySelectorAll('[title]')) pool.push(d); } catch (_) {}
+  for (const n of pool) {
+    const t = ((n.getAttribute && n.getAttribute('title')) || '').replace(/\s+/g, ' ').trim();
+    if (!t || t === 'Click to expand') continue;
+    const nt = expNorm(t);
+    if (nt.startsWith(prefix) && nt.length > prefix.length) return t;
+  }
+  return '';
+}
+
+// Rebuild the case title from the Parties tab: "<first claimant>[, et al.] vs
+// <first defendant>[, et al.]" — the format eCourt's own headers use. The
+// parties fetch is the same memoized one the status engine uses.
+async function reconstructCaseNameFromParties() {
+  try {
+    const parties = parsePartiesTable(await pageCaseCtx().parties());
+    const claim = parties.filter(p => /^\s*(?:plaintiff|petitioner|cross[-\s]?complainant)\b/i.test(p.role || ''));
+    const resp = parties.filter(p => /^\s*(?:defendant|respondent)\b/i.test(p.role || ''));
+    if (!claim.length || !resp.length) return '';
+    const side = list => list[0].name + (list.length > 1 ? ', et al.' : '');
+    return side(claim) + ' vs ' + side(resp);
+  } catch (_) { return ''; }
+}
+
+function resolveFullCaseTypeText(el, displayed) {
+  return titleAttrExpansion(el, displayed) || expandCaseTypeText(displayed);
+}
+
+async function resolveFullCaseNameText(el, displayed) {
+  // The name as THIS element shows it: whatever follows the case number in
+  // its own text (the element may carry "26STCV01234 NAME…" in one run).
+  // parseCaseName is deliberately not used here — it reads the first header
+  // candidate on the page, which can be a coarser container than the element
+  // being expanded.
+  const cn = parseCaseNumber(document);
+  let name = displayed;
+  if (cn) {
+    const i = displayed.indexOf(cn);
+    if (i !== -1) name = displayed.slice(i + cn.length).trim().replace(/^[,;:\-\s]+/, '');
+  }
+  const core = name.replace(TRUNC_TEXT_RE, '').trim();
+  if (!core) return '';
+  const swapIn = full => (name && displayed.indexOf(name) !== -1) ? displayed.replace(name, full) : full;
+  const t = titleAttrExpansion(el, core);
+  if (t) return swapIn(t);
+  const recon = await reconstructCaseNameFromParties();
+  // Used only when the truncated header is a PREFIX of the rebuilt title — a
+  // mismatch means the parties don't line up with the caption, and a wrong
+  // "expansion" is worse than none.
+  if (recon && expNorm(recon).startsWith(expNorm(core)) && expNorm(recon) !== expNorm(core)) {
+    return swapIn(recon);
+  }
+  if (recon) dlLog('case-name expansion: parties rebuild does not extend the header —', { header: core, rebuilt: recon });
+  return '';
+}
+
+// The header element carrying the (truncated) case name: the smallest element
+// in a [class*="case"] block whose text is the case number followed by the
+// name. An element that also swallows the case-type line ("Civil Unlimited
+// …") is a container, not the name — expanding it would rewrite the type
+// line's element out from under its own toggle, so those are skipped.
+function findCaseNameEl() {
+  const cn = parseCaseNumber(document);
+  if (!cn) return null;
+  let best = null, bestLen = Infinity;
+  for (const box of document.querySelectorAll('[class*="case"]')) {
+    const els = [box];
+    try { els.push.apply(els, box.querySelectorAll('span, div, b, strong, h1, h2, h3, a, td, p')); } catch (_) {}
+    for (const el of els) {
+      const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!t || t.length > 300) continue;
+      const i = t.indexOf(cn);
+      if (i === -1 || !t.slice(i + cn.length).trim()) continue; // no name beside the number
+      if (/\bcivil\s+(?:unlimited|limited)\b/i.test(t)) continue; // the type line rides along — too coarse
+      if (t.length < bestLen) { best = el; bestLen = t.length; }
+    }
+  }
+  return best;
+}
+
+async function toggleHeaderExpansion(el, resolver) {
+  if (el.getAttribute('data-lac-exp-open') === '1') {
+    const orig = el.getAttribute('data-lac-exp-text');
+    if (orig != null) el.textContent = orig;
+    el.style.cssText = el.getAttribute('data-lac-exp-css') || '';
+    el.style.setProperty('cursor', 'pointer');
+    el.setAttribute('data-lac-exp-open', '0');
+    return;
+  }
+  const displayed = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  let full = el.getAttribute('data-lac-exp-full') || '';
+  if (!full) {
+    try { full = (await resolver(el, displayed)) || ''; } catch (_) { full = ''; }
+    if (full) el.setAttribute('data-lac-exp-full', full);
+  }
+  if (el.getAttribute('data-lac-exp-text') == null) el.setAttribute('data-lac-exp-text', el.textContent);
+  if (el.getAttribute('data-lac-exp-css') == null) el.setAttribute('data-lac-exp-css', el.style.cssText || '');
+  if (full && full !== displayed) el.textContent = full;
+  else if (!full && TRUNC_TEXT_RE.test(displayed)) {
+    dlLog('no full text found for truncated header text:', displayed);
+  }
+  // Lift any CSS clipping too, so a style-truncated header shows everything.
+  el.style.setProperty('white-space', 'normal', 'important');
+  el.style.setProperty('overflow', 'visible', 'important');
+  el.style.setProperty('text-overflow', 'clip', 'important');
+  el.style.setProperty('max-width', 'none', 'important');
+  el.style.setProperty('height', 'auto', 'important');
+  el.style.setProperty('cursor', 'pointer', 'important');
+  el.setAttribute('data-lac-exp-open', '1');
+}
+
+// Bind the click toggle. Returns true when this element needs no further
+// visits (bound, or nothing about it is cut off); false = try again later
+// (e.g. the header hasn't laid out yet, so clipping can't be measured).
+function bindHeaderExpander(el, resolver) {
+  if (!el) return false;
+  if (el.getAttribute('data-lac-exp-bound') === '1') return true;
+  if (el.clientWidth === 0 && el.offsetParent === null) return false; // not laid out yet
+  const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  if (!TRUNC_TEXT_RE.test(t) && !isCssClipped(el)) return true; // nothing cut off
+  el.setAttribute('data-lac-exp-bound', '1');
+  el.style.setProperty('cursor', 'pointer');
+  if (!el.getAttribute('title')) el.setAttribute('title', 'Click to expand');
+  el.addEventListener('click', ev => {
+    try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+    toggleHeaderExpansion(el, resolver);
+  });
+  return true;
+}
+
+// Idempotent; retried from the render poll and the header observer until both
+// targets are handled (or the attempt budget runs out on pages without them).
+const __expandersDone = { name: false, type: false };
+let __expanderTries = 0;
+function initHeaderExpanders() {
+  if ((__expandersDone.name && __expandersDone.type) || __expanderTries > 60) return;
+  __expanderTries++;
+  try {
+    if (!__expandersDone.type) {
+      __expandersDone.type = bindHeaderExpander(findCaseTypeEl(document), resolveFullCaseTypeText);
+    }
+    if (!__expandersDone.name) {
+      __expandersDone.name = bindHeaderExpander(findCaseNameEl(), resolveFullCaseNameText);
+    }
+  } catch (_) {}
 }
 
 function setupFillFormButton() {
@@ -3905,6 +4186,7 @@ function setupFillFormButton() {
     renderDeadlineButton();
     renderDefaultJudgmentFeesButton(); // default-judgment pages only
     renderNextHeaderDeadlines();
+    try { initHeaderExpanders(); } catch (_) {}
     observeNextHeader();
     // Size immediately from the remembered bar dimensions (no flash to default),
     // then schedule the debounced pass that measures the live bar and re-docks.
