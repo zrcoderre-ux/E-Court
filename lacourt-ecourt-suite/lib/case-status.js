@@ -1060,13 +1060,15 @@ function parseDocRows(root) {
    gated. The earliest minute order is the floor, not the latest, so papers the
    court has seen at a continuance still open for review at the next hearing.
 
-   Returns { base, proveUp, oscFloor }: `base` is the most recent entered
-   request (null when the default was never entered — a separate fact the OSC
-   status reports on its own), `proveUp` is the earliest judgment paper on or
-   after it that clears the minute-order gate, `proveUp.when` is the floor for
-   the rest of the packet, and `oscFloor` is the gate date (null when no OSC
-   minute order is on the docket). Null when the docket shows neither base nor
-   prove-up. */
+   Returns { base, proveUp, oscFloor, oscLast }: `base` is the most recent
+   entered request (null when the default was never entered — a separate fact
+   the OSC status reports on its own), `proveUp` is the earliest judgment paper
+   on or after it that clears the minute-order gate, `proveUp.when` is the
+   floor for the rest of the packet, and `oscFloor` / `oscLast` are the dates
+   of the first and most recent OSC minute orders (null when none is on the
+   docket; `oscLast` lets the status say "no update since the court last
+   looked"). Null when the docket shows no base, no prove-up, and no OSC
+   minute order. */
 const DEFAULT_REQUEST_RE = /request for entry of default/i;
 
 // eCourt names the relief a CIV-100 asked for in brackets. A request for a
@@ -1106,11 +1108,12 @@ function findDefaultProveUp(docs) {
   // Minute Order memorializing a hearing of this OSC. Same-day papers stay in —
   // a packet filed the day of the hearing answers it, and midnight-normalized
   // dates can't order the two within the day anyway.
-  let oscFloor = null;
+  let oscFloor = null, oscLast = null;
   for (const d of list) {
     if (!/^\s*minute\s+order\b/i.test(d.name || '')) continue;
     if (!OSC_DEFAULT_JUDGMENT_RE.test(d.name || '')) continue;
     if (!oscFloor || d.when < oscFloor) oscFloor = d.when;
+    if (!oscLast || d.when > oscLast) oscLast = d.when;
   }
   // proveUp = the earliest judgment paper. A plain second CIV-100 counts by
   // POSITION (filed after the default was entered, so it can only be the
@@ -1125,8 +1128,8 @@ function findDefaultProveUp(docs) {
     if (!secondRequest && !isDefaultJudgmentPacketDoc(d.name)) continue;
     if (!proveUp || d.when < proveUp.when) proveUp = d;
   }
-  if (!base && !proveUp) return null;
-  return { base, proveUp, oscFloor };
+  if (!base && !proveUp && !oscFloor) return null;
+  return { base, proveUp, oscFloor, oscLast };
 }
 
 // POSTs the eCourt tree-table pager to fetch a page of documents at `offset`,
@@ -2348,15 +2351,32 @@ async function computeOscStatus(ctx) {
     // for Entry of Default, filed after the one that entered the default).
     const pu = findDefaultProveUp(docs);
     const hasPacket = !!(pu && pu.proveUp);
+    // With no packet answering the OSC and the court having looked at least
+    // once (a minute order of this OSC on the docket), distinguish "nothing
+    // has happened since" from "no packet": when no party paper postdates the
+    // most recent minute order, the operative fact for the next hearing is
+    // that nothing changed — report that, with the date, instead of "No
+    // Default Packet" (which reads as if the docket were bare even when a
+    // stale, already-considered packet sits on it). Court-generated papers —
+    // the minute order's own certificate of mailing, a signed order, the OSC
+    // itself — are not an update; any party filing is, packet or not.
+    const oscLast = (pu && pu.oscLast) || null;
+    const isCourtPaper = d => /^\s*(?:minute\s+order\b|order\b|certificate\s+of\b|clerk'?s\b)/i.test((d && d.name) || '');
+    const noUpdate = !hasPacket && oscLast
+      && !(docs || []).some(d => d && d.when && d.when > oscLast && !isCourtPaper(d));
     const packet = {
-      packetText: hasPacket ? '✓ Default Packet' : '⚠ No Default Packet',
+      packetText: hasPacket ? '✓ Default Packet'
+        : noUpdate ? '⚠ No Update Since Last MO (' + fmtShortDate(oscLast) + ')'
+        : '⚠ No Default Packet',
       packetColor: hasPacket ? '#1a6b3a' : '#c0392b',
     };
     dlLog('OSC default packet:', {
       hasPacket,
+      noUpdate: !!noUpdate,
       base: pu && pu.base && { name: pu.base.name, when: fmtShortDate(pu.base.when), result: pu.base.result },
       proveUp: pu && pu.proveUp && { name: pu.proveUp.name, when: fmtShortDate(pu.proveUp.when) },
       oscFloor: (pu && pu.oscFloor && fmtShortDate(pu.oscFloor)) || null,
+      oscLast: (oscLast && fmtShortDate(oscLast)) || null,
     });
 
     const notAccounted = [];
