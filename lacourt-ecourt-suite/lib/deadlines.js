@@ -105,6 +105,26 @@
   function msjOpp(hearing)   { return prevCourtDay(addCAL(hearing, -20)); } // § 437c(b)(2)
   function stdReply(hearing) { return prevCourtDay(addCD(hearing, -5));  } // § 1005(b)
   function msjReply(hearing) { return prevCourtDay(addCAL(hearing, -11)); } // § 437c(b)(4)
+  // Unlawful detainer MSJ — CCP § 1170.7: made at any time after the answer, on
+  // FIVE days' notice; CRC 3.1351(a) has that notice given in compliance with
+  // §§ 1013 and 1170.7, so the ordinary service extensions ride on the 5 days.
+  function udMsjMotion(hearing, svc) {
+    let d = addCAL(hearing, -5);
+    if (svc === 'electronic') d = addCD(d, -2);
+    else if (svc === 'mail_ca') d = addCAL(d, -5);
+    else if (svc === 'mail_state') d = addCAL(d, -10);
+    else if (svc === 'mail_conf') d = addCAL(d, -12);
+    else if (svc === 'mail_intl') d = addCAL(d, -20);
+    else if (svc === 'fax') d = addCAL(d, -2);
+    return prevCourtDay(d);
+  }
+  // CRC 3.1351(b)-(c): opposition may be made orally at the hearing; a WRITTEN
+  // opposition to be considered in advance is filed and served on or before the
+  // court day before the hearing.
+  function udMsjOpp(hearing)   { return prevCourtDay(addCAL(hearing, -1)); }
+  // No advance written reply schedule — the reply may be made orally at the
+  // hearing (CRC 3.1351(b)), so the slot dates to the hearing day itself.
+  function udMsjReply(hearing) { return prevCourtDay(hearing); }
   function newTrialDL(notice){ return nextCourtDay(addCAL(notice, 15));  } // § 659(a)(2)
 
   // ── ATTORNEY FEES (CRC 3.1702(b)) ─────────────────────────────────────────
@@ -219,7 +239,8 @@
 
   const api = {
     getHolidays, isCourtDay, nextCourtDay, prevCourtDay, addCD, addCAL,
-    stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply, newTrialDL, reconDL,
+    stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply,
+    udMsjMotion, udMsjOpp, udMsjReply, newTrialDL, reconDL,
     addServiceExtension, costsMemoDL, costsMemoOuterDL, costsTaxDL, feesDL, feesOuterDL,
     classifyMotion, stripAncillaryMotionReference, parseDateFlexible,
   };

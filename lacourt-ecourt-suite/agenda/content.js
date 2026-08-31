@@ -24,6 +24,7 @@ const {
   caseCtxForId, computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
   isWorkableHearing, isOscDefaultJudgment, loadExcludedTerms, excludedTermMatches,
   stripHearingOnPrefix, stripTrailingParenNumber, fetchWithTimeout,
+  isUnlawfulDetainerTypeText,
   DEFAULT_EXCLUDED_TERMS, dlLog,
 } = LACCaseStatus;
 
@@ -1071,7 +1072,10 @@ function caseStatusJobs() {
       if (txt && isWorkableHearing(txt)) { hearing = txt; break; }
     }
     if (!hearing) continue;
-    jobs.push({ cell: cells[6], link: caseA, caseId: idm[1], hearing, day, key: idm[1] + '|' + day + '|' + hearing });
+    // The case cell carries the case-type designation under the case number;
+    // an unlawful detainer's MSJ runs on § 1170.7 / CRC 3.1351, not § 437c.
+    const ud = isUnlawfulDetainerTypeText(cells[6].textContent || '');
+    jobs.push({ cell: cells[6], link: caseA, caseId: idm[1], hearing, day, ud, key: idm[1] + '|' + day + '|' + hearing + (ud ? '|ud' : '') });
   }
   return jobs;
 }
@@ -1085,6 +1089,7 @@ async function caseStatusHtmlFor(job) {
     // motion type is whatever is left either way.
     motionType: stripHearingOnPrefix(job.hearing),
     hearingDate: job.day,
+    ud: !!job.ud,
   });
   if (!c || (c.skip && !c.motionOnly)) return '';
   const ctx = caseCtxForId(job.caseId);

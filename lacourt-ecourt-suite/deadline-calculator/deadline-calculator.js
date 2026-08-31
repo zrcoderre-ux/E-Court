@@ -44,7 +44,8 @@ let state = {
 // deadlines and this calculator can never drift.
 const {
   getHolidays, isCourtDay, nextCourtDay, prevCourtDay, addCD, addCAL,
-  stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply, newTrialDL, reconDL,
+  stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply,
+  udMsjMotion, udMsjOpp, udMsjReply, newTrialDL, reconDL,
   costsMemoDL, costsMemoOuterDL, costsTaxDL,
   classifyMotion, feesDL, feesOuterDL,
 } = LACourtDeadlines;
@@ -52,6 +53,7 @@ const {
 const CATEGORY_LABEL = {
   standard: 'Standard noticed motion (CCP § 1005)',
   msj: 'Summary judgment / adjudication (CCP § 437c)',
+  ud_msj: 'Unlawful detainer summary judgment (CCP § 1170.7; CRC 3.1351)',
   new_trial: 'New trial / JNOV / vacate judgment (CCP §§ 659, 629, 663a)',
   recon: 'Motion for reconsideration (CCP § 1008)',
   costs: 'Memorandum of costs / motion to strike or tax costs (CRC 3.1700)',
@@ -188,6 +190,14 @@ function getSectionData(baseDate) {
       opp: msjOpp(baseDate), oppNote: '20 cal. days',
       reply: msjReply(baseDate), replyNote: '11 cal. days', warn: null,
     },
+    // Only meaningful in an unlawful detainer, so the row appears when the
+    // hand-off flagged the case as one — the general reference table stays put.
+    ...(state.detected && state.detected.unlawfulDetainer ? [{
+      id: 'ud_msj', label: 'UD MSJ (§ 1170.7)',
+      motionFn: (svc) => udMsjMotion(baseDate, svc), motionRule: '5 days’ notice',
+      opp: udMsjOpp(baseDate), oppNote: 'Written: court day before hearing (CRC 3.1351(c)) — or orally at the hearing',
+      reply: udMsjReply(baseDate), replyNote: 'Orally at the hearing (CRC 3.1351(b))', warn: null,
+    }] : []),
     {
       id: 'newtrial', label: 'New Trial / JNOV',
       // Table shows the 15-day-from-notice date; the 180-day-from-entry outer
@@ -330,6 +340,7 @@ function renderInteractiveMode() {
   const MOTION_OPTS = [
     { v: 'standard', l: 'Standard Motion' },
     { v: 'msj', l: 'MSJ / MSA' },
+    { v: 'ud_msj', l: 'UD Summary Judgment (§ 1170.7)' },
     { v: 'new_trial', l: 'New Trial / JNOV' },
     { v: 'recon', l: 'Reconsideration' },
     { v: 'costs', l: 'Costs (CRC 3.1700)' },
@@ -360,6 +371,18 @@ function renderInteractiveMode() {
       motion: msjMotion(state.baseDate, svc), motionNote: '81 calendar days before hearing (+ service)',
       opp: msjOpp(state.baseDate), oppNote: '20 calendar days before hearing',
       reply: msjReply(state.baseDate), replyNote: '11 calendar days before hearing',
+    };
+  } else if (mt === 'ud_msj') {
+    res = {
+      motion: udMsjMotion(state.baseDate, svc),
+      motionNote: '5 days’ notice before the hearing, plus the service extension (CCP § 1170.7; CRC 3.1351(a); §§ 1013, 1010.6(a)(3)(B)). '
+        + 'The motion may be made at any time after the answer is filed.',
+      opp: udMsjOpp(state.baseDate),
+      oppNote: 'A written opposition to be considered in advance is filed and served on or before the court day before the hearing, '
+        + 'by personal delivery, fax, express mail, or other means reasonably calculated to ensure next-day delivery (CRC 3.1351(c)). '
+        + 'Opposition may instead be made orally at the hearing (CRC 3.1351(b)).',
+      reply: null,
+      replyNote: 'No advance written schedule — the reply may be made orally at the hearing (CRC 3.1351(b)).',
     };
   } else if (mt === 'new_trial') {
     // § 659(a)(2): notice of intention is due the EARLIEST of 15 days after
@@ -517,13 +540,17 @@ function renderInteractiveMode() {
 function applyDetected(data) {
   if (!data) return;
   const rawMotion = data.motionType || '';
-  const category = classifyMotion(rawMotion);
+  let category = classifyMotion(rawMotion);
+  // In an unlawful detainer (flagged by the content script from the case-type
+  // designation) an MSJ runs on § 1170.7 / CRC 3.1351, not § 437c.
+  if (category === 'msj' && data.unlawfulDetainer) category = 'ud_msj';
   const triggerBased = RUNS_FROM_TRIGGER.has(category);
   state.detected = {
     rawMotion,
     hearingDate: data.hearingDate || '',
     caseNumber: data.caseNumber || '',
     category,
+    unlawfulDetainer: !!data.unlawfulDetainer,
     noticeOfEntryDate: data.noticeOfEntryDate || '',
     noticeOfEntryDoc: data.noticeOfEntryDoc || '',
     entryOfJudgmentDate: data.entryOfJudgmentDate || '',
