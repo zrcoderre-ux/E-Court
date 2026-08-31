@@ -2002,12 +2002,43 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
     }
   }
 
+  // The companion motion to strike a "Demurrer - with Motion to Strike" hearing
+  // picked up from the window around the demurrer (below) — exempted from the
+  // parallel-challenge guard further down, which otherwise keeps only
+  // challenges filed the demurrer's own day.
+  const strikeCompanionIds = new Set();
+
   if (motionDoc) {
     add(motionDoc);
     const mov = docPartyNames(motionDoc.filedBy), mw = motionDoc.when;
 
     // Same-day filings by the moving party (incl. just before the motion).
     for (const d of docs) if (sameCalendarDay(d.when, mw) && docSharesParty(docPartyNames(d.filedBy), mov)) add(d);
+
+    // A "Demurrer - with Motion to Strike" is one work-up whose motion to
+    // strike is its own filing — usually the demurrer's day, but it lands a few
+    // days before or after often enough that the same-day sweep above misses
+    // it. Hunt the window around the demurrer for the strike's moving paper
+    // (however the clerk keyed the title — "Motion re: to Strike Portions
+    // of …" included) and take it plus its same-day supporting papers, the
+    // same way the demurrer's own co-filings ride in. Documents button only —
+    // the briefing-deadline widget is unaffected.
+    if (/\bdemurrer\b/i.test(motionType || '') && /\bwith\s+motion\s+to\s+strike\b/i.test(motionType || '')) {
+      for (const d of docs) {
+        if (d.docId === motionDoc.docId || !isCompanionStrikeDoc(d.name)) continue;
+        if (!withinCalendarDays(d.when, mw, STRIKE_COMPANION_WINDOW_DAYS)) continue;
+        add(d);
+        strikeCompanionIds.add(d.docId);
+        const P = docPartyNames(d.filedBy);
+        for (const co of docs) {
+          if (!sameCalendarDay(co.when, d.when) || !docSharesParty(docPartyNames(co.filedBy), P)) continue;
+          // Its declarations and memoranda, not some OTHER motion the same
+          // party happened to file that day.
+          if (isMovingPaper(co.name) && co.docId !== d.docId) continue;
+          add(co);
+        }
+      }
+    }
 
     if (singleHearing) {
       // One upcoming hearing: everything after the motion is fair game.
@@ -2064,11 +2095,13 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   // OTHER demurrer/motion-to-strike, which belongs to a different hearing. Keep
   // only the current motion's moving paper among challenge documents — but keep
   // a challenge filed the SAME day as it (a demurrer + motion to strike filed
-  // together belong to this hearing).
+  // together belong to this hearing), and keep the companion strike the window
+  // sweep above vouched for.
   if (motionDoc) {
     for (const [id, d] of rel) {
       if (d.docId !== motionDoc.docId && isDemurrerOrMotionToStrikeDoc(d.name)
-          && !sameCalendarDay(d.when, motionDoc.when)) rel.delete(id);
+          && !sameCalendarDay(d.when, motionDoc.when)
+          && !strikeCompanionIds.has(d.docId)) rel.delete(id);
     }
   }
 
@@ -2108,6 +2141,38 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
   }
 
   return Array.from(rel.values());
+}
+
+// How far either side of the demurrer's filing date the companion motion to
+// strike is hunted for — the parties file the pair a few days apart often
+// enough that same-day-only missed it. Calendar days; 5 clears a weekend plus
+// a court holiday in both directions.
+const STRIKE_COMPANION_WINDOW_DAYS = 5;
+
+// Both `when` values are Dates already normalized to midnight (see
+// sameCalendarDay), so a plain difference counts whole days.
+function withinCalendarDays(x, y, days) {
+  return !!(x && y && Math.abs(x.getTime() - y.getTime()) <= days * 86400000);
+}
+
+// The moving paper of the strike that rides with a demurrer, however the clerk
+// keyed the title: "Motion to Strike …", "Motion re: to Strike Portions of
+// Plaintiff's Verified Third Amended Complaint …", "Notice of Motion and
+// Motion to Strike …". A motion to strike or tax COSTS is its own motion (see
+// the agenda grouping rule), and an anti-SLAPP special motion to strike is its
+// own beast too — neither is ever the demurrer's companion.
+function isCompanionStrikeDoc(name) {
+  const n = (name || '').trim();
+  // eCourt's parentheticals and trailing dash qualifiers describe what a paper
+  // is NOT ("Demurrer - without Motion to Strike", "(not anti-SLAPP)") — judge
+  // the core title without them, the way movant matching does.
+  const core = n.replace(/\([^)]*\)/g, ' ')
+    .replace(/\s[-–—]\s*(?:with|without)\b.*$/i, ' ')
+    .replace(/\s+/g, ' ').trim();
+  if (!/\bmotion\b(?:\s+re:?)?\s+to\s+strike\b/i.test(core)) return false;
+  if (/\b(?:strike|tax|taxing)\s+(?:of\s+)?costs\b|\bcosts\b.*\b(?:strike|tax)\b|memorandum\s+of\s+costs/i.test(n)) return false;
+  if (/anti-?slapp|special\s+motion/i.test(core)) return false;
+  return isMovingPaper(n) || /^notice of motion and motion\b/i.test(n);
 }
 
 // Documents that are never relevant to any motion, regardless of motion type:
