@@ -3997,6 +3997,12 @@ const CASE_TYPE_CATALOG = [
 ];
 
 const TRUNC_TEXT_RE = /(?:\.{3,}|…)\s*$/;
+// The ellipsis can fall MID-text, not only at the end: a truncated plaintiff
+// reads "GLOBEX HOLDING COMPA... vs TAYLOR ROE", and the type line can carry
+// more header text after its "...". Everything below works on "an ellipsis
+// anywhere", splitting the text into the segments around it.
+const TRUNC_ANY_RE = /(?:\.{3,}|…)/;
+const TRUNC_SPLIT_RE = /(?:\.{3,}|…)/g;
 
 function expNorm(s) { return (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
 
@@ -4004,37 +4010,62 @@ function isCssClipped(el) {
   try { return el.scrollWidth > el.clientWidth + 1; } catch (_) { return false; }
 }
 
+// Does `full` genuinely fill in `truncated`? The truncated text is split at
+// its ellipses; the first segment must start `full`, every later segment must
+// follow in order, and — unless the text ends at an ellipsis — the last
+// segment must end it. So "GLOBEX HOLDING COMPA... vs TAYLOR ROE" accepts
+// "GLOBEX HOLDING COMPANY, LLC vs TAYLOR ROE" and rejects a title whose tail
+// doesn't match. Punctuation-insensitive throughout.
+function extendsTruncated(full, truncated) {
+  const nf = expNorm(full);
+  const rawParts = (truncated || '').split(TRUNC_SPLIT_RE);
+  const parts = rawParts.map(expNorm);
+  if (!parts.length || !parts[0] || !nf) return false;
+  if (!nf.startsWith(parts[0])) return false;
+  let pos = parts[0].length;
+  for (let i = 1; i < parts.length; i++) {
+    if (!parts[i]) continue; // empty tail when the text ends at the ellipsis
+    const at = nf.indexOf(parts[i], pos);
+    if (at === -1) return false;
+    pos = at + parts[i].length;
+  }
+  const lastRaw = rawParts[rawParts.length - 1];
+  if (expNorm(lastRaw) && !nf.endsWith(parts[parts.length - 1])) return false;
+  return nf.length > expNorm(parts.join(' ')).length; // actually adds something
+}
+
 // Expand a truncated case-type line against the catalog. The "Civil
-// Unlimited"/"Civil Limited" lead is kept; the remainder is prefix-matched
-// punctuation-insensitively, and the shortest (most conservative) hit wins.
+// Unlimited"/"Civil Limited" lead is kept, the text UP TO the first ellipsis
+// is prefix-matched punctuation-insensitively (shortest hit wins), and any
+// text AFTER the ellipsis — the rest of the header line — is kept, so the
+// expansion pushes it along rather than swallowing it.
 function expandCaseTypeText(displayed) {
-  const m = (displayed || '').match(/^(\s*civil\s+(?:unlimited|limited)\b)\s*(.*)$/i);
-  const lead = m ? m[1].replace(/\s+/g, ' ').trim() : '';
-  const rest = ((m ? m[2] : displayed) || '').replace(TRUNC_TEXT_RE, '').trim();
-  const p = expNorm(rest);
+  const m = (displayed || '').match(/^(\s*civil\s+(?:unlimited|limited)\b)\s*([^]*?)\s*(?:\.{3,}|…)([^]*)$/i);
+  if (!m) return ''; // no lead, or nothing truncated — nothing to expand
+  const lead = m[1].replace(/\s+/g, ' ').trim();
+  const p = expNorm(m[2]);
+  const tail = (m[3] || '').replace(/^[\s.]+/, '').trim();
   if (!p) return '';
   const hits = CASE_TYPE_CATALOG
     .filter(tp => { const n = expNorm(tp); return n.startsWith(p) && n.length > p.length; })
     .sort((a, b) => a.length - b.length);
-  if (!hits.length) return '';
-  if (hits.length > 1) dlLog('case-type expansion: multiple catalog hits for', rest, '→ using', hits[0]);
-  return (lead ? lead + ' ' : '') + hits[0];
+  if (!hits.length) { dlLog('case-type expansion: no catalog hit for', m[2]); return ''; }
+  if (hits.length > 1) dlLog('case-type expansion: multiple catalog hits for', m[2], '→ using', hits[0]);
+  return lead + ' ' + hits[0] + (tail ? ' ' + tail : '');
 }
 
 // A title attribute on or near the element that carries the displayed text in
 // full — eCourt uses title attributes for full text elsewhere (the Next
 // header), so check before anything costlier.
-function titleAttrExpansion(el, displayedCore) {
-  const prefix = expNorm((displayedCore || '').replace(TRUNC_TEXT_RE, ''));
-  if (!prefix) return '';
+function titleAttrExpansion(el, truncatedCore) {
+  if (!expNorm(truncatedCore)) return '';
   const pool = [el];
   for (let n = el.parentElement, i = 0; n && i < 3; n = n.parentElement, i++) pool.push(n);
   try { for (const d of el.querySelectorAll('[title]')) pool.push(d); } catch (_) {}
   for (const n of pool) {
     const t = ((n.getAttribute && n.getAttribute('title')) || '').replace(/\s+/g, ' ').trim();
     if (!t || t === 'Click to expand') continue;
-    const nt = expNorm(t);
-    if (nt.startsWith(prefix) && nt.length > prefix.length) return t;
+    if (extendsTruncated(t, truncatedCore)) return t;
   }
   return '';
 }
@@ -4054,7 +4085,17 @@ async function reconstructCaseNameFromParties() {
 }
 
 function resolveFullCaseTypeText(el, displayed) {
-  return titleAttrExpansion(el, displayed) || expandCaseTypeText(displayed);
+  const t = titleAttrExpansion(el, displayed);
+  if (t) return t;
+  // A title attribute may carry the full TYPE without the rest of the line —
+  // match it against the truncated head alone and re-attach the tail.
+  const m = (displayed || '').match(/^([^]*?)(?:\.{3,}|…)([^]*)$/);
+  if (m) {
+    const tail = (m[2] || '').replace(/^[\s.]+/, '').trim();
+    const t2 = titleAttrExpansion(el, m[1].trim() + '...');
+    if (t2) return t2 + (tail ? ' ' + tail : '');
+  }
+  return expandCaseTypeText(displayed);
 }
 
 async function resolveFullCaseNameText(el, displayed) {
@@ -4069,19 +4110,18 @@ async function resolveFullCaseNameText(el, displayed) {
     const i = displayed.indexOf(cn);
     if (i !== -1) name = displayed.slice(i + cn.length).trim().replace(/^[,;:\-\s]+/, '');
   }
-  const core = name.replace(TRUNC_TEXT_RE, '').trim();
-  if (!core) return '';
+  if (!expNorm(name)) return '';
   const swapIn = full => (name && displayed.indexOf(name) !== -1) ? displayed.replace(name, full) : full;
-  const t = titleAttrExpansion(el, core);
+  const t = titleAttrExpansion(el, name);
   if (t) return swapIn(t);
   const recon = await reconstructCaseNameFromParties();
-  // Used only when the truncated header is a PREFIX of the rebuilt title — a
+  // Used only when the rebuilt title genuinely fills the truncated header in
+  // — the segments around the ellipsis (a truncated PLAINTIFF leaves it
+  // mid-text: "GLOBEX HOLDING COMPA... vs TAYLOR ROE") must all line up. A
   // mismatch means the parties don't line up with the caption, and a wrong
   // "expansion" is worse than none.
-  if (recon && expNorm(recon).startsWith(expNorm(core)) && expNorm(recon) !== expNorm(core)) {
-    return swapIn(recon);
-  }
-  if (recon) dlLog('case-name expansion: parties rebuild does not extend the header —', { header: core, rebuilt: recon });
+  if (recon && extendsTruncated(recon, name)) return swapIn(recon);
+  if (recon) dlLog('case-name expansion: parties rebuild does not fill the header in —', { header: name, rebuilt: recon });
   return '';
 }
 
@@ -4109,6 +4149,11 @@ function findCaseNameEl() {
   return best;
 }
 
+// Expand/collapse. Expanding swaps the full text in place (so any text after
+// it in the line reflows right by exactly the added width) and lifts CSS
+// clipping; collapsing restores the exact original text and inline styles.
+// When nothing can be resolved AND nothing is CSS-clipped, the element stays
+// collapsed — so a later click retries instead of toggling a no-op state.
 async function toggleHeaderExpansion(el, resolver) {
   if (el.getAttribute('data-lac-exp-open') === '1') {
     const orig = el.getAttribute('data-lac-exp-text');
@@ -4116,7 +4161,7 @@ async function toggleHeaderExpansion(el, resolver) {
     el.style.cssText = el.getAttribute('data-lac-exp-css') || '';
     el.style.setProperty('cursor', 'pointer');
     el.setAttribute('data-lac-exp-open', '0');
-    return;
+    return false;
   }
   const displayed = (el.textContent || '').replace(/\s+/g, ' ').trim();
   let full = el.getAttribute('data-lac-exp-full') || '';
@@ -4124,12 +4169,14 @@ async function toggleHeaderExpansion(el, resolver) {
     try { full = (await resolver(el, displayed)) || ''; } catch (_) { full = ''; }
     if (full) el.setAttribute('data-lac-exp-full', full);
   }
+  const clipped = isCssClipped(el);
+  if (!full && !clipped) {
+    if (TRUNC_ANY_RE.test(displayed)) dlLog('no full text found for truncated header text:', displayed);
+    return false;
+  }
   if (el.getAttribute('data-lac-exp-text') == null) el.setAttribute('data-lac-exp-text', el.textContent);
   if (el.getAttribute('data-lac-exp-css') == null) el.setAttribute('data-lac-exp-css', el.style.cssText || '');
   if (full && full !== displayed) el.textContent = full;
-  else if (!full && TRUNC_TEXT_RE.test(displayed)) {
-    dlLog('no full text found for truncated header text:', displayed);
-  }
   // Lift any CSS clipping too, so a style-truncated header shows everything.
   el.style.setProperty('white-space', 'normal', 'important');
   el.style.setProperty('overflow', 'visible', 'important');
@@ -4138,17 +4185,18 @@ async function toggleHeaderExpansion(el, resolver) {
   el.style.setProperty('height', 'auto', 'important');
   el.style.setProperty('cursor', 'pointer', 'important');
   el.setAttribute('data-lac-exp-open', '1');
+  return true;
 }
 
-// Bind the click toggle. Returns true when this element needs no further
-// visits (bound, or nothing about it is cut off); false = try again later
-// (e.g. the header hasn't laid out yet, so clipping can't be measured).
+// Bind the click toggle. Returns 'bound' when the element is truncated and
+// now clickable, 'done' when nothing about it is cut off, and 'retry' when
+// the header hasn't laid out yet (so clipping can't be measured).
 function bindHeaderExpander(el, resolver) {
-  if (!el) return false;
-  if (el.getAttribute('data-lac-exp-bound') === '1') return true;
-  if (el.clientWidth === 0 && el.offsetParent === null) return false; // not laid out yet
+  if (!el) return 'retry';
+  if (el.getAttribute('data-lac-exp-bound') === '1') return 'bound';
+  if (el.clientWidth === 0 && el.offsetParent === null) return 'retry'; // not laid out yet
   const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-  if (!TRUNC_TEXT_RE.test(t) && !isCssClipped(el)) return true; // nothing cut off
+  if (!TRUNC_ANY_RE.test(t) && !isCssClipped(el)) return 'done'; // nothing cut off
   el.setAttribute('data-lac-exp-bound', '1');
   el.style.setProperty('cursor', 'pointer');
   if (!el.getAttribute('title')) el.setAttribute('title', 'Click to expand');
@@ -4156,22 +4204,36 @@ function bindHeaderExpander(el, resolver) {
     try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
     toggleHeaderExpansion(el, resolver);
   });
-  return true;
+  return 'bound';
 }
 
 // Idempotent; retried from the render poll and the header observer until both
 // targets are handled (or the attempt budget runs out on pages without them).
-const __expandersDone = { name: false, type: false };
+// Defaults: the CASE NAME auto-expands once its full text resolves (retrying
+// while the parties fetch warms up); the CASE TYPE stays collapsed until
+// clicked. Auto-expansion runs once — collapsing it by hand is respected.
+const __exp = { nameDone: false, typeDone: false, nameEl: null, nameAutoDone: false, nameAutoBusy: false };
 let __expanderTries = 0;
 function initHeaderExpanders() {
-  if ((__expandersDone.name && __expandersDone.type) || __expanderTries > 60) return;
+  if (__expanderTries > 60) return;
+  if (__exp.nameDone && __exp.typeDone && (__exp.nameAutoDone || !__exp.nameEl)) return;
   __expanderTries++;
   try {
-    if (!__expandersDone.type) {
-      __expandersDone.type = bindHeaderExpander(findCaseTypeEl(document), resolveFullCaseTypeText);
+    if (!__exp.typeDone) {
+      if (bindHeaderExpander(findCaseTypeEl(document), resolveFullCaseTypeText) !== 'retry') __exp.typeDone = true;
     }
-    if (!__expandersDone.name) {
-      __expandersDone.name = bindHeaderExpander(findCaseNameEl(), resolveFullCaseNameText);
+    if (!__exp.nameDone) {
+      const el = findCaseNameEl();
+      const st = bindHeaderExpander(el, resolveFullCaseNameText);
+      if (st !== 'retry') { __exp.nameDone = true; __exp.nameEl = st === 'bound' ? el : null; }
+    }
+    if (__exp.nameEl && !__exp.nameAutoDone && !__exp.nameAutoBusy
+        && __exp.nameEl.getAttribute('data-lac-exp-open') !== '1') {
+      __exp.nameAutoBusy = true;
+      toggleHeaderExpansion(__exp.nameEl, resolveFullCaseNameText)
+        .then(opened => { if (opened) __exp.nameAutoDone = true; })
+        .catch(() => {})
+        .then(() => { __exp.nameAutoBusy = false; });
     }
   } catch (_) {}
 }

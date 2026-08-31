@@ -1816,7 +1816,9 @@ function findCaseTypeEl(root) {
     let best = null, bestLen = Infinity;
     for (const el of scope.querySelectorAll('span, div, td, p, li, b, strong, h1, h2, h3, h4')) {
       const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!t || t.length > 200 || !CASE_TYPE_LEAD_RE.test(t)) continue;
+      // Generous cap: the type line's element can carry more header text after
+      // the truncated designation (filed date, status, …).
+      if (!t || t.length > 400 || !CASE_TYPE_LEAD_RE.test(t)) continue;
       if (t.length < bestLen) { best = el; bestLen = t.length; }
     }
     if (best) return best;
