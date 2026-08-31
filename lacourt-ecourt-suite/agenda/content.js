@@ -198,6 +198,88 @@ function floatGreenRowsToTop() {
   else parent.insertBefore(frag, parent.firstChild);
 }
 
+// Within ONE row's Hearing/Documents cell, float the green (will-be-copied)
+// hearing links above the excluded ones — eCourt lists a case's hearings in its
+// own order, so a Case Management Conference can sit above the MSJ that's
+// actually being worked up. Stable partition, like floatGreenRowsToTop, but on
+// the per-hearing lines inside the cell.
+//
+// The markup varies (hearing links separated by <br>, or each on its own
+// element line), so the cell's child nodes are grouped into one run per hearing
+// link — a run starts at the node carrying the next link and ends at the <br>
+// after it — and the runs are reordered whole, so bullets and line breaks
+// travel with their hearing.
+function floatGreenHearingsInCell(cell) {
+  const linkGreen = new Map();
+  for (const a of cell.querySelectorAll('a')) {
+    const b = a.querySelector('b');
+    const txt = stripTrailingParenNumber(((b || a).textContent || '').replace(/\s+/g, ' ').trim());
+    if (txt) linkGreen.set(a, !isExcluded(txt));
+  }
+  const links = Array.from(linkGreen.keys());
+  if (links.length < 2) return;                      // one hearing — nothing to order
+  if (links.every(a => linkGreen.get(a))) return;    // all green — order already fine
+  if (!links.some(a => linkGreen.get(a))) return;    // none green — nothing to float
+
+  // Deepest ancestor containing every hearing link; its children get reordered.
+  let container = links[0].parentNode;
+  while (container && container !== cell && !links.every(a => container.contains(a))) {
+    container = container.parentNode;
+  }
+  if (!container) return;
+
+  const holdsLink = n => n.nodeType === 1 && links.some(a => n === a || n.contains(a));
+  const runs = [];
+  let cur = null;
+  for (const n of Array.from(container.childNodes)) {
+    if (holdsLink(n) && cur && cur.hasLink) { runs.push(cur); cur = null; }
+    if (!cur) cur = { nodes: [], hasLink: false };
+    cur.nodes.push(n);
+    if (holdsLink(n)) cur.hasLink = true;
+    if (n.nodeType === 1 && n.tagName === 'BR' && cur.hasLink) { runs.push(cur); cur = null; }
+  }
+  if (cur) runs.push(cur);
+  if (runs.length < 2) return; // couldn't split into per-hearing lines — leave as-is
+
+  const runGreen = r => links.some(a => linkGreen.get(a)
+    && r.nodes.some(n => n === a || (n.nodeType === 1 && n.contains(a))));
+  const greens = runs.filter(runGreen);
+  const target = greens.concat(runs.filter(r => !greens.includes(r)));
+  let same = true;
+  for (let i = 0; i < runs.length; i++) { if (runs[i] !== target[i]) { same = false; break; } }
+  if (same) return; // already green-first — don't churn the DOM
+
+  // Pull each run's trailing <br> separator off, reorder, then re-seat the
+  // separators between the reordered runs so a floated last line doesn't glue
+  // onto the one after it.
+  const spares = [];
+  for (const r of target) {
+    const last = r.nodes[r.nodes.length - 1];
+    if (last && last.nodeType === 1 && last.tagName === 'BR') spares.push(r.nodes.pop());
+  }
+  const sepCount = spares.length;
+  const frag = document.createDocumentFragment();
+  target.forEach((r, i) => {
+    for (const n of r.nodes) frag.appendChild(n);
+    if (sepCount > 0 && (i < target.length - 1 || sepCount >= target.length)) {
+      frag.appendChild(spares.shift() || document.createElement('br'));
+    }
+  });
+  for (const br of spares) br.remove(); // a separator the reorder no longer needs
+  container.appendChild(frag);
+}
+
+function floatGreenHearingsWithinRows() {
+  const table = document.getElementById('day-table');
+  if (!table) return;
+  for (const row of table.querySelectorAll('tr.js-row')) {
+    if (row.style.display === 'none') continue;
+    const cells = row.querySelectorAll('td');
+    if (cells.length < 7) continue;
+    try { floatGreenHearingsInCell(cells[5]); } catch (_) {}
+  }
+}
+
 /* -------------------------------------------------
    COPY BEHAVIOR
 
@@ -916,6 +998,7 @@ function applyAgendaChanges(swaps) {
     try { stripHearingLabelNumbers(); } catch (_) {}
     try { applyHearingDocsSort(); } catch (_) {}
     try { colorizeAgendaRows(); } catch (_) {}
+    try { floatGreenHearingsWithinRows(); } catch (_) {}
     try { floatGreenRowsToTop(); } catch (_) {}
   });
 }
