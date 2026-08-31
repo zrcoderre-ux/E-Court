@@ -1640,6 +1640,21 @@ const DL = (function () {
   function msjOpp(h)   { return prevCourtDay(addCAL(h, -20)); }
   function stdReply(h) { return prevCourtDay(addCD(h, -5));  }
   function msjReply(h) { return prevCourtDay(addCAL(h, -11)); }
+  // Unlawful detainer MSJ — CCP § 1170.7: made at any time after the answer, on
+  // FIVE days' notice; CRC 3.1351(a) has that notice given in compliance with
+  // §§ 1013 and 1170.7, so the ordinary service extensions ride on the 5 days.
+  function udMsjMotion(hearing, svc) { let d = addCAL(hearing, -5);
+    if (svc === 'electronic') d = addCD(d, -2); else if (svc === 'mail_ca') d = addCAL(d, -5);
+    else if (svc === 'mail_state') d = addCAL(d, -10); else if (svc === 'mail_conf') d = addCAL(d, -12);
+    else if (svc === 'mail_intl') d = addCAL(d, -20); else if (svc === 'fax') d = addCAL(d, -2);
+    return prevCourtDay(d); }
+  // CRC 3.1351(b)-(c): opposition may be made orally at the hearing; a WRITTEN
+  // opposition to be considered in advance is filed and served on or before the
+  // court day before the hearing.
+  function udMsjOpp(h)   { return prevCourtDay(addCAL(h, -1)); }
+  // No advance written reply schedule — the reply may be made orally at the
+  // hearing (CRC 3.1351(b)), so the slot dates to the hearing day itself.
+  function udMsjReply(h) { return prevCourtDay(h); }
 
   /* A motion's title routinely names ANOTHER motion it merely relates to: a
      motion to seal is captioned "Motion to Seal the Exhibits of CCTV Video in
@@ -1676,7 +1691,8 @@ const DL = (function () {
     if (/attorney'?s?\s+fees|\battorney\s+fee\b|\bfees\s+and\s+costs\b|\b3\.1702\b/.test(s)) return 'fees';
     if (/\b(?:strike|tax|taxing)\s+(?:of\s+)?costs\b|\bcosts\b.*\b(?:strike|tax)\b|memorandum\s+of\s+costs|\b3\.1700\b/.test(s)) return 'costs';
     return 'standard'; }
-  return { classifyMotion, stripAncillaryMotionReference, stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply, isCourtDay };
+  return { classifyMotion, stripAncillaryMotionReference, stdMotion, msjMotion, stdOpp, msjOpp, stdReply, msjReply,
+    udMsjMotion, udMsjOpp, udMsjReply, isCourtDay };
 })();
 
 // The title-trimming half of classifyMotion, shared with the case page so the
@@ -1759,6 +1775,65 @@ const OSC_DEFAULT_JUDGMENT_RE = /\border\s+to\s+show\s+cause\s+re:?\s+failure\s+
 function isOscDefaultJudgment(hearingType) {
   if (!hearingType) return false;
   return OSC_DEFAULT_JUDGMENT_RE.test(hearingType);
+}
+
+/* ------------------------------------------------------------------ */
+/* Case-type designation ("Civil Unlimited Unlawful Detainer/…")       */
+/* ------------------------------------------------------------------ */
+//
+// eCourt prints the case-type designation under the case number, e.g.
+// "Civil Unlimited Unlawful Detainer/Commercial ..." (routinely truncated).
+// The lead is what makes it safe to detect: no filing title or hearing name
+// starts "Civil Unlimited"/"Civil Limited", so an anchored test never reads a
+// document that merely mentions a case type as the case's own designation.
+const CASE_TYPE_LEAD_RE = /^\s*civil\s+(?:unlimited|limited)\b/i;
+// The designation and its type read together (bounded, so a page-wide text
+// blob that happens to contain both far apart doesn't match).
+const UD_CASE_TYPE_RE = /\bcivil\s+(?:unlimited|limited)\b[\s\S]{0,80}?\bunlawful\s+detainer\b/i;
+
+function isUnlawfulDetainerTypeText(text) {
+  return UD_CASE_TYPE_RE.test(text || '');
+}
+
+// The element carrying the case-type line: the SMALLEST element whose text is
+// the designation, searched in the case-header blocks first (the designation
+// sits under the case number, near the [class*="case"] element the case name
+// lives in) and the whole document only as a fallback. Truncation-tolerant —
+// the truncated line still starts with the lead.
+function findCaseTypeEl(root) {
+  root = root || (typeof document !== 'undefined' ? document : null);
+  if (!root || !root.querySelectorAll) return null;
+  const scopes = [];
+  const seen = new Set();
+  for (const el of root.querySelectorAll('[class*="case"]')) {
+    for (let n = el, up = 0; n && n.querySelectorAll && up < 3; n = n.parentElement, up++) {
+      if (!seen.has(n)) { seen.add(n); scopes.push(n); }
+    }
+  }
+  const whole = root.body || root;
+  if (whole && !seen.has(whole)) scopes.push(whole);
+  for (const scope of scopes) {
+    let best = null, bestLen = Infinity;
+    for (const el of scope.querySelectorAll('span, div, td, p, li, b, strong, h1, h2, h3, h4')) {
+      const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+      if (!t || t.length > 200 || !CASE_TYPE_LEAD_RE.test(t)) continue;
+      if (t.length < bestLen) { best = el; bestLen = t.length; }
+    }
+    if (best) return best;
+  }
+  return null;
+}
+
+function findCaseTypeLine(root) {
+  const el = findCaseTypeEl(root);
+  return el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+}
+
+// Is the case an unlawful detainer, per the designation on the page. The
+// truncated line still carries "Unlawful Detainer", so this works whether or
+// not the designation is cut off.
+function isUnlawfulDetainerCase(root) {
+  return isUnlawfulDetainerTypeText(findCaseTypeLine(root));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1869,16 +1944,24 @@ function computeDueDatesFor(eff) {
   }
   const hearing = parseHearingDateTime(eff.hearingDate);
   if (!hearing) { dlLog('no hearing date parsed for motion:', motionType); return null; }
+  // In an unlawful detainer (eff.ud, from the case-type designation) summary
+  // judgment is not on § 437c's 81/20/11-day schedule: CCP § 1170.7 gives it
+  // five days' notice, and CRC 3.1351 puts the written opposition on the court
+  // day before the hearing (or orally at it). Only the MSJ changes — the
+  // parties' other motions keep their ordinary schedules.
+  const ud = cat === 'msj' && !!eff.ud;
+  const motionFn = svc => cat !== 'msj' ? D.stdMotion(hearing, svc)
+    : (ud ? D.udMsjMotion(hearing, svc) : D.msjMotion(hearing, svc));
   return Object.assign({
-    skip: false, motionType, cat, hearingWhen: hearing,
-    motionDue: cat === 'msj' ? D.msjMotion(hearing, 'electronic') : D.stdMotion(hearing, 'electronic'),
+    skip: false, motionType, cat, ud, hearingWhen: hearing,
+    motionDue: motionFn('electronic'),
     // Same deadline assuming PERSONAL service, which carries no notice extension
     // (electronic adds 2 court days). A motion filed after the electronic
     // deadline but on/before this one would still be timely if personally served
     // — the widget flags that in yellow so the proof of service can be checked.
-    motionDuePersonal: cat === 'msj' ? D.msjMotion(hearing, 'personal') : D.stdMotion(hearing, 'personal'),
-    oppDue:    cat === 'msj' ? D.msjOpp(hearing) : D.stdOpp(hearing),
-    replyDue:  cat === 'msj' ? D.msjReply(hearing) : D.stdReply(hearing),
+    motionDuePersonal: motionFn('personal'),
+    oppDue:    cat === 'msj' ? (ud ? D.udMsjOpp(hearing) : D.msjOpp(hearing)) : D.stdOpp(hearing),
+    replyDue:  cat === 'msj' ? (ud ? D.udMsjReply(hearing) : D.msjReply(hearing)) : D.stdReply(hearing),
   }, tag);
 }
 
@@ -2032,6 +2115,14 @@ function statusHtml(c, filed, osc) {
     : `<span style="color:${motionColor}"${motionTitle}>Motion Due ${fmtShortDate(c.motionDue)}</span>`;
 
   const parts = [motionSpan];
+  // The UD schedule looks nothing like § 437c's, so say which rules the dates
+  // come from — otherwise a 5-days-out MSJ deadline reads like a bug.
+  if (c.ud) {
+    parts.unshift('<span style="color:' + DL_NEUTRAL + '" title="'
+      + dlEsc('Unlawful detainer: the MSJ is heard on 5 days’ notice (CCP 1170.7), the written opposition is due '
+        + 'the court day before the hearing, and the opposition or reply may instead be made orally at the hearing (CRC 3.1351).')
+      + '">UD §1170.7:</span>');
+  }
   // A memorandum of costs filed after its own deadline is the fact worth having
   // in front of you on a motion to strike or tax it — the memo may be untimely
   // on its face. Shown ONLY when it is late; a timely memo is the ordinary case
@@ -2434,6 +2525,7 @@ return {
   findAppealTimeTrigger, computeFeeMotionStatus,
   // Hearing / document classification
   isOscDefaultJudgment, isWorkableHearing, groupWorkableHearings, hearingIdentityKey, isHearingExcluded, excludedTermMatches,
+  isUnlawfulDetainerCase, isUnlawfulDetainerTypeText, findCaseTypeEl, findCaseTypeLine,
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,
   isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
   docWordOverlap, docReferencesMotion, postJudgmentAnchor, hasAccompanyingProofOfService, docLinksToMotion, docNameIsGeneric, docPartyNames, docSharesParty,

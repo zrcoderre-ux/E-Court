@@ -40,6 +40,7 @@
     parsePartiesTable, parseFutureHearings, parseHearingDateTime,
     computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
     isOscDefaultJudgment, isWorkableHearing, groupWorkableHearings, loadExcludedTerms,
+    isUnlawfulDetainerCase, findCaseTypeEl,
     isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
     docWordOverlap, docReferencesMotion, docNameIsGeneric, postJudgmentAnchor, findAppealTimeTrigger,
     docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
@@ -2707,6 +2708,7 @@ async function buildDeadlinePayload() {
     hearingDate: (hearing && hearing.hearingDate) || '',
     hearingType: (hearing && hearing.hearingType) || '',
     caseNumber: parseCaseNumber() || '',
+    unlawfulDetainer: pageIsUnlawfulDetainer(),
     noticeOfEntryDate: trig.noticeOfEntryDate,
     noticeOfEntryDoc: trig.noticeOfEntryDoc,
     noticeOfEntryUnverified: trig.noticeOfEntryUnverified,
@@ -3298,7 +3300,19 @@ function selectedHearingEffs() {
     raw: it.raw || '',
     native: !!it.native,
     lookedAhead: i === 0 && !nativeShows,
+    ud: pageIsUnlawfulDetainer(),
   }));
+}
+
+// Whether this case's type designation reads unlawful detainer — an MSJ then
+// runs on CCP § 1170.7 / CRC 3.1351 rather than § 437c. A positive answer is
+// cached; a negative one is re-checked (the header can render after our first
+// look), and each check is a bounded scan of the case-header blocks.
+let __udPageCached = false;
+function pageIsUnlawfulDetainer() {
+  if (__udPageCached) return true;
+  try { if (isUnlawfulDetainerCase(document)) { __udPageCached = true; dlLog('unlawful detainer case detected'); } } catch (_) {}
+  return __udPageCached;
 }
 
 /* ------------------------------------------------------------------ */
@@ -3846,7 +3860,7 @@ function renderNextHeaderDeadlines() {
       __dlSlots = [makeSlot({
         motionType: snap.motionType, hearingType: snap.hearingType,
         hearingDate: snap.hearingDate, timeText: snap.timeText, raw: snap.raw,
-        native: true, lookedAhead: false,
+        native: true, lookedAhead: false, ud: pageIsUnlawfulDetainer(),
       })];
       injectNextDeadlines();
       __dlSlots.forEach(s => { fetchSlotFilings(s); });
