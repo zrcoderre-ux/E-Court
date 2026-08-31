@@ -1048,11 +1048,25 @@ function parseDocRows(root) {
        the § 585(d) declaration, a prove-up declaration — which a plaintiff may
        file without any further CIV-100.
 
-   Returns { base, proveUp }: `base` is the most recent entered request (null
-   when the default was never entered — a separate fact the OSC status reports
-   on its own), `proveUp` is the earliest judgment paper on or after it, and
-   `proveUp.when` is the floor for the rest of the packet. Null when the docket
-   shows neither. */
+   Once the court has already taken the OSC up — a Minute Order for an Order to
+   Show Cause Re: Failure to Prosecute Default Judgment (or a Default Prove-Up
+   Hearing, same flow) is on the docket — the packet is gated to papers filed
+   after the FIRST such minute order. The OSC exists because judgment was never
+   entered despite whatever was filed before it, so a CIV-100 [Court Judgment]
+   or judgment papers predating the court's first look are the stale attempt
+   the OSC is about, not the packet answering it; reporting them said
+   "✓ Default Packet" over a docket the court had already found wanting. With
+   no such minute order on the docket (the OSC's first hearing) nothing is
+   gated. The earliest minute order is the floor, not the latest, so papers the
+   court has seen at a continuance still open for review at the next hearing.
+
+   Returns { base, proveUp, oscFloor }: `base` is the most recent entered
+   request (null when the default was never entered — a separate fact the OSC
+   status reports on its own), `proveUp` is the earliest judgment paper on or
+   after it that clears the minute-order gate, `proveUp.when` is the floor for
+   the rest of the packet, and `oscFloor` is the gate date (null when no OSC
+   minute order is on the docket). Null when the docket shows neither base nor
+   prove-up. */
 const DEFAULT_REQUEST_RE = /request for entry of default/i;
 
 // eCourt names the relief a CIV-100 asked for in brackets. A request for a
@@ -1065,6 +1079,10 @@ const JUDGMENT_REQUEST_RE = /\b(?:court|clerk)'?s?\s+judgment\b/i;
 function isDefaultJudgmentPacketDoc(name) {
   const n = (name || '').trim();
   if (!n) return false;
+  // A court minute order is never the plaintiff's paper — "Minute Order
+  // ( (Default Prove Up Hearing) )" carries the prove-up phrase in its
+  // hearing parenthetical without being part of the packet.
+  if (/^\s*minute\s+order\b/i.test(n)) return false;
   if (DEFAULT_REQUEST_RE.test(n)) return JUDGMENT_REQUEST_RE.test(n);
   if (/\bdefault\s+prove[-\s]?up\b/i.test(n)) return true;
   // The proposed judgment itself (JUD-100), however eCourt qualifies it.
@@ -1084,6 +1102,16 @@ function findDefaultProveUp(docs) {
     if (!/\bentered\b/i.test(d.result || '')) continue;
     if (!base || d.when > base.when) base = d;
   }
+  // The minute-order gate (see the block comment above): the date of the FIRST
+  // Minute Order memorializing a hearing of this OSC. Same-day papers stay in —
+  // a packet filed the day of the hearing answers it, and midnight-normalized
+  // dates can't order the two within the day anyway.
+  let oscFloor = null;
+  for (const d of list) {
+    if (!/^\s*minute\s+order\b/i.test(d.name || '')) continue;
+    if (!OSC_DEFAULT_JUDGMENT_RE.test(d.name || '')) continue;
+    if (!oscFloor || d.when < oscFloor) oscFloor = d.when;
+  }
   // proveUp = the earliest judgment paper. A plain second CIV-100 counts by
   // POSITION (filed after the default was entered, so it can only be the
   // judgment request); everything else counts by what its title says it is, so
@@ -1092,12 +1120,13 @@ function findDefaultProveUp(docs) {
   for (const d of list) {
     if (!d.openUrl) continue;
     if (base && d.when < base.when) continue;   // predates the default it proves up
+    if (oscFloor && d.when < oscFloor) continue; // predates the court's first look — the stale attempt
     const secondRequest = !!base && d.docId !== base.docId && DEFAULT_REQUEST_RE.test(d.name || '');
     if (!secondRequest && !isDefaultJudgmentPacketDoc(d.name)) continue;
     if (!proveUp || d.when < proveUp.when) proveUp = d;
   }
   if (!base && !proveUp) return null;
-  return { base, proveUp };
+  return { base, proveUp, oscFloor };
 }
 
 // POSTs the eCourt tree-table pager to fetch a page of documents at `offset`,
@@ -2327,6 +2356,7 @@ async function computeOscStatus(ctx) {
       hasPacket,
       base: pu && pu.base && { name: pu.base.name, when: fmtShortDate(pu.base.when), result: pu.base.result },
       proveUp: pu && pu.proveUp && { name: pu.proveUp.name, when: fmtShortDate(pu.proveUp.when) },
+      oscFloor: (pu && pu.oscFloor && fmtShortDate(pu.oscFloor)) || null,
     });
 
     const notAccounted = [];
