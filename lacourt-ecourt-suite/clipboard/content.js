@@ -3363,6 +3363,17 @@ function pageCaseCtx() {
   return __pageCaseCtx;
 }
 
+// The slot the answer belongs to RIGHT NOW. applySelectedHearings rebuilds
+// __dlSlots while an early fetch can still be in flight, copying fetchStarted
+// into the fresh slot — so a completion that writes to its captured slot
+// object lands on a discarded one, the widget never recolours, and the cache
+// stores no filing status (the "colours only appear after switching tabs"
+// bug). Re-locate by key at completion instead.
+function liveSlotFor(slot) {
+  const key = slotKey(slot.eff);
+  return __dlSlots.find(s => slotKey(s.eff) === key) || slot;
+}
+
 // Fetch the case Documents once and recolour by whether each paper was filed on
 // time. Best-effort — the dates are already shown regardless.
 async function fetchSlotFilings(slot) {
@@ -3372,9 +3383,19 @@ async function fetchSlotFilings(slot) {
   // whether the moving papers are on file is the whole of what they report.
   if (slot.computed.skip && !slot.computed.motionOnly) return;
   slot.fetchStarted = true;
-  slot.filed = await computeFiledStatus(pageCaseCtx(), slot.computed);
+  let filed = null;
+  try {
+    filed = await computeFiledStatus(pageCaseCtx(), slot.computed);
+  } catch (e) { dlLog('filed-status fetch failed:', (e && e.message) || e); return; }
+  const live = liveSlotFor(slot);
+  live.filed = filed;
+  live.fetchStarted = true;
+  dlLog('filed status resolved:', slot.eff.hearingType, 'known=', !!(filed && filed.filedKnown));
   dlCacheWrite();        // persist so the next sub-tab load paints final colours
-  injectNextDeadlines(); // recolour
+  // Recolour now, and once more a beat later — a repaint that lands while
+  // eCourt is mid-re-render can be wiped before it is seen.
+  try { injectNextDeadlines(); } catch (e) { dlLog('recolour failed:', (e && e.message) || e); }
+  setTimeout(() => { try { injectNextDeadlines(); } catch (_) {} }, 500);
 }
 
 // Idempotent: injects the widget if missing, else refreshes its colours. Re-finds
@@ -3768,16 +3789,25 @@ function oscCacheSet(key, val) {
 async function fetchSlotOsc(slot) {
   if (!slot || slot.fetchStarted) return;
   slot.fetchStarted = true;
+  const apply = osc => {
+    // Same rebuild race as fetchSlotFilings: land the answer on the slot the
+    // widget is painting from now, not the one captured before the rebuild.
+    const live = liveSlotFor(slot);
+    live.osc = osc;
+    live.fetchStarted = true;
+    try { injectNextDeadlines(); } catch (e) { dlLog('OSC recolour failed:', (e && e.message) || e); }
+    setTimeout(() => { try { injectNextDeadlines(); } catch (_) {} }, 500);
+  };
   const key = oscCacheKey();
   if (key) {
     const cached = await oscCacheGet(key);
-    if (cached && cached.text) { slot.osc = cached; injectNextDeadlines(); return; }
+    if (cached && cached.text) { apply(cached); return; }
   }
-  slot.osc = await computeOscStatus(pageCaseCtx());
-  injectNextDeadlines();
+  const osc = await computeOscStatus(pageCaseCtx());
+  apply(osc);
   // Cache real answers only — not transient failures, which should retry.
-  if (key && slot.osc && slot.osc.text && slot.osc.text !== 'Default status unavailable') {
-    oscCacheSet(key, slot.osc);
+  if (key && osc && osc.text && osc.text !== 'Default status unavailable') {
+    oscCacheSet(key, osc);
   }
 }
 
@@ -4040,18 +4070,23 @@ function extendsTruncated(full, truncated) {
 // text AFTER the ellipsis — the rest of the header line — is kept, so the
 // expansion pushes it along rather than swallowing it.
 function expandCaseTypeText(displayed) {
-  const m = (displayed || '').match(/^(\s*civil\s+(?:unlimited|limited)\b)\s*([^]*?)\s*(?:\.{3,}|…)([^]*)$/i);
-  if (!m) return ''; // no lead, or nothing truncated — nothing to expand
-  const lead = m[1].replace(/\s+/g, ' ').trim();
-  const p = expNorm(m[2]);
-  const tail = (m[3] || '').replace(/^[\s.]+/, '').trim();
+  // pre = anything before the designation (a "Case Type:" label…), lead = the
+  // "Civil Unlimited/Limited" phrase, then the truncated type up to the FIRST
+  // ellipsis, then the rest of the line — kept, so the expansion pushes it
+  // along rather than swallowing it.
+  const m = (displayed || '').match(/^([^]*?)\b(civil\s+(?:unlimited|limited)\b)\s*([^]*?)\s*(?:\.{3,}|…)([^]*)$/i);
+  if (!m) return ''; // no designation, or nothing truncated — nothing to expand
+  const pre = m[1].replace(/\s+/g, ' ').trim();
+  const lead = m[2].replace(/\s+/g, ' ').trim();
+  const p = expNorm(m[3]);
+  const tail = (m[4] || '').replace(/^[\s.]+/, '').trim();
   if (!p) return '';
   const hits = CASE_TYPE_CATALOG
     .filter(tp => { const n = expNorm(tp); return n.startsWith(p) && n.length > p.length; })
     .sort((a, b) => a.length - b.length);
-  if (!hits.length) { dlLog('case-type expansion: no catalog hit for', m[2]); return ''; }
-  if (hits.length > 1) dlLog('case-type expansion: multiple catalog hits for', m[2], '→ using', hits[0]);
-  return lead + ' ' + hits[0] + (tail ? ' ' + tail : '');
+  if (!hits.length) { dlLog('case-type expansion: no catalog hit for', m[3]); return ''; }
+  if (hits.length > 1) dlLog('case-type expansion: multiple catalog hits for', m[3], '→ using', hits[0]);
+  return (pre ? pre + ' ' : '') + lead + ' ' + hits[0] + (tail ? ' ' + tail : '');
 }
 
 // A title attribute on or near the element that carries the displayed text in
@@ -4125,28 +4160,50 @@ async function resolveFullCaseNameText(el, displayed) {
   return '';
 }
 
-// The header element carrying the (truncated) case name: the smallest element
-// in a [class*="case"] block whose text is the case number followed by the
-// name. An element that also swallows the case-type line ("Civil Unlimited
-// …") is a container, not the name — expanding it would rewrite the type
-// line's element out from under its own toggle, so those are skipped.
+// The header element carrying the (truncated) case name. Two shapes are
+// searched, smallest element wins, case-header blocks before the whole page:
+//   1. the case number followed by the name in one text run;
+//   2. the caption on its own — the only header text shaped "SOMEONE vs
+//      SOMEONE" (the number lives in a separate element).
+// An element that also swallows the case-type line ("Civil Unlimited …") is a
+// container, not the name — expanding it would rewrite the type line's
+// element out from under its own toggle, so those are skipped.
 function findCaseNameEl() {
   const cn = parseCaseNumber(document);
-  if (!cn) return null;
-  let best = null, bestLen = Infinity;
+  const scopes = [];
+  const seen = new Set();
   for (const box of document.querySelectorAll('[class*="case"]')) {
-    const els = [box];
-    try { els.push.apply(els, box.querySelectorAll('span, div, b, strong, h1, h2, h3, a, td, p')); } catch (_) {}
-    for (const el of els) {
-      const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!t || t.length > 300) continue;
-      const i = t.indexOf(cn);
-      if (i === -1 || !t.slice(i + cn.length).trim()) continue; // no name beside the number
-      if (/\bcivil\s+(?:unlimited|limited)\b/i.test(t)) continue; // the type line rides along — too coarse
-      if (t.length < bestLen) { best = el; bestLen = t.length; }
+    for (let n = box, up = 0; n && n.querySelectorAll && up < 3; n = n.parentElement, up++) {
+      if (!seen.has(n)) { seen.add(n); scopes.push(n); }
     }
   }
-  return best;
+  if (document.body && !seen.has(document.body)) scopes.push(document.body);
+  const TAGS = 'span, div, b, i, em, strong, h1, h2, h3, h4, a, td, p, label';
+  const pick = test => {
+    for (const scope of scopes) {
+      let best = null, bestLen = Infinity;
+      for (const el of scope.querySelectorAll(TAGS)) {
+        const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!t || t.length > 300) continue;
+        if (/\bcivil\s+(?:unlimited|limited)\b/i.test(t)) continue; // the type line rides along — too coarse
+        if (!test(t)) continue;
+        // <= so that of nested elements with the SAME text, the deepest wins.
+        if (t.length <= bestLen) { best = el; bestLen = t.length; }
+      }
+      if (best) return best;
+    }
+    return null;
+  };
+  // The caption shape goes FIRST: the smallest "SOMEONE vs SOMEONE" element is
+  // the caption itself whether or not the number shares it, while the
+  // number-anchored match can land on a container holding the number and the
+  // caption as separate children — expanding that would flatten them.
+  const byVs = pick(t => /\S.+\s(?:vs?\.?|versus)\s.+\S/i.test(t));
+  if (byVs) return byVs;
+  if (cn) {
+    return pick(t => { const i = t.indexOf(cn); return i !== -1 && !!t.slice(i + cn.length).trim(); });
+  }
+  return null;
 }
 
 // Expand/collapse. Expanding swaps the full text in place (so any text after
@@ -4202,9 +4259,20 @@ function bindHeaderExpander(el, resolver) {
   if (!el.getAttribute('title')) el.setAttribute('title', 'Click to expand');
   el.addEventListener('click', ev => {
     try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+    dlLog('header expander clicked:', describeExpEl(el));
     toggleHeaderExpansion(el, resolver);
   });
+  dlLog('header expander bound:', describeExpEl(el));
   return 'bound';
+}
+
+// Tag.class + leading text, for the console — enough to see which element the
+// expander latched onto (or to report which one it should have).
+function describeExpEl(el) {
+  if (!el) return '(none)';
+  const cls = el.className ? '.' + String(el.className).trim().replace(/\s+/g, '.') : '';
+  const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  return el.tagName + cls + ' "' + t.slice(0, 100) + (t.length > 100 ? '…' : '') + '"';
 }
 
 // Idempotent; retried from the render poll and the header observer until both
@@ -4234,6 +4302,15 @@ function initHeaderExpanders() {
         .then(opened => { if (opened) __exp.nameAutoDone = true; })
         .catch(() => {})
         .then(() => { __exp.nameAutoBusy = false; });
+    }
+    // One console line when the search settles, so a page where nothing bound
+    // says which element was (or wasn't) found — paste it to debug.
+    if (!__exp.logged && ((__exp.nameDone && __exp.typeDone) || __expanderTries >= 60)) {
+      __exp.logged = true;
+      dlLog('header expanders settled:', {
+        name: __exp.nameDone ? (__exp.nameEl ? describeExpEl(__exp.nameEl) : 'found, nothing truncated') : 'NOT FOUND',
+        type: __exp.typeDone ? describeExpEl(findCaseTypeEl(document)) : 'NOT FOUND',
+      });
     }
   } catch (_) {}
 }
