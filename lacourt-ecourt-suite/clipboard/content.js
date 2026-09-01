@@ -4201,12 +4201,19 @@ async function captionParties() {
 }
 
 // Rebuild the case title from the Parties tab: "<first claimant>[, et al.] vs
-// <first defendant>[, et al.]" — the format eCourt's own headers use.
-function rebuildCaptionFrom(parties) {
+// <first defendant>[, et al.]" — the format eCourt's own headers use. On a
+// petition with no respondent row, the "vs" side is the real party in
+// interest (a structured-settlement transfer petition captions the payee).
+// Party names go in CLEAN — parsePartiesTable already strips the "(Petitioner)"
+// / "(Real Party in Interest)" parentheticals — and `caps` upper-cases them to
+// match an all-caps caption.
+function rebuildCaptionFrom(parties, caps) {
   const claim = parties.filter(p => /^\s*(?:plaintiff|petitioner|cross[-\s]?complainant)\b/i.test(p.role || ''));
-  const resp = parties.filter(p => /^\s*(?:defendant|respondent)\b/i.test(p.role || ''));
+  let resp = parties.filter(p => /^\s*(?:defendant|respondent)\b/i.test(p.role || ''));
+  if (!resp.length) resp = parties.filter(p => /^\s*real\s+party\s+in\s+interest\b/i.test(p.role || ''));
   if (!claim.length || !resp.length) return '';
-  const side = list => list[0].name + (list.length > 1 ? ', et al.' : '');
+  const nm = p => caps ? (p.name || '').toUpperCase() : (p.name || '');
+  const side = list => nm(list[0]) + (list.length > 1 ? ', et al.' : '');
   return side(claim) + ' vs ' + side(resp);
 }
 
@@ -4230,7 +4237,10 @@ function completeTruncatedSegment(segment, candidates) {
       const nc = expNorm(c);
       if (nc.length > ns.length && nc.startsWith(ns)) {
         const cut = segment.lastIndexOf(suffix);
-        return segment.slice(0, cut) + c;
+        // Match the caption's casing: an all-caps prefix gets an all-caps
+        // completion even when the parties list prints the name mixed-case.
+        const fitted = /[a-z]/.test(suffix) ? c : c.toUpperCase();
+        return segment.slice(0, cut) + fitted;
       }
     }
   }
@@ -4290,9 +4300,12 @@ async function resolveFullCaseNameText(el, displayed) {
   const t = titleAttrExpansion(el, name);
   if (t) return swapIn(t);
   const parties = await captionParties();
+  // The caption prints party names in caps even when the parties list is
+  // mixed-case; "vs" and "et al." stay lowercase, so the caps test ignores them.
+  const wantCaps = !/[a-z]/.test(name.replace(/\b(?:vs?|versus)\.?|\bet\s+al\.?/gi, ''));
   // Whole-caption rebuild first — used only when it genuinely fills the
   // truncated header in: the segments around the ellipsis must all line up.
-  const recon = rebuildCaptionFrom(parties);
+  const recon = rebuildCaptionFrom(parties, wantCaps);
   if (recon && extendsTruncated(recon, name)) return swapIn(recon);
   // Then segment-wise: complete just the truncated chunk(s) from party names,
   // preserving the rest of the caption verbatim — the path that handles a

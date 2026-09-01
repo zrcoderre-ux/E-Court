@@ -177,7 +177,7 @@ function parsePartiesTable(root) {
     // keeps the intent explicit).
     let role = '';
     let roleIdx = -1;
-    const roleRe = /^(cross[-\s]?complainant|cross[-\s]?defendant|plaintiff|defendant|petitioner|respondent)\b/i;
+    const roleRe = /^(cross[-\s]?complainant|cross[-\s]?defendant|plaintiff|defendant|petitioner|respondent|real\s+party\s+in\s+interest|intervenor)\b/i;
     for (let i = 0; i < cells.length; i++) {
       if (roleRe.test(cells[i])) {
         role = cells[i];
@@ -200,6 +200,14 @@ function parsePartiesTable(root) {
 
     // Strip parenthetical content from name.
     if (name) {
+      // Some listings carry the ROLE inside the name's parenthetical rather
+      // than its own cell — "J.G. Wentworth Originations, LLC (Petitioner)",
+      // "E. F. (Real Party in Interest)". Read it out before the
+      // parentheticals are stripped, when no role cell matched.
+      if (!role) {
+        const rm = name.match(/\(\s*(plaintiff|petitioner|defendant|respondent|cross[-\s]?complainant|cross[-\s]?defendant|real\s+party\s+in\s+interest|intervenor)\s*\)/i);
+        if (rm) role = rm[1];
+      }
       // For a defendant / cross-defendant, preserve a "(Doe N)" / "(Does 1-10)"
       // designation — it identifies which fictitious defendant the party was
       // named as — even though the role and entity-type parentheticals are
