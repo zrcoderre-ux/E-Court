@@ -4094,9 +4094,14 @@ function classifyHeaderClip(el) {
   return 'other';
 }
 
-// Every CSS-clipped text fragment in the case-header area. Scoped to the
-// [class*="case"] blocks and a few of their ancestors (never the whole page,
-// where site chrome legitimately clips), skipping containers.
+// Every cut-off text fragment in the case-header area — CSS-clipped boxes AND
+// small elements whose own text carries a literal "..." (the case type is a
+// fragment like "Other Real Property (not emin...." sitting right after a
+// separate "Civil Unlimited" text). Scoped to the [class*="case"] blocks and
+// a few of their ancestors (never the whole page, where site chrome
+// legitimately clips), skipping containers; of nested elements carrying the
+// same cut text, only the deepest is returned, so a wrapper never gets bound
+// over the fragment inside it.
 function findClippedHeaderEls() {
   const out = [];
   const seenScope = new Set();
@@ -4117,11 +4122,12 @@ function findClippedHeaderEls() {
       const t = (el.textContent || '').trim();
       if (!t || t.length > 400) continue;
       if (el.children.length > 2) continue; // a fragment, not a container
-      if (!isReallyClipped(el)) continue;
+      if (!isReallyClipped(el) && !TRUNC_ANY_RE.test(t)) continue;
       out.push(el);
     }
   }
-  return out;
+  // Deepest-only: drop any collected element that wraps another one.
+  return out.filter(el => !out.some(other => other !== el && el.contains(other)));
 }
 
 // Does `full` genuinely fill in `truncated`? The truncated text is split at
@@ -4157,20 +4163,29 @@ function expandCaseTypeText(displayed) {
   // pre = anything before the designation (a "Case Type:" label…), lead = the
   // "Civil Unlimited/Limited" phrase, then the truncated type up to the FIRST
   // ellipsis, then the rest of the line — kept, so the expansion pushes it
-  // along rather than swallowing it.
-  const m = (displayed || '').match(/^([^]*?)\b(civil\s+(?:unlimited|limited)\b)\s*([^]*?)\s*(?:\.{3,}|…)([^]*)$/i);
-  if (!m) return ''; // no designation, or nothing truncated — nothing to expand
-  const pre = m[1].replace(/\s+/g, ' ').trim();
-  const lead = m[2].replace(/\s+/g, ' ').trim();
-  const p = expNorm(m[3]);
-  const tail = (m[4] || '').replace(/^[\s.]+/, '').trim();
+  // along rather than swallowing it. The lead can also live in a SIBLING
+  // element ("Civil Unlimited " as separate text, the type its own fragment) —
+  // then the fragment matches the catalog on its own; the classifier only
+  // routes text that carries or directly follows the designation here.
+  let pre = '', lead = '', head = '', tail = '';
+  let m = (displayed || '').match(/^([^]*?)\b(civil\s+(?:unlimited|limited)\b)\s*([^]*?)\s*(?:\.{3,}|…)([^]*)$/i);
+  if (m) { pre = m[1]; lead = m[2]; head = m[3]; tail = m[4]; }
+  else {
+    m = (displayed || '').match(/^([^]*?)\s*(?:\.{3,}|…)([^]*)$/);
+    if (!m) return ''; // nothing truncated — nothing to expand
+    head = m[1]; tail = m[2];
+  }
+  pre = pre.replace(/\s+/g, ' ').trim();
+  lead = lead.replace(/\s+/g, ' ').trim();
+  const p = expNorm(head);
+  tail = (tail || '').replace(/^[\s.]+/, '').trim();
   if (!p) return '';
   const hits = CASE_TYPE_CATALOG
     .filter(tp => { const n = expNorm(tp); return n.startsWith(p) && n.length > p.length; })
     .sort((a, b) => a.length - b.length);
-  if (!hits.length) { dlLog('case-type expansion: no catalog hit for', m[3]); return ''; }
-  if (hits.length > 1) dlLog('case-type expansion: multiple catalog hits for', m[3], '→ using', hits[0]);
-  return (pre ? pre + ' ' : '') + lead + ' ' + hits[0] + (tail ? ' ' + tail : '');
+  if (!hits.length) { dlLog('case-type expansion: no catalog hit for', head); return ''; }
+  if (hits.length > 1) dlLog('case-type expansion: multiple catalog hits for', head, '→ using', hits[0]);
+  return (pre ? pre + ' ' : '') + (lead ? lead + ' ' : '') + hits[0] + (tail ? ' ' + tail : '');
 }
 
 // A title attribute on or near the element that carries the displayed text in
@@ -4415,6 +4430,9 @@ async function toggleHeaderExpansion(el, resolver) {
 function bindHeaderExpander(el, resolver, force) {
   if (!el) return 'retry';
   if (el.getAttribute('data-lac-exp-bound') === '1') return 'bound';
+  // Never bind a container holding an already-bound fragment: expanding it
+  // would rewrite the fragment's element out from under its own toggle.
+  try { if (el.querySelector && el.querySelector('[data-lac-exp-bound="1"]')) return 'done'; } catch (_) {}
   if (!force) {
     if (el.clientWidth === 0 && el.offsetParent === null) return 'retry'; // not laid out yet
     const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
@@ -4479,15 +4497,9 @@ function initHeaderExpanders() {
   if (__expanderTries > 60) { return; }
   __expanderTries++;
   try {
-    // Server-truncated whole lines.
-    const typeEl = findCaseTypeEl(document);
-    if (typeEl && bindHeaderExpander(typeEl, resolveFullCaseTypeText) === 'bound') noteBound(typeEl, 'type');
-    const nameEl = findCaseNameEl();
-    if (nameEl && bindHeaderExpander(nameEl, resolveFullCaseNameText) === 'bound') {
-      noteBound(nameEl, 'name');
-      queueAutoExpand(nameEl, resolveFullCaseNameText);
-    }
-    // CSS-clipped fragments.
+    // Cut-off fragments FIRST (CSS-clipped boxes, literal-"..." fragments) —
+    // once a fragment is bound, the whole-line finders below refuse any
+    // container that wraps it, so the innermost element always wins.
     for (const el of findClippedHeaderEls()) {
       const kind = classifyHeaderClip(el);
       const resolver = kind === 'type' ? resolveFullCaseTypeText
@@ -4497,6 +4509,14 @@ function initHeaderExpanders() {
         noteBound(el, kind);
         if (kind === 'name') queueAutoExpand(el, resolver);
       }
+    }
+    // Server-truncated whole lines.
+    const typeEl = findCaseTypeEl(document);
+    if (typeEl && bindHeaderExpander(typeEl, resolveFullCaseTypeText) === 'bound') noteBound(typeEl, 'type');
+    const nameEl = findCaseNameEl();
+    if (nameEl && bindHeaderExpander(nameEl, resolveFullCaseNameText) === 'bound') {
+      noteBound(nameEl, 'name');
+      queueAutoExpand(nameEl, resolveFullCaseNameText);
     }
     runAutoQueue();
     // One console line when the search settles, so a page where nothing bound
