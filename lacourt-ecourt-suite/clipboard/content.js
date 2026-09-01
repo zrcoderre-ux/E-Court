@@ -4189,18 +4189,74 @@ function titleAttrExpansion(el, truncatedCore) {
   return '';
 }
 
-// Rebuild the case title from the Parties tab: "<first claimant>[, et al.] vs
-// <first defendant>[, et al.]" — the format eCourt's own headers use. The
-// parties fetch is the same memoized one the status engine uses.
-async function reconstructCaseNameFromParties() {
+// The parties, parsed once per call from the same memoized fetch the status
+// engine uses. Logged when empty — an empty list is why no expansion could be
+// built, and that is the fact worth seeing in the console.
+async function captionParties() {
   try {
-    const parties = parsePartiesTable(await pageCaseCtx().parties());
-    const claim = parties.filter(p => /^\s*(?:plaintiff|petitioner|cross[-\s]?complainant)\b/i.test(p.role || ''));
-    const resp = parties.filter(p => /^\s*(?:defendant|respondent)\b/i.test(p.role || ''));
-    if (!claim.length || !resp.length) return '';
-    const side = list => list[0].name + (list.length > 1 ? ', et al.' : '');
-    return side(claim) + ' vs ' + side(resp);
-  } catch (_) { return ''; }
+    const parties = parsePartiesTable(await pageCaseCtx().parties()) || [];
+    if (!parties.length) dlLog('case-name expansion: parties table came back empty');
+    return parties;
+  } catch (e) { dlLog('case-name expansion: parties fetch failed:', (e && e.message) || e); return []; }
+}
+
+// Rebuild the case title from the Parties tab: "<first claimant>[, et al.] vs
+// <first defendant>[, et al.]" — the format eCourt's own headers use.
+function rebuildCaptionFrom(parties) {
+  const claim = parties.filter(p => /^\s*(?:plaintiff|petitioner|cross[-\s]?complainant)\b/i.test(p.role || ''));
+  const resp = parties.filter(p => /^\s*(?:defendant|respondent)\b/i.test(p.role || ''));
+  if (!claim.length || !resp.length) return '';
+  const side = list => list[0].name + (list.length > 1 ? ', et al.' : '');
+  return side(claim) + ' vs ' + side(resp);
+}
+
+async function reconstructCaseNameFromParties() {
+  return rebuildCaptionFrom(await captionParties());
+}
+
+// Complete the trailing words of `segment` from one of `candidates` (party
+// names): the longest suffix of the segment that is a prefix of a candidate
+// wins, and the candidate replaces it. "26STCP01881 J.G. WENTWORTH
+// ORIGINATIONS" + ["J.G. WENTWORTH ORIGINATIONS, LLC", …] →
+// "26STCP01881 J.G. WENTWORTH ORIGINATIONS, LLC".
+function completeTruncatedSegment(segment, candidates) {
+  const words = (segment || '').split(/(\s+)/); // keep separators so offsets survive
+  for (let i = 0; i < words.length; i++) {      // longest suffix first
+    const suffix = words.slice(i).join('').trim();
+    if (!suffix) continue;
+    const ns = expNorm(suffix);
+    if (!ns) continue;
+    for (const c of candidates) {
+      const nc = expNorm(c);
+      if (nc.length > ns.length && nc.startsWith(ns)) {
+        const cut = segment.lastIndexOf(suffix);
+        return segment.slice(0, cut) + c;
+      }
+    }
+  }
+  return null;
+}
+
+// Fill each "<prefix>..." in the caption from a party name that extends the
+// prefix, leaving everything else exactly as displayed. This is what handles
+// the caption whose OTHER side doesn't match the Parties tab — e.g. a
+// respondent shown by initials ("… vs E. F.") while the parties list the full
+// name: the whole-caption rebuild rightly refuses to rewrite "E. F.", but the
+// truncated plaintiff can still be completed on its own.
+function expandNameSegmentsFrom(name, parties) {
+  const candidates = parties.map(p => p && p.name).filter(Boolean);
+  if (!candidates.length) return '';
+  const re = /(\.{3,}|…)/g;
+  let out = '', last = 0, changed = false, m;
+  while ((m = re.exec(name)) !== null) {
+    const seg = name.slice(last, m.index);
+    const completed = completeTruncatedSegment(seg, candidates);
+    if (completed != null) { out += completed; changed = true; }
+    else out += seg + m[1];
+    last = m.index + m[1].length;
+  }
+  out += name.slice(last);
+  return changed ? out : '';
 }
 
 function resolveFullCaseTypeText(el, displayed) {
@@ -4233,13 +4289,20 @@ async function resolveFullCaseNameText(el, displayed) {
   const swapIn = full => (name && displayed.indexOf(name) !== -1) ? displayed.replace(name, full) : full;
   const t = titleAttrExpansion(el, name);
   if (t) return swapIn(t);
-  const recon = await reconstructCaseNameFromParties();
-  // Used only when the rebuilt title genuinely fills the truncated header in
-  // — the segments around the ellipsis (a truncated PLAINTIFF leaves it
-  // mid-text: "GLOBEX HOLDING COMPA... vs TAYLOR ROE") must all line up. A
-  // mismatch means the parties don't line up with the caption, and a wrong
-  // "expansion" is worse than none.
+  const parties = await captionParties();
+  // Whole-caption rebuild first — used only when it genuinely fills the
+  // truncated header in: the segments around the ellipsis must all line up.
+  const recon = rebuildCaptionFrom(parties);
   if (recon && extendsTruncated(recon, name)) return swapIn(recon);
+  // Then segment-wise: complete just the truncated chunk(s) from party names,
+  // preserving the rest of the caption verbatim — the path that handles a
+  // side shown differently in the caption than in the parties list (initials
+  // for a protected party, added descriptors, et al. groupings).
+  const seg = expandNameSegmentsFrom(name, parties);
+  if (seg && expNorm(seg) !== expNorm(name)) {
+    dlLog('case-name expansion: segment-completed from parties —', { header: name, expanded: seg });
+    return swapIn(seg);
+  }
   if (recon) dlLog('case-name expansion: parties rebuild does not fill the header in —', { header: name, rebuilt: recon });
   return '';
 }
@@ -4379,12 +4442,16 @@ const __exp = { autoQueue: [], bound: [], logged: false };
 let __expanderTries = 0;
 function queueAutoExpand(el, resolver) {
   if (__exp.autoQueue.some(q => q.el === el)) return;
-  __exp.autoQueue.push({ el, resolver, done: false, busy: false });
+  __exp.autoQueue.push({ el, resolver, done: false, busy: false, tries: 0 });
 }
 function runAutoQueue() {
   for (const q of __exp.autoQueue) {
     if (q.done || q.busy) continue;
     if (q.el.getAttribute('data-lac-exp-open') === '1') { q.done = true; continue; }
+    // A caption that can't be resolved stays truncated: stop auto-retrying
+    // after a few attempts (a manual click still retries the lookup).
+    if (q.tries >= 6) { q.done = true; continue; }
+    q.tries++;
     q.busy = true;
     toggleHeaderExpansion(q.el, q.resolver)
       .then(opened => { if (opened) q.done = true; })
