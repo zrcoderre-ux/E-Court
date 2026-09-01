@@ -1783,10 +1783,10 @@ function isOscDefaultJudgment(hearingType) {
 //
 // eCourt prints the case-type designation under the case number, e.g.
 // "Civil Unlimited Unlawful Detainer/Commercial ..." (routinely truncated).
-// The lead is what makes it safe to detect: no filing title or hearing name
-// starts "Civil Unlimited"/"Civil Limited", so an anchored test never reads a
-// document that merely mentions a case type as the case's own designation.
-const CASE_TYPE_LEAD_RE = /^\s*civil\s+(?:unlimited|limited)\b/i;
+// The "Civil Unlimited"/"Civil Limited" phrase is what makes it safe to
+// detect: no filing title or hearing name contains it (eCourt's own filings
+// say "Unlimited Civil", reversed), so a test keyed to the phrase never reads
+// a document that merely mentions a case type as the case's own designation.
 // The designation and its type read together (bounded, so a page-wide text
 // blob that happens to contain both far apart doesn't match).
 const UD_CASE_TYPE_RE = /\bcivil\s+(?:unlimited|limited)\b[\s\S]{0,80}?\bunlawful\s+detainer\b/i;
@@ -1795,11 +1795,15 @@ function isUnlawfulDetainerTypeText(text) {
   return UD_CASE_TYPE_RE.test(text || '');
 }
 
-// The element carrying the case-type line: the SMALLEST element whose text is
-// the designation, searched in the case-header blocks first (the designation
-// sits under the case number, near the [class*="case"] element the case name
-// lives in) and the whole document only as a fallback. Truncation-tolerant —
-// the truncated line still starts with the lead.
+// The element carrying the case-type line: the SMALLEST element whose text
+// contains the designation, searched in the case-header blocks first (the
+// designation sits under the case number, near the [class*="case"] element
+// the case name lives in) and the whole document only as a fallback.
+// Truncation-tolerant, and the designation need not START the element — the
+// line can carry a label before it ("Case Type: Civil Unlimited …") and more
+// header text after it. The "Civil Unlimited"/"Civil Limited" phrase itself
+// is specific enough: no filing title or hearing name contains it (eCourt's
+// own filings say "Unlimited Civil", reversed).
 function findCaseTypeEl(root) {
   root = root || (typeof document !== 'undefined' ? document : null);
   if (!root || !root.querySelectorAll) return null;
@@ -1812,14 +1816,17 @@ function findCaseTypeEl(root) {
   }
   const whole = root.body || root;
   if (whole && !seen.has(whole)) scopes.push(whole);
+  const TAGS = 'span, div, td, th, p, li, b, i, em, strong, small, label, a, font, dt, dd, h1, h2, h3, h4, h5, h6';
   for (const scope of scopes) {
     let best = null, bestLen = Infinity;
-    for (const el of scope.querySelectorAll('span, div, td, p, li, b, strong, h1, h2, h3, h4')) {
+    for (const el of scope.querySelectorAll(TAGS)) {
       const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-      // Generous cap: the type line's element can carry more header text after
-      // the truncated designation (filed date, status, …).
-      if (!t || t.length > 400 || !CASE_TYPE_LEAD_RE.test(t)) continue;
-      if (t.length < bestLen) { best = el; bestLen = t.length; }
+      // Generous cap: the type line's element can carry more header text
+      // around the truncated designation (a label, filed date, status, …).
+      if (!t || t.length > 500 || !/\bcivil\s+(?:unlimited|limited)\b/i.test(t)) continue;
+      // <= so that of nested elements with the SAME text (a <td> around an
+      // <i>), the deepest wins — mutating the innermost keeps the structure.
+      if (t.length <= bestLen) { best = el; bestLen = t.length; }
     }
     if (best) return best;
   }
