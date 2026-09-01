@@ -4040,6 +4040,90 @@ function isCssClipped(el) {
   try { return el.scrollWidth > el.clientWidth + 1; } catch (_) { return false; }
 }
 
+// An element whose own box visibly cuts its text off: wider content than box,
+// or an ellipsis style actually engaged. This is the shape eCourt's header
+// really uses — each party name and the case type sit in fixed-width boxes
+// with the FULL text in the DOM and CSS painting the "…" — so this, not a
+// literal "..." in the text, is the primary thing to look for.
+function isReallyClipped(el) {
+  try {
+    if (el.clientWidth > 0 && el.scrollWidth > el.clientWidth + 1) return true;
+    const cs = getComputedStyle(el);
+    if (cs && cs.textOverflow === 'ellipsis' && cs.overflow !== 'visible'
+        && el.scrollWidth > el.clientWidth && el.clientWidth > 0) return true;
+  } catch (_) {}
+  return false;
+}
+
+// Text just before/after the element on its line — its previous/next siblings'
+// text, then the parent's, a couple of levels up. What classifies a clipped
+// fragment: the case number sits just BEFORE the name, "Civil Unlimited" just
+// before the type, "vs" beside a party-name box.
+function nearbyText(el, dir) {
+  let out = '';
+  let node = el, depth = 0;
+  while (node && depth < 3 && out.length < 100) {
+    let sib = dir === 'prev' ? node.previousSibling : node.nextSibling;
+    while (sib && out.length < 100) {
+      const t = sib.textContent || '';
+      out = dir === 'prev' ? t + ' ' + out : out + ' ' + t;
+      sib = dir === 'prev' ? sib.previousSibling : sib.nextSibling;
+    }
+    node = node.parentElement; depth++;
+  }
+  return out.replace(/\s+/g, ' ').trim();
+}
+
+// What a clipped header fragment is, from its own text and its neighbors:
+//   'type' — carries or directly follows the "Civil Unlimited/Limited"
+//            designation (the case type is always right after it);
+//   'name' — carries or directly follows the case number (the name is
+//            immediately right of the number), or sits beside a "vs";
+//   'other' — some other clipped header text; still expandable, generically.
+function classifyHeaderClip(el) {
+  const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const pre = nearbyText(el, 'prev');
+  const post = nearbyText(el, 'next');
+  if (/\bcivil\s+(?:unlimited|limited)\b/i.test(t)
+      || /\bcivil\s+(?:unlimited|limited)\b\s*[:\-–—]?\s*$/i.test(pre)) return 'type';
+  const cn = parseCaseNumber(document);
+  if (cn && (t.indexOf(cn) !== -1 || pre.slice(-40).indexOf(cn) !== -1)) return 'name';
+  if (/\s(?:vs?\.?|versus)\s/i.test(t)) return 'name';
+  if (/^(?:vs?\.?|versus)\b/i.test(post)) return 'name';  // a plaintiff box — "vs" follows it
+  if (/\b(?:vs?\.?|versus)\s*$/i.test(pre)) return 'name'; // a defendant box — "vs" precedes it
+  return 'other';
+}
+
+// Every CSS-clipped text fragment in the case-header area. Scoped to the
+// [class*="case"] blocks and a few of their ancestors (never the whole page,
+// where site chrome legitimately clips), skipping containers.
+function findClippedHeaderEls() {
+  const out = [];
+  const seenScope = new Set();
+  const scopes = [];
+  for (const box of document.querySelectorAll('[class*="case"]')) {
+    for (let n = box, up = 0; n && n.querySelectorAll && up < 3; n = n.parentElement, up++) {
+      if (!seenScope.has(n)) { seenScope.add(n); scopes.push(n); }
+    }
+  }
+  const seenEl = new Set();
+  for (const scope of scopes) {
+    let all;
+    try { all = scope.getElementsByTagName('*'); } catch (_) { continue; }
+    if (all.length > 800) continue; // a page-level container, not the header
+    for (const el of all) {
+      if (seenEl.has(el)) continue;
+      seenEl.add(el);
+      const t = (el.textContent || '').trim();
+      if (!t || t.length > 400) continue;
+      if (el.children.length > 2) continue; // a fragment, not a container
+      if (!isReallyClipped(el)) continue;
+      out.push(el);
+    }
+  }
+  return out;
+}
+
 // Does `full` genuinely fill in `truncated`? The truncated text is split at
 // its ellipses; the first segment must start `full`, every later segment must
 // follow in order, and — unless the text ends at an ellipsis — the last
@@ -4226,7 +4310,7 @@ async function toggleHeaderExpansion(el, resolver) {
     try { full = (await resolver(el, displayed)) || ''; } catch (_) { full = ''; }
     if (full) el.setAttribute('data-lac-exp-full', full);
   }
-  const clipped = isCssClipped(el);
+  const clipped = isReallyClipped(el) || isCssClipped(el);
   if (!full && !clipped) {
     if (TRUNC_ANY_RE.test(displayed)) dlLog('no full text found for truncated header text:', displayed);
     return false;
@@ -4234,11 +4318,13 @@ async function toggleHeaderExpansion(el, resolver) {
   if (el.getAttribute('data-lac-exp-text') == null) el.setAttribute('data-lac-exp-text', el.textContent);
   if (el.getAttribute('data-lac-exp-css') == null) el.setAttribute('data-lac-exp-css', el.style.cssText || '');
   if (full && full !== displayed) el.textContent = full;
-  // Lift any CSS clipping too, so a style-truncated header shows everything.
+  // Lift any CSS clipping too, so a style-truncated header shows everything —
+  // including a fixed width, which is how eCourt sizes the boxes it clips.
   el.style.setProperty('white-space', 'normal', 'important');
   el.style.setProperty('overflow', 'visible', 'important');
   el.style.setProperty('text-overflow', 'clip', 'important');
   el.style.setProperty('max-width', 'none', 'important');
+  el.style.setProperty('width', 'auto', 'important');
   el.style.setProperty('height', 'auto', 'important');
   el.style.setProperty('cursor', 'pointer', 'important');
   el.setAttribute('data-lac-exp-open', '1');
@@ -4247,13 +4333,17 @@ async function toggleHeaderExpansion(el, resolver) {
 
 // Bind the click toggle. Returns 'bound' when the element is truncated and
 // now clickable, 'done' when nothing about it is cut off, and 'retry' when
-// the header hasn't laid out yet (so clipping can't be measured).
-function bindHeaderExpander(el, resolver) {
+// the header hasn't laid out yet (so clipping can't be measured). `force`
+// skips the truncation test — the clipped-fragment scan has already verified
+// the element is cut off.
+function bindHeaderExpander(el, resolver, force) {
   if (!el) return 'retry';
   if (el.getAttribute('data-lac-exp-bound') === '1') return 'bound';
-  if (el.clientWidth === 0 && el.offsetParent === null) return 'retry'; // not laid out yet
-  const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-  if (!TRUNC_ANY_RE.test(t) && !isCssClipped(el)) return 'done'; // nothing cut off
+  if (!force) {
+    if (el.clientWidth === 0 && el.offsetParent === null) return 'retry'; // not laid out yet
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!TRUNC_ANY_RE.test(t) && !isReallyClipped(el) && !isCssClipped(el)) return 'done'; // nothing cut off
+  }
   el.setAttribute('data-lac-exp-bound', '1');
   el.style.setProperty('cursor', 'pointer');
   if (!el.getAttribute('title')) el.setAttribute('title', 'Click to expand');
@@ -4275,42 +4365,67 @@ function describeExpEl(el) {
   return el.tagName + cls + ' "' + t.slice(0, 100) + (t.length > 100 ? '…' : '') + '"';
 }
 
-// Idempotent; retried from the render poll and the header observer until both
-// targets are handled (or the attempt budget runs out on pages without them).
-// Defaults: the CASE NAME auto-expands once its full text resolves (retrying
-// while the parties fetch warms up); the CASE TYPE stays collapsed until
-// clicked. Auto-expansion runs once — collapsing it by hand is respected.
-const __exp = { nameDone: false, typeDone: false, nameEl: null, nameAutoDone: false, nameAutoBusy: false };
+// Idempotent; retried from the render poll and the header observer for a
+// while (elements render and lay out late). Two discovery paths feed it:
+//   - the literal-ellipsis finders (findCaseTypeEl / findCaseNameEl), for a
+//     header whose text carries a server-side "...";
+//   - the clipped-fragment scan (findClippedHeaderEls), for eCourt's real
+//     shape — fixed-width boxes CSS-clipping full text, classified by their
+//     neighbors (the name sits right of the case number, the type right
+//     after "Civil Unlimited").
+// Defaults: every NAME element auto-expands (once — collapsing it by hand is
+// respected); the TYPE and anything else stay collapsed until clicked.
+const __exp = { autoQueue: [], bound: [], logged: false };
 let __expanderTries = 0;
+function queueAutoExpand(el, resolver) {
+  if (__exp.autoQueue.some(q => q.el === el)) return;
+  __exp.autoQueue.push({ el, resolver, done: false, busy: false });
+}
+function runAutoQueue() {
+  for (const q of __exp.autoQueue) {
+    if (q.done || q.busy) continue;
+    if (q.el.getAttribute('data-lac-exp-open') === '1') { q.done = true; continue; }
+    q.busy = true;
+    toggleHeaderExpansion(q.el, q.resolver)
+      .then(opened => { if (opened) q.done = true; })
+      .catch(() => {})
+      .then(() => { q.busy = false; });
+  }
+}
+function noteBound(el, kind) {
+  if (!__exp.bound.some(b => b.el === el)) __exp.bound.push({ el, kind });
+}
 function initHeaderExpanders() {
-  if (__expanderTries > 60) return;
-  if (__exp.nameDone && __exp.typeDone && (__exp.nameAutoDone || !__exp.nameEl)) return;
+  if (__expanderTries > 60) { return; }
   __expanderTries++;
   try {
-    if (!__exp.typeDone) {
-      if (bindHeaderExpander(findCaseTypeEl(document), resolveFullCaseTypeText) !== 'retry') __exp.typeDone = true;
+    // Server-truncated whole lines.
+    const typeEl = findCaseTypeEl(document);
+    if (typeEl && bindHeaderExpander(typeEl, resolveFullCaseTypeText) === 'bound') noteBound(typeEl, 'type');
+    const nameEl = findCaseNameEl();
+    if (nameEl && bindHeaderExpander(nameEl, resolveFullCaseNameText) === 'bound') {
+      noteBound(nameEl, 'name');
+      queueAutoExpand(nameEl, resolveFullCaseNameText);
     }
-    if (!__exp.nameDone) {
-      const el = findCaseNameEl();
-      const st = bindHeaderExpander(el, resolveFullCaseNameText);
-      if (st !== 'retry') { __exp.nameDone = true; __exp.nameEl = st === 'bound' ? el : null; }
+    // CSS-clipped fragments.
+    for (const el of findClippedHeaderEls()) {
+      const kind = classifyHeaderClip(el);
+      const resolver = kind === 'type' ? resolveFullCaseTypeText
+        : kind === 'name' ? resolveFullCaseNameText
+        : titleAttrExpansion; // generic: a title attr if there is one, else just unclip
+      if (bindHeaderExpander(el, resolver, true) === 'bound') {
+        noteBound(el, kind);
+        if (kind === 'name') queueAutoExpand(el, resolver);
+      }
     }
-    if (__exp.nameEl && !__exp.nameAutoDone && !__exp.nameAutoBusy
-        && __exp.nameEl.getAttribute('data-lac-exp-open') !== '1') {
-      __exp.nameAutoBusy = true;
-      toggleHeaderExpansion(__exp.nameEl, resolveFullCaseNameText)
-        .then(opened => { if (opened) __exp.nameAutoDone = true; })
-        .catch(() => {})
-        .then(() => { __exp.nameAutoBusy = false; });
-    }
+    runAutoQueue();
     // One console line when the search settles, so a page where nothing bound
-    // says which element was (or wasn't) found — paste it to debug.
-    if (!__exp.logged && ((__exp.nameDone && __exp.typeDone) || __expanderTries >= 60)) {
+    // says so — paste it (with the header's outerHTML) to debug.
+    if (!__exp.logged && __expanderTries >= 20) {
       __exp.logged = true;
-      dlLog('header expanders settled:', {
-        name: __exp.nameDone ? (__exp.nameEl ? describeExpEl(__exp.nameEl) : 'found, nothing truncated') : 'NOT FOUND',
-        type: __exp.typeDone ? describeExpEl(findCaseTypeEl(document)) : 'NOT FOUND',
-      });
+      dlLog('header expanders settled:', __exp.bound.length
+        ? __exp.bound.map(b => b.kind + ': ' + describeExpEl(b.el))
+        : 'NOTHING BOUND — no truncated or clipped header element found');
     }
   } catch (_) {}
 }
