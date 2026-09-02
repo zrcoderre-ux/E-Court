@@ -3436,17 +3436,24 @@ function paintSlotWidget(labelEl, slot) {
   el = document.createElement('span');
   el.className = DL_CLASS;
   if (slot.computed.osc) {
-    // The OSC status is a long sentence, and the header is a TABLE: letting
-    // the text size its cell made the whole table recompute its columns when
-    // the status resolved — every header row visibly shifted left. So the
-    // widget is LAYOUT-NEUTRAL: the outer span is zero-width (the table never
-    // counts it), and the text wraps inside an inner box with its own fixed
-    // width. The row still grows in height normally (vertical-align:top makes
-    // the line box contain the inner block).
-    el.setAttribute('style', 'display:inline-block;width:0;overflow:visible;vertical-align:top;');
+    // The OSC status is a long sentence, and the header is a TABLE. Two
+    // constraints, learned the hard way:
+    //   - it must not size its cell: letting the text participate in layout
+    //     made the table recompute its columns when the status resolved, and
+    //     every header row visibly shifted left;
+    //   - it must occupy its own ROW, not overflow sideways: a zero-width
+    //     INLINE shell let the text paint over the line below it.
+    // So: a zero-width BLOCK shell. Being a block inside the "Next" column's
+    // cell it takes its own line under the Next text, left-aligned with
+    // wherever that column currently sits (the same x as "Stanley Mosk…" and
+    // "Next:", tracking any expansion above); being width:0 it contributes
+    // nothing to the column algorithm; and its height is real, so the row
+    // grows and pushes what follows down instead of painting over it. The
+    // sentence wraps inside the inner box at its own fixed width.
+    el.setAttribute('style', 'display:block;width:0;overflow:visible;');
     const inner = document.createElement('span');
     inner.className = DL_INNER_CLASS;
-    inner.setAttribute('style', 'display:inline-block;margin-left:22px;width:50vw;max-width:720px;'
+    inner.setAttribute('style', 'display:inline-block;width:50vw;max-width:720px;margin-top:2px;'
       + 'white-space:normal;font-weight:600;font-family:inherit;');
     inner.innerHTML = html;
     el.appendChild(inner);
