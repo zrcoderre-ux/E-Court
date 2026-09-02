@@ -3419,6 +3419,25 @@ function injectNextDeadlines() {
 
 const DL_INNER_CLASS = '__lacourt_next_dl_in__';
 
+// Keep "Filed: … Age: …" level with "Next:" once the status block makes the
+// Next CELL taller: table cells default to vertical-align:middle, so the
+// shorter Filed cell was centering against the grown one and drifting out of
+// line. Top-align every cell of that row — with single-line content top and
+// middle paint identically, so the native look is unchanged until the status
+// actually adds a line.
+function alignHeaderRowTops(labelEl) {
+  try {
+    const td = labelEl.closest ? labelEl.closest('td, th') : null;
+    if (!td) return;
+    const tr = td.parentElement;
+    if (!tr || tr.getAttribute('data-lac-vtop') === '1') return;
+    tr.setAttribute('data-lac-vtop', '1');
+    for (const cell of tr.children) {
+      if (cell && cell.style) cell.style.setProperty('vertical-align', 'top', 'important');
+    }
+  } catch (_) {}
+}
+
 function paintSlotWidget(labelEl, slot) {
   if (!labelEl || !labelEl.parentNode) return;
   const host = labelEl.parentNode;
@@ -3427,6 +3446,7 @@ function paintSlotWidget(labelEl, slot) {
     if (n.classList && n.classList.contains(DL_CLASS)) { el = n; break; }
   }
   if (!paintableSlot(slot)) { if (el) el.remove(); return; }
+  if (slot.computed.osc) alignHeaderRowTops(labelEl); // every paint — the row can be re-rendered
   const html = statusHtml(slot.computed, slot.filed, slot.osc);
   if (el) {
     const target = el.querySelector('.' + DL_INNER_CLASS) || el;
