@@ -4409,14 +4409,19 @@ async function toggleHeaderExpansion(el, resolver) {
   if (el.getAttribute('data-lac-exp-text') == null) el.setAttribute('data-lac-exp-text', el.textContent);
   if (el.getAttribute('data-lac-exp-css') == null) el.setAttribute('data-lac-exp-css', el.style.cssText || '');
   if (full && full !== displayed) el.textContent = full;
-  // Lift any CSS clipping too, so a style-truncated header shows everything —
-  // including a fixed width, which is how eCourt sizes the boxes it clips.
-  el.style.setProperty('white-space', 'normal', 'important');
-  el.style.setProperty('overflow', 'visible', 'important');
-  el.style.setProperty('text-overflow', 'clip', 'important');
-  el.style.setProperty('max-width', 'none', 'important');
-  el.style.setProperty('width', 'auto', 'important');
-  el.style.setProperty('height', 'auto', 'important');
+  // Style overrides ONLY for a box that is actually CSS-clipped, and only the
+  // ones that let it size to its text and push its siblings along its OWN
+  // line. A plain text swap gets no style changes at all, and wrapping is
+  // never forced — white-space:normal/height:auto made an expanded caption
+  // wrap onto a second line that painted over the header's next row (the
+  // case-type / courthouse-department line) inside eCourt's fixed-height
+  // header.
+  if (clipped) {
+    el.style.setProperty('overflow', 'visible', 'important');
+    el.style.setProperty('text-overflow', 'clip', 'important');
+    el.style.setProperty('max-width', 'none', 'important');
+    el.style.setProperty('width', 'auto', 'important');
+  }
   el.style.setProperty('cursor', 'pointer', 'important');
   el.setAttribute('data-lac-exp-open', '1');
   return true;
@@ -4467,8 +4472,8 @@ function describeExpEl(el) {
 //     shape — fixed-width boxes CSS-clipping full text, classified by their
 //     neighbors (the name sits right of the case number, the type right
 //     after "Civil Unlimited").
-// Defaults: every NAME element auto-expands (once — collapsing it by hand is
-// respected); the TYPE and anything else stay collapsed until clicked.
+// Defaults: NAME and TYPE elements auto-expand (once each — collapsing one by
+// hand is respected); other cut-off header text stays collapsed until clicked.
 const __exp = { autoQueue: [], bound: [], logged: false };
 let __expanderTries = 0;
 function queueAutoExpand(el, resolver) {
@@ -4507,12 +4512,15 @@ function initHeaderExpanders() {
         : titleAttrExpansion; // generic: a title attr if there is one, else just unclip
       if (bindHeaderExpander(el, resolver, true) === 'bound') {
         noteBound(el, kind);
-        if (kind === 'name') queueAutoExpand(el, resolver);
+        if (kind === 'name' || kind === 'type') queueAutoExpand(el, resolver);
       }
     }
     // Server-truncated whole lines.
     const typeEl = findCaseTypeEl(document);
-    if (typeEl && bindHeaderExpander(typeEl, resolveFullCaseTypeText) === 'bound') noteBound(typeEl, 'type');
+    if (typeEl && bindHeaderExpander(typeEl, resolveFullCaseTypeText) === 'bound') {
+      noteBound(typeEl, 'type');
+      queueAutoExpand(typeEl, resolveFullCaseTypeText);
+    }
     const nameEl = findCaseNameEl();
     if (nameEl && bindHeaderExpander(nameEl, resolveFullCaseNameText) === 'bound') {
       noteBound(nameEl, 'name');
