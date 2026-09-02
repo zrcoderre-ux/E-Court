@@ -4422,6 +4422,12 @@ async function toggleHeaderExpansion(el, resolver) {
     el.style.setProperty('max-width', 'none', 'important');
     el.style.setProperty('width', 'auto', 'important');
   }
+  // The header is a table: a later reflow (the briefing/OSC status resolving
+  // and wrapping re-flows the band) recomputes the column widths, and the
+  // widened type cell can end flush against the courthouse cell —
+  // "…Complaint CaseStanley Mosk…". A right margin on OUR element carries a
+  // visible gap through any reflow; collapse restores the saved styles.
+  el.style.setProperty('margin-right', '0.75em', 'important');
   el.style.setProperty('cursor', 'pointer', 'important');
   el.setAttribute('data-lac-exp-open', '1');
   return true;
