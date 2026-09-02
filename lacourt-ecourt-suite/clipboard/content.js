@@ -3417,6 +3417,8 @@ function injectNextDeadlines() {
   });
 }
 
+const DL_INNER_CLASS = '__lacourt_next_dl_in__';
+
 function paintSlotWidget(labelEl, slot) {
   if (!labelEl || !labelEl.parentNode) return;
   const host = labelEl.parentNode;
@@ -3426,13 +3428,33 @@ function paintSlotWidget(labelEl, slot) {
   }
   if (!paintableSlot(slot)) { if (el) el.remove(); return; }
   const html = statusHtml(slot.computed, slot.filed, slot.osc);
-  if (el) { if (el.innerHTML !== html) el.innerHTML = html; return; }
+  if (el) {
+    const target = el.querySelector('.' + DL_INNER_CLASS) || el;
+    if (target.innerHTML !== html) target.innerHTML = html;
+    return;
+  }
   el = document.createElement('span');
   el.className = DL_CLASS;
-  // OSC status can be a longer sentence, so let it wrap; deadlines stay on one line.
-  const ws = slot.computed.osc ? 'white-space:normal' : 'white-space:nowrap';
-  el.setAttribute('style', 'margin-left:22px;font-weight:600;' + ws + ';font-family:inherit;display:inline-block;');
-  el.innerHTML = html;
+  if (slot.computed.osc) {
+    // The OSC status is a long sentence, and the header is a TABLE: letting
+    // the text size its cell made the whole table recompute its columns when
+    // the status resolved — every header row visibly shifted left. So the
+    // widget is LAYOUT-NEUTRAL: the outer span is zero-width (the table never
+    // counts it), and the text wraps inside an inner box with its own fixed
+    // width. The row still grows in height normally (vertical-align:top makes
+    // the line box contain the inner block).
+    el.setAttribute('style', 'display:inline-block;width:0;overflow:visible;vertical-align:top;');
+    const inner = document.createElement('span');
+    inner.className = DL_INNER_CLASS;
+    inner.setAttribute('style', 'display:inline-block;margin-left:22px;width:50vw;max-width:720px;'
+      + 'white-space:normal;font-weight:600;font-family:inherit;');
+    inner.innerHTML = html;
+    el.appendChild(inner);
+  } else {
+    // Deadlines stay on one line.
+    el.setAttribute('style', 'margin-left:22px;font-weight:600;white-space:nowrap;font-family:inherit;display:inline-block;');
+    el.innerHTML = html;
+  }
   // Sit after the arrows when they're there, so the hearing text and the control
   // that changes it stay together.
   let ref = labelEl;
