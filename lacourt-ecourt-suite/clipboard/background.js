@@ -134,9 +134,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     const wanted = new Map();
     for (const d of msg.docs) {
       if (!d || !d.docId || typeof d.openUrl !== 'string') continue;
-      if (!d.openUrl.includes('/ecourt/ecms/doc')) continue;
+      if (!isOpenableDocUrl(d.openUrl)) continue;
       wanted.set(String(d.docId), d.openUrl);
     }
+    // The case-level pages (the printed Register of Actions, the rendered
+    // Parties PDF) carry no numeric docId in their URLs, so the open-tab scan
+    // below recognizes them by the URL itself.
+    const idByUrl = new Map();
+    for (const [id, url] of wanted) idByUrl.set(url, id);
     if (!wanted.size) {
       sendResponse({ ok: true, action: 'none', count: 0, openedDocIds: [] });
       return false;
@@ -150,7 +155,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       // Map each requested docId to the open tab(s) currently showing it.
       const openTabsById = new Map();
       for (const t of (tabs || [])) {
-        const id = docIdFromTabUrl(t.url || t.pendingUrl || '');
+        const raw = t.url || t.pendingUrl || '';
+        let id = docIdFromTabUrl(raw);
+        if (!id || !wanted.has(id)) id = idByUrl.get(raw) || null;
         if (!id || !wanted.has(id)) continue;
         let ids = openTabsById.get(id);
         if (!ids) { ids = []; openTabsById.set(id, ids); }
@@ -346,6 +353,25 @@ function resolveOpenPdfUrl(rawUrl) {
 function isCourtPdfUrl(u) {
   return typeof u === 'string' && /^https?:/i.test(u) &&
     (/\/ecourt\/ecms\/doc\b/i.test(u) || /[?&]docId=\d+/i.test(u) || /\.pdf(?:[?#]|$)/i.test(u));
+}
+
+/* Can the Documents button open this URL in a tab?
+
+   Everything it opens comes out of the court site's own markup, read by a
+   content script running ON that site — a document, the Register of Actions
+   report behind that tab's Print control — plus this extension's own renderer
+   for the Parties tab, which eCourt gives no print endpoint of its own. So the
+   rule is the two origins that can legitimately appear, not one path prefix:
+   the old "/ecourt/ecms/doc" test predates the case-level pages and would
+   reject both. */
+const OWN_PDF_PAGE = chrome.runtime.getURL('page-pdf/');
+function isOpenableDocUrl(u) {
+  if (typeof u !== 'string' || !u) return false;
+  if (u.startsWith(OWN_PDF_PAGE)) return true;
+  try {
+    const p = new URL(u);
+    return p.protocol === 'https:' && /(^|\.)lacourt\.org$/i.test(p.hostname);
+  } catch (_) { return false; }
 }
 
 // Extract the eCourt docId a tab is showing, unwrapping the companion PDF
