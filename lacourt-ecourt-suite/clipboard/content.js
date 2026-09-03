@@ -43,7 +43,7 @@
     isUnlawfulDetainerCase, findCaseTypeEl,
     isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
     docWordOverlap, docReferencesMotion, docNameIsGeneric, postJudgmentAnchor, findAppealTimeTrigger,
-    docPartyNames, docSharesParty, isComplaintDoc, isCrossComplaintDoc,
+    docPartyNames, docSharesParty, isInLimineText, isComplaintDoc, isCrossComplaintDoc,
     isDemurrerOrMotionToStrikeDoc, isPetitionDoc, latestDoc, findDefaultProveUp,
     sameCalendarDay, stripEventId, stripTrailingParenNumber, stripHearingOnPrefix,
     stripAncillaryMotionReference, movantNormName, fmtShortDate, dlLog,
@@ -2138,6 +2138,19 @@ function computeRelevantDocuments(docs, motionType, hearingDocBlob, singleHearin
       const isExParteCompanion = exParteDocs.some(ep =>
         sameCalendarDay(ep.when, d.when) && docSharesParty(docPartyNames(ep.filedBy), dParty));
       if (isExParteCompanion) rel.delete(id);
+    }
+  }
+
+  // Motions in limine and everything briefing them are the trial judge's, not
+  // this work-up's (see isInLimineText). They ride in on the word-overlap and
+  // opposition/reply sweeps above — an in limine motion to exclude shares
+  // "exclude", "strike" or "trial" with plenty of motions that are genuinely on
+  // calendar, and its opposition rides in on the same-day co-filing sweep. Out,
+  // unless the Hearings tab listed the paper for THIS hearing (authoritative, as
+  // everywhere else here) or the hearing being worked up is itself one.
+  if (!isInLimineText(motionType)) {
+    for (const [id, d] of rel) {
+      if (isInLimineText(d.name) && !blobDocIds.has(d.docId)) rel.delete(id);
     }
   }
 
