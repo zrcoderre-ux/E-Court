@@ -771,6 +771,29 @@ function isOppositionDoc(name) {
   return /\bopposition\b/i.test(name || '') && !/\bnon-?\s*opposition\b/i.test(name || '');
 }
 
+/* A briefing paper filed on the moving papers' OWN filing day is almost never a
+   response to them. The opposition to a motion filed today is due weeks from
+   now; what a party actually files alongside its motion is its briefing on some
+   OTHER matter, and a motion for leave to amend filed the same day as that same
+   side's opposition to an in limine motion is the ordinary shape of it. So on
+   that one day position proves nothing, and neither does a generic title or one
+   incidental shared word — "cross" alone tied an opposition to a motion in
+   limine to a motion about a cross-complaint, and the widget painted
+   "Opposition Due" green with nothing on file answering the motion.
+
+   A same-day paper therefore has to NAME the motion, at the same bidirectional
+   coverage bestFilingMatch demands of a moving paper (movantMatchScore above
+   0.5). Papers filed after that day keep the looser tests: by then the ordinary
+   briefing sequence is itself evidence of what they answer. */
+function sameDayPaperNamesMotion(doc, motionWhen, motionType) {
+  if (!doc || !doc.when || !motionWhen) return true;
+  if (dayMs(doc.when) !== dayMs(motionWhen)) return true;
+  const ok = movantMatchScore(motionType || '', doc.name || '') > 0.5;
+  if (!ok) dlLog('same-day paper', doc.name, 'filed with the moving papers on', doc.when,
+    '— does not name the motion, so not read as briefing on:', motionType);
+  return ok;
+}
+
 // A "Notice of Non-Opposition" / "Statement of No Opposition" — a filing that
 // affirmatively notes the ABSENCE of any opposition, rather than opposing on the
 // merits. Depending on who filed it, it stands in for a Reply (moving party) or
@@ -2245,7 +2268,8 @@ async function computeFiledStatus(ctx, c) {
           // opposition period; no opposition, no reply period.
           if (sched && sched.kind === 'new_trial' && pjMd) {
             sched.oppDue = pjFromService(pjMd.when, 10);
-            const o = earliest(docs.filter(d => d.when && d.when >= pjMd.when && isOppositionDoc(d.name)));
+            const o = earliest(docs.filter(d => d.when && d.when >= pjMd.when && isOppositionDoc(d.name)
+              && sameDayPaperNamesMotion(d, pjMd.when, c.motionType)));
             filed.opp = o ? o.when : null;
             if (o) {
               sched.replyDue = pjFromService(o.when, 5);
@@ -2333,19 +2357,26 @@ async function computeFiledStatus(ctx, c) {
           return aimedAt.length === 1 && isThisSide(aimedAt[0]);
         };
 
+        // A paper filed the same day as the moving papers has to name the motion
+        // whatever branch we are in — that one day is the day a party files its
+        // briefing on OTHER matters, so neither position nor a generic title
+        // attributes it here (see sameDayPaperNamesMotion).
+        const notFiledWithMotion = d => sameDayPaperNamesMotion(d, mw, c.motionType);
+
         let o, r;
         if (singleMotion) {
-          o = earliest(after.filter(d => isOppositionDoc(d.name)));
+          o = earliest(after.filter(d => isOppositionDoc(d.name) && notFiledWithMotion(d)));
           const afterOpp = o ? o.when : mw;
-          r = earliest(docs.filter(d => d.when && (!afterOpp || d.when >= afterOpp) && /\breply\b/i.test(d.name)));
+          r = earliest(docs.filter(d => d.when && (!afterOpp || d.when >= afterOpp) && /\breply\b/i.test(d.name)
+            && notFiledWithMotion(d)));
         } else {
           // The movant does not oppose its own motion, so a generic opposition
           // filed by the movant is opposing something else; a generic reply,
           // conversely, is the movant's paper and can't come from the other side.
-          o = earliest(after.filter(d => isOppositionDoc(d.name)
+          o = earliest(after.filter(d => isOppositionDoc(d.name) && notFiledWithMotion(d)
             && (docLinksToMotion(d.name, c.motionType)
                 || (genericPaperIsThisMotions(d) && !sharesMovant(d)))));
-          r = earliest(after.filter(d => /\breply\b/i.test(d.name)
+          r = earliest(after.filter(d => /\breply\b/i.test(d.name) && notFiledWithMotion(d)
             && (docLinksToMotion(d.name, c.motionType) || sharesMovant(d)
                 || (genericPaperIsThisMotions(d) && !filedByNonMovant(d)))));
         }
