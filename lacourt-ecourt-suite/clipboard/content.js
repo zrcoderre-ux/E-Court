@@ -2266,10 +2266,12 @@ function getFutureHearingsCached() {
    relevance computation: they are the case itself.
 
      - The Register of Actions, as the court's own PDF. eCourt's report runner
-       builds it from the case number alone at a stable URL (ROA_PDF_URL), so
-       there is no page to fetch, no Print control to find, and nothing for the
-       extension to render — it opens the same report the tab's Print button
-       does.
+       builds it from the case number alone at a stable URL (ROA_PDF_URL) — the
+       same report the tab's Print button produces, so the extension renders
+       nothing. It is shown THROUGH page-pdf/view.html rather than navigated to
+       because the server names the file after its own batch job
+       ("RegisterOfActions-PRODUCTION2-2026-09-02"), and that name is what
+       Chrome would title the tab and the saved file.
      - The Parties tab — parties, representation and former representation —
        which eCourt gives no print endpoint at all. Ctrl+P is the only native
        route to a PDF of it and a print dialog cannot run unattended, so the
@@ -2289,6 +2291,11 @@ const PARTIES_DOC_ID = 'lac-parties';
 const ROA_PDF_URL =
   'https://civil.lacourt.org/ecourt/ecms/reports/run?code=RegisterOfActions&dispatch=onRun&format=pdf&caseNumber=';
 
+// The tab that shows one case-level PDF — see page-pdf/view.js.
+function pagePdfUrl(params) {
+  return chrome.runtime.getURL('page-pdf/view.html') + '?' + new URLSearchParams(params).toString();
+}
+
 function caseLevelDocuments() {
   const out = [];
   const caseNumber = parseCaseNumber() || '';
@@ -2298,7 +2305,11 @@ function caseLevelDocuments() {
     out.push({
       docId: ROA_DOC_ID,
       name: label('Register of Actions'),
-      openUrl: ROA_PDF_URL + encodeURIComponent(caseNumber),
+      openUrl: pagePdfUrl({
+        pdf: ROA_PDF_URL + encodeURIComponent(caseNumber),
+        title: label('Register of Actions'),
+        pdfname: 'Register of Actions ' + caseNumber,
+      }),
       caseLevel: true,
     });
   } else {
@@ -2311,16 +2322,15 @@ function caseLevelDocuments() {
     const partiesUrl = getPartiesUrl()
       || (document.querySelector('a[title="UPDATE PARTY"]') ? location.href : null);
     if (partiesUrl) {
-      const q = new URLSearchParams({
-        url: new URL(partiesUrl, location.origin).href,
-        title: label('Parties'),
-        subtitle: parseCaseName(caseNumber) || '',
-        pdfname: ('Parties ' + caseNumber).trim(),
-      });
       out.push({
         docId: PARTIES_DOC_ID,
         name: label('Parties'),
-        openUrl: chrome.runtime.getURL('page-pdf/view.html') + '?' + q.toString(),
+        openUrl: pagePdfUrl({
+          url: new URL(partiesUrl, location.origin).href,
+          title: label('Parties'),
+          subtitle: parseCaseName(caseNumber) || '',
+          pdfname: ('Parties ' + caseNumber).trim(),
+        }),
         caseLevel: true,
       });
     }

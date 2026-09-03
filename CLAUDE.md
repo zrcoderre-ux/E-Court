@@ -109,10 +109,9 @@ scraping the current tab.
   lead the set (`caseLevelDocuments` in `clipboard/content.js`), before any
   filing and outside the tab cap: the **Register of Actions** as the court's own
   PDF — eCourt's report runner builds it from the case number alone, at the
-  stable URL the tab's Print button drives (`ROA_PDF_URL`), so nothing is
-  fetched, discovered or rendered — and the **Parties** tab (parties,
-  representation, former representation), which eCourt gives no print endpoint
-  at all. Ctrl+P is its
+  stable URL the tab's Print button drives (`ROA_PDF_URL`), so the extension
+  renders nothing — and the **Parties** tab (parties, representation, former
+  representation), which eCourt gives no print endpoint at all. Ctrl+P is its
   only native route to a PDF and a print dialog cannot run unattended, so
   `page-pdf/view.html` renders it. That page **re-fetches** the tab instead of
   reading the live DOM, which is what keeps the extension's own buttons and
@@ -120,6 +119,18 @@ scraping the current tab.
   sent. Both carry non-numeric docIds (`lac-roa`, `lac-parties`) and a
   `caseLevel` flag so they never collide with a filing or land in the
   opened-documents stats.
+
+  **Both go through `page-pdf/view.html`, and that is what names them.** The
+  register is fetched INTO that tab rather than navigated to because the report
+  runner names its output after its own batch job
+  (`RegisterOfActions-PRODUCTION2-2026-09-02`), and that name is what Chrome
+  would title the tab and the saved file. Held in our tab, the title and the
+  save-as name are ours: `Register of Actions <case number>`, `Parties <case
+  number>` — spaces, no underscores. Export saves them along with the rest: the
+  PDF is a blob belonging to that tab, so `savePagePdfs` tells the tab to
+  download its own blob and waits on the download id it hands back, and the tab
+  is closed on **completion** rather than at the start (closing it early would
+  revoke the bytes mid-transfer).
 - **Motions in limine are out of scope.** They are the trial judge's, carry no
   § 1005 schedule on our calendar, and their papers land in a block around the
   final status conference where they get mistaken for briefing on the motion

@@ -220,41 +220,63 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         if (t.id != null) e.tabIds.push(t.id);
       }
 
-      const count = byUrl.size;
-      if (!count) { sendResponse({ ok: true, count: 0 }); return; }
+      // The case-level PDFs (Register of Actions, Parties) live in a tab of our
+      // own, and neither is a court PDF URL the scan above could find: the
+      // register is fetched INTO that tab so the court's batch-job filename
+      // can't name it, and the Parties PDF exists only as bytes the extension
+      // rendered. Each such tab saves its own blob and hands back the download
+      // id, which joins the rest of the accounting below.
+      savePagePdfs(tabs || [], extra => downloadAll(byUrl, extra));
 
-      // Respond only once every download has settled, so the caller can keep the
-      // Export button greyed out while documents are still downloading. A safety
-      // timeout guarantees the caller is never left hanging.
-      let remaining = count, replied = false;
-      const reply = () => { if (!replied) { replied = true; sendResponse({ ok: true, count }); } };
-      const safety = setTimeout(reply, 60000);
-      const settle = () => { if (--remaining <= 0) { clearTimeout(safety); reply(); } };
+      function downloadAll(byUrl, extra) {
+        const count = byUrl.size + extra.length;
+        if (!count) { sendResponse({ ok: true, count: 0 }); return; }
 
-      for (const [url, e] of byUrl) {
-        const opts = { url };
-        if (e.filename) opts.filename = e.filename;
-        try {
-          chrome.downloads.download(opts, downloadId => {
-            void chrome.runtime.lastError;
-            if (downloadId == null) { settle(); return; } // failed to start
-            // Close the tab(s) once the download has started (the browser's
-            // download manager owns the transfer; closing won't interrupt it).
-            if (e.tabIds.length) {
-              try { chrome.tabs.remove(e.tabIds, () => { void chrome.runtime.lastError; }); } catch (_) {}
-            }
-            // Wait for this download to finish (or fail) before settling.
-            const onChanged = delta => {
-              if (!delta || delta.id !== downloadId || !delta.state) return;
-              const s = delta.state.current;
-              if (s === 'complete' || s === 'interrupted') {
-                chrome.downloads.onChanged.removeListener(onChanged);
-                settle();
-              }
-            };
-            chrome.downloads.onChanged.addListener(onChanged);
-          });
-        } catch (_) { settle(); }
+        // Respond only once every download has settled, so the caller can keep the
+        // Export button greyed out while documents are still downloading. A safety
+        // timeout guarantees the caller is never left hanging.
+        let remaining = count, replied = false;
+        const reply = () => { if (!replied) { replied = true; sendResponse({ ok: true, count }); } };
+        const safety = setTimeout(reply, 60000);
+        const settle = () => { if (--remaining <= 0) { clearTimeout(safety); reply(); } };
+
+        const closeTabs = tabIds => {
+          if (!tabIds.length) return;
+          try { chrome.tabs.remove(tabIds, () => { void chrome.runtime.lastError; }); } catch (_) {}
+        };
+
+        /* Wait for one download to finish (or fail), then settle.
+
+           `closeWhenStarted` says when its tab may go. A download the browser
+           fetches from the court owns its own transfer, so the tab can close as
+           soon as it starts. One saved out of a page-pdf tab is reading a blob
+           that belongs to that tab: closing it early would revoke the bytes
+           mid-transfer, so it waits for the download to complete. */
+        const awaitDownload = (downloadId, tabIds, closeWhenStarted) => {
+          if (downloadId == null) { settle(); return; } // failed to start
+          if (closeWhenStarted) closeTabs(tabIds);
+          const onChanged = delta => {
+            if (!delta || delta.id !== downloadId || !delta.state) return;
+            const st = delta.state.current;
+            if (st !== 'complete' && st !== 'interrupted') return;
+            chrome.downloads.onChanged.removeListener(onChanged);
+            if (!closeWhenStarted) closeTabs(tabIds);
+            settle();
+          };
+          chrome.downloads.onChanged.addListener(onChanged);
+        };
+
+        for (const [url, e] of byUrl) {
+          const opts = { url };
+          if (e.filename) opts.filename = e.filename;
+          try {
+            chrome.downloads.download(opts, downloadId => {
+              void chrome.runtime.lastError;
+              awaitDownload(downloadId, e.tabIds, true);
+            });
+          } catch (_) { settle(); }
+        }
+        for (const d of extra) awaitDownload(d.downloadId, d.tabIds, false);
       }
     });
     return true; // async: keep the channel open for chrome.tabs.query
@@ -353,6 +375,37 @@ function resolveOpenPdfUrl(rawUrl) {
 function isCourtPdfUrl(u) {
   return typeof u === 'string' && /^https?:/i.test(u) &&
     (/\/ecourt\/ecms\/doc\b/i.test(u) || /[?&]docId=\d+/i.test(u) || /\.pdf(?:[?#]|$)/i.test(u));
+}
+
+/* Have every open case-level PDF tab save what it holds.
+
+   Those tabs fetch or render their PDF themselves (page-pdf/view.js), and the
+   result is a blob belonging to the tab — not a URL the background could hand
+   to the download manager. So each tab is told to download its own blob, under
+   the name the document should be filed under, and answers with the download
+   id for the caller to wait on. A tab still fetching answers when it is done;
+   one that failed, or is not ours, answers nothing and is skipped. */
+function savePagePdfs(tabs, done) {
+  const mine = tabs.filter(t => t.id != null
+    && (t.url || t.pendingUrl || '').startsWith(OWN_PDF_PAGE));
+  if (!mine.length) { done([]); return; }
+  const out = [];
+  let remaining = mine.length, finished = false;
+  // A tab that never answers must not hold Export open.
+  const safety = setTimeout(() => { if (!finished) { finished = true; done(out); } }, 20000);
+  const settle = () => {
+    if (finished) return;
+    if (--remaining <= 0) { finished = true; clearTimeout(safety); done(out); }
+  };
+  for (const t of mine) {
+    try {
+      chrome.tabs.sendMessage(t.id, { type: 'savePagePdf' }, resp => {
+        void chrome.runtime.lastError;
+        if (resp && resp.downloadId != null) out.push({ downloadId: resp.downloadId, tabIds: [t.id] });
+        settle();
+      });
+    } catch (_) { settle(); }
+  }
 }
 
 /* Can the Documents button open this URL in a tab?
