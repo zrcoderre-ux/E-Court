@@ -3438,6 +3438,56 @@ function alignHeaderRowTops(labelEl) {
   } catch (_) {}
 }
 
+// A native line right below the Filed/Next row — "Disposed: 10/23/2024
+// Stipulated Judgment - After Jury Trial". When it exists, an added line of
+// ours should SHARE that line (the column-2 area beside it is empty) instead
+// of pushing it down and opening a third row. Scoped to the header table the
+// Next line lives in.
+function nativeLineBelowNext(labelEl) {
+  try {
+    const table = labelEl.closest && labelEl.closest('table');
+    if (!table) return false;
+    for (const n of table.querySelectorAll('td, div, span')) {
+      const t = (n.textContent || '').replace(/\s+/g, ' ').trim();
+      if (t && t.length < 250 && /^disposed\b/i.test(t)) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+// Wrap-aware layout, run after every paint:
+//   - a deadlines line that no longer fits beside the Next text wraps to its
+//     own line; when it does, it converts to the zero-width block shell so
+//     "Motion …" starts flush under "Next" (not at the 22px same-line gap)
+//     and the table's columns never see it;
+//   - any shelled line (the OSC status, a wrapped deadlines line) collapses
+//     to zero HEIGHT when the header has a native line right below (the
+//     "Disposed: …" row), so it lands in line with that row instead of
+//     pushing it down.
+function layoutSlotWidget(labelEl, el, isOsc) {
+  try {
+    let shell = isOsc || el.getAttribute('data-lac-shell') === '1';
+    if (!shell && labelEl.getBoundingClientRect) {
+      const a = labelEl.getBoundingClientRect();
+      const b = el.getBoundingClientRect();
+      if (a && b && b.height && b.top >= a.bottom - 2) {
+        const inner = document.createElement('span');
+        inner.className = DL_INNER_CLASS;
+        inner.setAttribute('style', 'display:inline-block;white-space:nowrap;font-weight:600;font-family:inherit;');
+        while (el.firstChild) inner.appendChild(el.firstChild);
+        el.appendChild(inner);
+        el.setAttribute('style', 'display:block;width:0;overflow:visible;');
+        el.setAttribute('data-lac-shell', '1');
+        shell = true;
+      }
+    }
+    if (shell) {
+      el.style.setProperty('height', nativeLineBelowNext(labelEl) ? '0px' : 'auto', 'important');
+      el.style.setProperty('overflow', 'visible', 'important');
+    }
+  } catch (_) {}
+}
+
 function paintSlotWidget(labelEl, slot) {
   if (!labelEl || !labelEl.parentNode) return;
   const host = labelEl.parentNode;
@@ -3451,6 +3501,7 @@ function paintSlotWidget(labelEl, slot) {
   if (el) {
     const target = el.querySelector('.' + DL_INNER_CLASS) || el;
     if (target.innerHTML !== html) target.innerHTML = html;
+    layoutSlotWidget(labelEl, el, !!slot.computed.osc);
     return;
   }
   el = document.createElement('span');
@@ -3471,6 +3522,7 @@ function paintSlotWidget(labelEl, slot) {
     // grows and pushes what follows down instead of painting over it. The
     // sentence wraps inside the inner box at its own fixed width.
     el.setAttribute('style', 'display:block;width:0;overflow:visible;');
+    el.setAttribute('data-lac-shell', '1');
     const inner = document.createElement('span');
     inner.className = DL_INNER_CLASS;
     inner.setAttribute('style', 'display:inline-block;width:50vw;max-width:720px;margin-top:2px;'
@@ -3488,6 +3540,7 @@ function paintSlotWidget(labelEl, slot) {
   const nx = labelEl.nextElementSibling;
   if (nx && nx.classList && nx.classList.contains(NAV_CLASS)) ref = nx;
   host.insertBefore(el, ref.nextSibling);
+  layoutSlotWidget(labelEl, el, !!slot.computed.osc);
   dlLog('injected deadlines next to header:', (labelEl.textContent || '').slice(0, 60));
 }
 
