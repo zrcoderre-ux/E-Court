@@ -64,6 +64,9 @@ scraping the current tab.
 | `clipboard/paste-rotator.js` | Fills the order-template values into forms (rotating paste). |
 | `agenda/content.js` | Agenda/calendar page: Copy All (cleaned two-column output), auto-copy on load, name expansion + sort + green-rows-to-top batching, auto-advance to next day, next-day prefetch, and the per-case status shown beside each case name (same engine as the case page). |
 | `documents/ingest.js` | Documents-tab script: stamps each filing with the day/time eCourt actually **posted** it (decoded from the doc endpoint's `Last-Modified`) and reports lag samples to the background. |
+| `lib/mini-pdf.js` | From-scratch PDF 1.4 writer (base-14 Helvetica, ruled text tables). No build step, so nothing is vendored. |
+| `lib/page-print.js` | Reads a fetched case sub-tab down to its tables and lays them out through `mini-pdf`. |
+| `page-pdf/` | The tab that renders a case sub-tab as a PDF — fetches the page itself, so the extension's own UI is never in the output. |
 | `order-template/` | In-extension Order Template Input popup (replaced the old Microsoft Form) + spreadsheet export. |
 | `deadline-calculator/` | Standalone CA motion-deadline calculator page. |
 | `lib/deadlines.js` | The deadline engine as the standalone calculator page uses it. **KEEP IN SYNC** with the `DL` copy inside `lib/case-status.js`. |
@@ -102,6 +105,21 @@ scraping the current tab.
   Type box separated by "; ". A demurrer and a standalone motion to strike set the
   same day stay ONE work-up (the strike row collapses into the demurrer) — but a
   motion to strike or tax COSTS is its own motion and is never collapsed.
+- **The Documents button also opens the case itself.** Two case-level papers
+  lead the set (`caseLevelDocuments` in `clipboard/content.js`), before any
+  filing and outside the tab cap: the **Register of Actions** as the court's own
+  PDF — eCourt's report runner builds it from the case number alone, at the
+  stable URL the tab's Print button drives (`ROA_PDF_URL`), so nothing is
+  fetched, discovered or rendered — and the **Parties** tab (parties,
+  representation, former representation), which eCourt gives no print endpoint
+  at all. Ctrl+P is its
+  only native route to a PDF and a print dialog cannot run unattended, so
+  `page-pdf/view.html` renders it. That page **re-fetches** the tab instead of
+  reading the live DOM, which is what keeps the extension's own buttons and
+  header rewrites out of the PDF: nothing was ever added to the HTML the server
+  sent. Both carry non-numeric docIds (`lac-roa`, `lac-parties`) and a
+  `caseLevel` flag so they never collide with a filing or land in the
+  opened-documents stats.
 - **Motions in limine are out of scope.** They are the trial judge's, carry no
   § 1005 schedule on our calendar, and their papers land in a block around the
   final status conference where they get mistaken for briefing on the motion

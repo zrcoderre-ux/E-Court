@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Loading…</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #525659; font: 13px system-ui, "Segoe UI", sans-serif; }
+    body { display: flex; flex-direction: column; }
+    /* A slim strip above the document, only so the file saves under a real
+       name — Chrome names a blob download after its UUID. Nothing here is part
+       of the PDF, which carries the court's page and nothing else. */
+    #bar { display: flex; align-items: center; gap: 12px; padding: 6px 12px;
+           background: #323639; color: #e8eaed; border-bottom: 1px solid #1f2123; }
+    #name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #save { color: #8ab4f8; text-decoration: none; padding: 3px 10px; border: 1px solid #5f6368;
+            border-radius: 4px; }
+    #save:hover { background: #3c4043; }
+    #save[hidden] { display: none; }
+    #frame { flex: 1; border: 0; width: 100%; }
+    #status { margin: auto; color: #e8eaed; text-align: center; padding: 24px; max-width: 40em; line-height: 1.5; }
+    #status a { color: #8ab4f8; }
+    code { background: #3c4043; padding: 1px 4px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="bar"><span id="name">Loading…</span><a id="save" hidden download>Save PDF</a></div>
+  <div id="status">Fetching the page…</div>
+  <iframe id="frame" hidden></iframe>
+  <script src="../lib/mini-pdf.js"></script>
+  <script src="../lib/page-print.js"></script>
+  <script src="view.js"></script>
+</body>
+</html>

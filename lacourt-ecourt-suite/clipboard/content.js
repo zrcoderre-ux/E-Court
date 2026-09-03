@@ -2259,9 +2259,86 @@ function getFutureHearingsCached() {
   return __futureHearingsPromise;
 }
 
+/* The two case-level papers the work-up starts from, opened alongside the
+   motion's own documents.
+
+   Neither is a filing on the Documents tab, so neither can come out of the
+   relevance computation: they are the case itself.
+
+     - The Register of Actions, as the court's own PDF. eCourt's report runner
+       builds it from the case number alone at a stable URL (ROA_PDF_URL), so
+       there is no page to fetch, no Print control to find, and nothing for the
+       extension to render — it opens the same report the tab's Print button
+       does.
+     - The Parties tab — parties, representation and former representation —
+       which eCourt gives no print endpoint at all. Ctrl+P is the only native
+       route to a PDF of it and a print dialog cannot run unattended, so the
+       extension renders the page itself in page-pdf/view.html. That page
+       re-FETCHES the tab rather than reading the live DOM, which is what keeps
+       the extension's own buttons and header rewrites out of the PDF.
+
+   Both carry a non-numeric docId so they can never collide with a real one, and
+   a caseLevel flag so the debug tracking, which counts filings the button
+   opened, doesn't count them. Either is skipped silently when its URL can't be
+   worked out — a missing register is not a reason to open no documents. */
+const ROA_DOC_ID = 'lac-roa';
+const PARTIES_DOC_ID = 'lac-parties';
+
+// eCourt's report runner, which is what the Register of Actions tab's own Print
+// button drives. The case number is the only variable in it.
+const ROA_PDF_URL =
+  'https://civil.lacourt.org/ecourt/ecms/reports/run?code=RegisterOfActions&dispatch=onRun&format=pdf&caseNumber=';
+
+function caseLevelDocuments() {
+  const out = [];
+  const caseNumber = parseCaseNumber() || '';
+  const label = n => (caseNumber ? n + ' \u2014 ' + caseNumber : n);
+
+  if (caseNumber) {
+    out.push({
+      docId: ROA_DOC_ID,
+      name: label('Register of Actions'),
+      openUrl: ROA_PDF_URL + encodeURIComponent(caseNumber),
+      caseLevel: true,
+    });
+  } else {
+    console.log('[LACourt] no case number on this page — skipping the Register of Actions');
+  }
+
+  try {
+    // On the Parties tab itself the sub-nav may not link to the page we are
+    // already on; the UPDATE PARTY anchors say we are there.
+    const partiesUrl = getPartiesUrl()
+      || (document.querySelector('a[title="UPDATE PARTY"]') ? location.href : null);
+    if (partiesUrl) {
+      const q = new URLSearchParams({
+        url: new URL(partiesUrl, location.origin).href,
+        title: label('Parties'),
+        subtitle: parseCaseName(caseNumber) || '',
+        pdfname: ('Parties ' + caseNumber).trim(),
+      });
+      out.push({
+        docId: PARTIES_DOC_ID,
+        name: label('Parties'),
+        openUrl: chrome.runtime.getURL('page-pdf/view.html') + '?' + q.toString(),
+        caseLevel: true,
+      });
+    }
+  } catch (err) {
+    console.warn('[LACourt] parties PDF setup failed:', err);
+  }
+  return out;
+}
+
 // Orchestrates: resolve the motion, fetch all documents + hearings, compute the
 // relevant set. Resolves to { relevant, motionType, docCount, singleHearing }.
 async function getRelevantDocuments() {
+  // The register and the parties list come first: they orient the whole work-up
+  // and they are the case, not one motion's briefing — so they open even when
+  // there is no motion on calendar to gather documents for, and the tab cap
+  // below can only ever drop filings, never these.
+  const caseLevel = caseLevelDocuments();
+
   // Every motion set for the selected hearing date — two motions heard the same
   // morning are read together, so the button opens both sets at once (deduped).
   const group = await getSelectedHearingGroup().catch(() => null);
@@ -2280,10 +2357,10 @@ async function getRelevantDocuments() {
     return (h && isOscDefaultJudgment(h.hearingType)) ? h.hearingType : '';
   };
   const targets = hearings.filter(h => matchTypeOf(h));
-  if (!targets.length) return { relevant: [], reason: 'no-motion' };
+  if (!targets.length) return { relevant: caseLevel, reason: 'no-motion' };
 
   const docs = await getAllDocumentsCached();
-  if (!docs.length) return { relevant: [], reason: 'no-documents' };
+  if (!docs.length) return { relevant: caseLevel, reason: 'no-documents' };
 
   const hearingsUrl = getHearingsUrl();
   const hearingsDoc = hearingsUrl ? await fetchCaseDoc(hearingsUrl) : null;
@@ -2305,7 +2382,7 @@ async function getRelevantDocuments() {
     }
   }
 
-  const relevant = Array.from(merged.values());
+  const relevant = caseLevel.concat(Array.from(merged.values()));
   const motionType = types.join('; ');
   console.log('[LACourt] relevant documents:', {
     motionType, docCount: docs.length, singleHearing, relevant: relevant.map(d => d.name),
@@ -2598,7 +2675,7 @@ function renderDocumentsButton() {
 
         // Debug tracking: record only the documents actually opened.
         const openedIds = new Set((r.openedDocIds || []).map(String));
-        const recorded = opened.filter(d => openedIds.has(String(d.docId)));
+        const recorded = opened.filter(d => !d.caseLevel && openedIds.has(String(d.docId)));
         if (recorded.length) {
           try {
             chrome.runtime.sendMessage({
