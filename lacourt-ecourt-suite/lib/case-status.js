@@ -353,6 +353,11 @@ function bestFilingMatch(motionType, filings) {
   let best = null, bestScore = 0, bestMin = 0;
   for (const f of filings) {
     if (!isMovingPaper(f.name)) continue;
+    // A motion in limine answers to the trial judge, not to this hearing, so it
+    // is never the moving paper for anything but an in limine hearing of its
+    // own (see IN_LIMINE_RE) — and it shares "exclude", "strike" and "trial"
+    // with plenty of motions that ARE on calendar.
+    if (isInLimineText(f.name) && !isInLimineText(motionType)) continue;
     const { mtCov, dnCov } = movantMatchCoverages(motionType, f.name);
     const s = Math.max(mtCov, dnCov), sMin = Math.min(mtCov, dnCov);
     // Rival motions can cover the hearing type EQUALLY — two "Motion to
@@ -500,11 +505,17 @@ function parseFutureHearings(doc) {
   const rows = [];
   const tables = doc.querySelectorAll('table');
   for (const table of tables) {
-    let headerRow = null, nameIdx = -1, dateIdx = -1, statusIdx = -1;
+    let headerRow = null, nameIdx = -1, dateIdx = -1, statusIdx = -1, docIdx = -1;
     for (const tr of table.querySelectorAll('tr')) {
       const texts = Array.from(tr.children).map(td => (td.textContent || '').replace(/\s+/g, ' ').trim());
       const ni = texts.indexOf('Name'), di = texts.indexOf('Date/Time'), si = texts.indexOf('Status');
-      if (ni !== -1 && di !== -1 && si !== -1) { headerRow = tr; nameIdx = ni; dateIdx = di; statusIdx = si; break; }
+      // The "Document" column is optional — it names the papers the clerk tied
+      // to the hearing, which is what vouches for a paper the title alone would
+      // put out of scope (see hearingListsDocument). Its absence is not a reason
+      // to reject the table.
+      if (ni !== -1 && di !== -1 && si !== -1) {
+        headerRow = tr; nameIdx = ni; dateIdx = di; statusIdx = si; docIdx = texts.indexOf('Document'); break;
+      }
     }
     if (!headerRow) continue;
 
@@ -533,15 +544,30 @@ function parseFutureHearings(doc) {
         date: dm[0],
         timeText: tm ? tm[0].replace(/\s+/g, ' ').toUpperCase() : '',
         when,
+        docBlob: (docIdx >= 0 && cells.length > docIdx && cells[docIdx])
+          ? (cells[docIdx].textContent || '').replace(/\s+/g, ' ').trim() : '',
       });
     }
   }
 
   const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0);
-  const seen = new Set();
+  const seen = new Map();
   return rows
     .filter(h => h.when >= startOfToday)
-    .filter(h => { const k = h.type + '@' + h.date; if (seen.has(k)) return false; seen.add(k); return true; })
+    .filter(h => {
+      const k = h.type + '@' + h.date;
+      const kept = seen.get(k);
+      // eCourt repeats a hearing across tables and continuance rows, and the
+      // repeats don't all carry the Document column. Keep the first row, but
+      // fold in any document text the duplicates add, so the list of papers
+      // tied to the hearing is the union of what the page says.
+      if (kept) {
+        if (h.docBlob) kept.docBlob = (kept.docBlob ? kept.docBlob + ' ' : '') + h.docBlob;
+        return false;
+      }
+      seen.set(k, h);
+      return true;
+    })
     .sort((a, b) => a.when - b.when);
 }
 
@@ -763,6 +789,36 @@ function docLinksToMotion(name, motionType) {
    "No Opposition" with the opposition sitting on the docket. */
 function docNameIsGeneric(name) {
   return !docSigTokens(name).length;
+}
+
+/* A motion in limine is trial-management work, not law and motion. It is heard
+   by the trial judge at trial, carries no § 1005 schedule on our calendar, and
+   its papers — the motion, the opposition, the reply, one set per numbered
+   motion — land on the docket in a block in the weeks around the final status
+   conference, exactly where they get mistaken for briefing on whatever motion
+   IS on calendar. One did: an "Opposition to Cross-Defendant's Motion in Limine
+   No. 1 …" filed the same day as a motion for leave to amend was read as the
+   opposition to that motion.
+
+   So an in limine paper is not a document the work-up opens and not a paper any
+   deadline counts. Two things override that, both saying the paper belongs to a
+   hearing we are actually working up: the Hearings tab lists it for the hearing
+   (that tab is authoritative everywhere else here too), or the hearing being
+   worked up is itself a motion in limine. The separator is optional so a
+   run-together "inlimine" — docket titles are typed by hand — is caught. */
+const IN_LIMINE_RE = /\bin[\s-]?limine\b/i;
+function isInLimineText(s) { return IN_LIMINE_RE.test(s || ''); }
+
+// Does the Hearings tab's "Document" column for the hearing being worked up name
+// this filing? The column is a run-together blob of document NAMES, so
+// containment of the normalized name is the test (the same one the Documents
+// button uses); the 6-character floor keeps a stub name from matching anything.
+// Every hearing that DAY counts — same-day hearings are one work-up.
+function hearingListsDocument(hearings, hearingWhen, docName) {
+  const nn = movantNormName(docName || '');
+  if (!nn || nn.length < 6 || !hearingWhen) return false;
+  return (hearings || []).some(h => h.docBlob && dayMs(h.when) === dayMs(hearingWhen)
+    && movantNormName(h.docBlob).indexOf(nn) !== -1);
 }
 
 // A real opposition — NOT a "Notice of Non-Opposition", which the moving party
@@ -1909,7 +1965,7 @@ function emptyDoc() {
 // one fetch. Every source degrades to empty rather than throwing.
 //
 //   ctx.docs()     -> [{ docId, name, when, filedBy, result, openUrl }, …]
-//   ctx.hearings() -> [{ type, date, when }, …]  (future + scheduled)
+//   ctx.hearings() -> [{ type, date, when, docBlob }, …]  (future + scheduled)
 //   ctx.parties()  -> a Document to read the parties table out of
 function makeCaseCtx(o) {
   const memo = fn => { let p = null; return () => (p || (p = fn())); };
@@ -2232,9 +2288,21 @@ async function computeFiledStatus(ctx, c) {
   const filed = { filedKnown: false, motion: null, opp: null, reply: null, nonOpp: null };
   try {
     {
-      const docs = await ctx.docs();
-      if (docs && docs.length) {
+      const allDocs = await ctx.docs();
+      if (allDocs && allDocs.length) {
         filed.filedKnown = true;
+        const hearings = await ctx.hearings();
+        // Motions in limine and their briefing are trial papers, not this
+        // hearing's (see IN_LIMINE_RE) — drop them before anything is matched or
+        // dated, so no deadline can be satisfied by one. They stay when the
+        // Hearings tab ties the paper to this hearing, and the whole filter is
+        // off when the hearing being worked up is itself a motion in limine.
+        const docs = isInLimineText(c.motionType) ? allDocs : allDocs.filter(d => {
+          if (!isInLimineText(d.name)) return true;
+          if (hearingListsDocument(hearings, c.hearingWhen, d.name)) return true;
+          dlLog('in limine paper', d.name, '— not counted toward', c.motionType);
+          return false;
+        });
         // No complaint on the docket, so this petition is the case's initiating
         // PLEADING rather than a motion (see docsHaveComplaint). A hearing on a
         // pleading has no § 1005 schedule to paint and no missing moving paper
@@ -2245,7 +2313,6 @@ async function computeFiledStatus(ctx, c) {
           return filed;
         }
         const earliest = list => list.slice().sort((a, b) => a.when - b.when)[0] || null;
-        const hearings = await ctx.hearings();
 
         // On a motion to strike or tax costs, whether the memorandum it attacks
         // was itself timely is worth knowing before reading the motion.
@@ -2577,7 +2644,7 @@ return {
   loadExcludedTerms, DEFAULT_EXCLUDED_TERMS,
   isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
   docWordOverlap, docReferencesMotion, postJudgmentAnchor, hasAccompanyingProofOfService, docLinksToMotion, docNameIsGeneric, docPartyNames, docSharesParty,
-  isOppositionDoc, isNonOppositionDoc, isComplaintDoc, isCrossComplaintDoc,
+  isOppositionDoc, isNonOppositionDoc, isInLimineText, isComplaintDoc, isCrossComplaintDoc,
   isFirstAmendedComplaintDoc, isDemurrerOrMotionToStrikeDoc, isDemurrerOrStrikeMotion,
   isPetitionDoc, isPetitionMotion, docsHaveComplaint,
   latestDoc, findDefaultProveUp, isDefaultJudgmentPacketDoc, sameCalendarDay,

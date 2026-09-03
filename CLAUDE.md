@@ -102,6 +102,22 @@ scraping the current tab.
   Type box separated by "; ". A demurrer and a standalone motion to strike set the
   same day stay ONE work-up (the strike row collapses into the demurrer) — but a
   motion to strike or tax COSTS is its own motion and is never collapsed.
+- **Motions in limine are out of scope.** They are the trial judge's, carry no
+  § 1005 schedule on our calendar, and their papers land in a block around the
+  final status conference where they get mistaken for briefing on the motion
+  actually on calendar. Any document whose title says "in limine"
+  (`isInLimineText`) is dropped from the Documents button and never counts
+  toward a briefing deadline, and `bestFilingMatch` will not nominate one as
+  another hearing's moving paper. Two exceptions, both meaning the paper really
+  does belong to a hearing we work up: the Hearings tab's Document column lists
+  it for that hearing (`hearingListsDocument`, `blobDocIds`), or the hearing
+  being worked up is itself a motion in limine.
+- **A paper filed the same day as the moving papers must NAME the motion.**
+  Briefing filed on the motion's own filing day is almost never a response to
+  it — that is the day a party files its briefing on other matters — so
+  position and a generic title prove nothing there and `sameDayPaperNamesMotion`
+  requires `movantMatchScore` above 0.5. Papers filed later keep the looser
+  tests.
 - **A hearing whose motion was never filed** is a real and common state (a reserved
   date the party abandoned). `bestFilingMatch` requires a score **strictly above
   0.5** so one incidental shared word can't nominate the wrong moving paper —
