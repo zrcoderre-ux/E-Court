@@ -2565,11 +2565,15 @@ async function computeOscStatus(ctx) {
     // Default Packet" (which reads as if the docket were bare even when a
     // stale, already-considered packet sits on it). Court-generated papers —
     // the minute order's own certificate of mailing, a signed order, the OSC
-    // itself — are not an update; any party filing is, packet or not.
+    // itself — are not an update; any party filing is, packet or not. A party
+    // paper filed the SAME DAY as the last minute order counts as new: docket
+    // dates are midnight-normalized, so the day can't be ordered within
+    // itself, and a filing the day of the hearing is usually the party's
+    // answer to what the court said there.
     const oscLast = (pu && pu.oscLast) || null;
     const isCourtPaper = d => /^\s*(?:minute\s+order\b|order\b|certificate\s+of\b|clerk'?s\b)/i.test((d && d.name) || '');
     const noUpdate = !hasPacket && oscLast
-      && !(docs || []).some(d => d && d.when && d.when > oscLast && !isCourtPaper(d));
+      && !(docs || []).some(d => d && d.when && d.when >= oscLast && !isCourtPaper(d));
     const packet = {
       packetText: hasPacket ? '✓ Default Packet'
         : noUpdate ? '⚠ No Update Since Last MO (' + fmtShortDate(oscLast) + ')'
