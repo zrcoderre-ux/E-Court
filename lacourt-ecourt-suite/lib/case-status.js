@@ -767,11 +767,20 @@ function docWordOverlap(name, motionType) {
 
 // Common motion abbreviations, so a filing that names the motion by its shorthand
 // ("Reply ISO Ford's MSA") still links to the spelled-out motion type ("Motion
-// for Summary Adjudication") even though no full word overlaps.
-const MOTION_ABBREV_RE = /\bms[ja]\b|summary\s+(?:judgment|adjudication)|\bmil\b|motion\s+in\s+limine|\bmtc\b|motion\s+to\s+compel|\bmtq\b|motion\s+to\s+quash/i;
+// for Summary Adjudication") even though no full word overlaps. One family per
+// abbreviation: the two sides have to name the SAME one. Testing each side for
+// "any abbreviation" linked an "Opposition to Motion to Quash" to a summary
+// judgment motion, and the single-motion branch then read it as the MSJ's
+// opposition.
+const MOTION_ABBREV_FAMILIES = [
+  /\bms[ja]\b|summary\s+(?:judgment|adjudication)/i,
+  /\bmil\b|motion\s+in\s+limine/i,
+  /\bmtc\b|motion\s+to\s+compel/i,
+  /\bmtq\b|motion\s+to\s+quash/i,
+];
 
 function motionAbbrevMatch(name, motionType) {
-  return MOTION_ABBREV_RE.test(name || '') && MOTION_ABBREV_RE.test(motionType || '');
+  return MOTION_ABBREV_FAMILIES.some(re => re.test(name || '') && re.test(motionType || ''));
 }
 
 // A filing links to the upcoming motion if it shares a significant word or a
@@ -789,6 +798,32 @@ function docLinksToMotion(name, motionType) {
    "No Opposition" with the opposition sitting on the docket. */
 function docNameIsGeneric(name) {
   return !docSigTokens(name).length;
+}
+
+/* A briefing paper whose title says WHAT it answers, and it is not this motion:
+   "Opposition to Ex Parte Application for Stay of Execution", "Opposition to
+   Demand for Jury Trial", "Reply to Opposition to Motion to Quash". Ex parte
+   applications, requests and demands are not hearings the engine tracks, so a
+   case can have exactly one filed motion on calendar and still carry a stack
+   of oppositions to other things — and the single-motion branch, which reads
+   any "Opposition" after the moving papers as the opposition by position
+   alone, painted "Opposition Due" green off one of them with nothing on file
+   answering the motion.
+
+   The test asks only whether the title names a target at all (a motion word)
+   and whether that target links to this motion. A title that names no target
+   ("Opposition OPPOSITION", "Opposition of Plaintiff Acme Corp") is left to
+   position and filer as before: the cost of guessing wrong there is the
+   opposition reported missing while it sits on the docket, which the
+   single-motion rule exists to prevent. */
+const DOC_TARGET_RE = /\b(?:motion|demurrer|application|ex\s*parte|petition|request|demand|objections?|osc|order\s+to\s+show\s+cause|ms[ja]|mtc|mtq|mil)\b/i;
+function docNamesOtherMotion(name, motionType) {
+  if (!DOC_TARGET_RE.test(name || '')) return false;
+  // An abbreviation names a target too: "Opposition to MTQ" is three letters
+  // long, under the four docSigTokens keeps, and would otherwise read generic.
+  const abbrev = MOTION_ABBREV_FAMILIES.some(re => re.test(name || ''));
+  if (docNameIsGeneric(name) && !abbrev) return false;
+  return !docLinksToMotion(name, motionType);
 }
 
 /* A motion in limine is trial-management work, not law and motion. It is heard
@@ -2497,12 +2532,20 @@ async function computeFiledStatus(ctx, c) {
         // attributes it here (see sameDayPaperNamesMotion).
         const notFiledWithMotion = d => sameDayPaperNamesMotion(d, mw, c.motionType);
 
+        // A paper whose title names some OTHER motion is not this motion's,
+        // whatever its position on the docket (see docNamesOtherMotion).
+        const notForAnotherMotion = d => {
+          const other = docNamesOtherMotion(d.name, c.motionType);
+          if (other) dlLog('paper', d.name, 'filed', d.when, 'names another motion — not read as briefing on:', c.motionType);
+          return !other;
+        };
+
         let o, r;
         if (singleMotion) {
-          o = earliest(after.filter(d => isOppositionDoc(d.name) && notFiledWithMotion(d)));
+          o = earliest(after.filter(d => isOppositionDoc(d.name) && notFiledWithMotion(d) && notForAnotherMotion(d)));
           const afterOpp = o ? o.when : mw;
           r = earliest(docs.filter(d => d.when && (!afterOpp || d.when >= afterOpp) && /\breply\b/i.test(d.name)
-            && notFiledWithMotion(d)));
+            && notFiledWithMotion(d) && notForAnotherMotion(d)));
         } else {
           // The movant does not oppose its own motion, so a generic opposition
           // filed by the movant is opposing something else; a generic reply,
@@ -2516,6 +2559,13 @@ async function computeFiledStatus(ctx, c) {
         }
         filed.opp = o ? o.when : null;
         filed.reply = r ? r.when : null;
+        // Which papers the colours rest on — paste this line when a slot's colour
+        // looks wrong: it names the paper that was read as each brief.
+        dlLog('briefing on', c.motionType, '—',
+          'motion:', md ? md.name + ' (' + fmtShortDate(md.when) + ')' : 'none',
+          '| opposition:', o ? o.name + ' (' + fmtShortDate(o.when) + ')' : 'none',
+          '| reply:', r ? r.name + ' (' + fmtShortDate(r.when) + ')' : 'none',
+          singleMotion ? '| single filed motion: position suffices' : '| several filed motions: names must link');
 
         // A "Notice of Non-Opposition" / "No Opposition" stands in for a briefing
         // paper, matched by WHO filed it (only meaningful when no real opposition
