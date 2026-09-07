@@ -1835,11 +1835,17 @@ const NEXT_DL_GAP = '<span style="display:inline-block;width:20px"></span>';
 
 const DL_YELLOW = '#b8860b'; // late for e-service but timely if personally served
 
-const DL_NEUTRAL = '#0a6e6e'; // due date not yet passed, nothing on file
-const DL_BLACK = '#000000';   // nothing to say yet: filing status unknown, or a reply not yet due
+const DL_BLACK = '#000000';   // nothing to say yet: filing status unknown, or a paper not yet due
+// A paper not yet due, with nothing on file, is BLACK — the same as "not known
+// yet". It used to be a teal of its own, and beside the real green of a filed
+// paper the teal read as green: an unfiled opposition looked filed the whole
+// time it was not yet due. The widget's colours now say only what has actually
+// happened — filed (green), missed (red), flagged (yellow) — and black is
+// everything else. Kept as a name so the status code still says what it means.
+const DL_NEUTRAL = DL_BLACK;
 
-// Colour: green = filed on time; red = overdue and nothing timely filed; neutral
-// = not yet due; black = we don't know yet.
+// Colour: green = filed on time; red = overdue and nothing timely filed; black
+// = not yet due, or we don't know yet.
 //
 // The dates paint as soon as they're computed, but whether a paper was FILED
 // takes a background fetch of the case Documents. Until that lands, a passed due
@@ -2198,16 +2204,9 @@ function statusHtml(c, filed, osc) {
   // thing worth saying is when they aren't.
   const item = (label, key, due) =>
     `<span style="color:${nextDlColor(due, f[key], f.filedKnown)}">${label} ${fmtShortDate(due)}</span>`;
-  // The reply is the one paper whose absence is routine until its date arrives —
-  // most motions never draw one. So while it isn't due yet it reads BLACK rather
-  // than the neutral teal the other papers use, keeping the widget's colour
-  // vocabulary for what's actually been filed (green), missed (red), or flagged
-  // (yellow). Once the date passes unfiled it becomes "No Reply (Due …)" in red.
-  const replyItem = due => {
-    const c0 = nextDlColor(due, f.reply, f.filedKnown);
-    const col = c0 === DL_NEUTRAL ? DL_BLACK : c0;
-    return `<span style="color:${col}">Reply Due ${fmtShortDate(due)}</span>`;
-  };
+  // Once its date passes unfiled the reply becomes "No Reply (Due …)" in red;
+  // until then it reads black like every other paper not yet due.
+  const replyItem = due => item('Reply Due', 'reply', due);
   // A paper is "absent" (never filed) — as opposed to filed-but-late — only when
   // the Documents fetch succeeded (filedKnown), found no matching filing, and the
   // due date has already passed. A late filing keeps its "Due <date>" in red.
@@ -2221,7 +2220,7 @@ function statusHtml(c, filed, osc) {
   // be sitting in the clerk's intake queue: eCourt posts a paper 0-3 court days
   // after its filing date, so a reply filed the day it was due routinely isn't
   // visible until the next court day. Inside that window the absence is
-  // reported as unconfirmed, in neutral teal, rather than called missing in red.
+  // reported as unconfirmed, in black, rather than called missing in red.
   const absentSpan = (noun, due) => {
     if (withinIngestGrace(due)) {
       const t = `Due ${fmtShortDate(due)} — nothing on file yet, but eCourt posts filings up to `
@@ -2257,8 +2256,7 @@ function statusHtml(c, filed, osc) {
       if (pjAbsent(pj.replyDue, f.reply)) {
         pjParts.push(absentSpan('Reply', pj.replyDue));
       } else {
-        const rc = nextDlColor(pj.replyDue, f.reply, f.filedKnown);
-        pjParts.push(`<span style="color:${rc === DL_NEUTRAL ? DL_BLACK : rc}">Reply Due ${fmtShortDate(pj.replyDue)}</span>`);
+        pjParts.push(item('Reply Due', 'reply', pj.replyDue));
       }
     }
     // The jurisdictional cutoff. Past it and the motion stands denied by
@@ -2316,7 +2314,7 @@ function statusHtml(c, filed, osc) {
   // The UD schedule looks nothing like § 437c's, so say which rules the dates
   // come from — otherwise a 5-days-out MSJ deadline reads like a bug.
   if (c.ud) {
-    parts.unshift('<span style="color:' + DL_NEUTRAL + '" title="'
+    parts.unshift('<span style="color:#0a6e6e" title="'
       + dlEsc('Unlawful detainer: the MSJ is heard on 5 days’ notice (CCP 1170.7), the written opposition is due '
         + 'the court day before the hearing, and the opposition or reply may instead be made orally at the hearing (CRC 3.1351).')
       + '">UD §1170.7:</span>');

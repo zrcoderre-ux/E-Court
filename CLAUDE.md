@@ -86,7 +86,8 @@ scraping the current tab.
   DJ-specific extra; the export is not otherwise special-cased.
 - **Briefing-deadline widget** (inline on the "Next" header) colors each paper by
   filing status: green = filed on time (assuming electronic service), red =
-  overdue/late, neutral = not yet due. The **Motion** additionally shows **yellow**
+  overdue/late, **black** = not yet due or not yet known (never a colour of its
+  own: the old teal read as green). The **Motion** additionally shows **yellow**
   when it missed the electronic-service deadline but would be timely under personal
   service (no notice extension) — a cue to check the proof of service. A paper
   past due with nothing on file reads **"No Motion/Opposition/Reply"**; new trial,
