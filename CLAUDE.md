@@ -141,6 +141,16 @@ scraping the current tab.
   does belong to a hearing we work up: the Hearings tab's Document column lists
   it for that hearing (`hearingListsDocument`, `blobDocIds`), or the hearing
   being worked up is itself a motion in limine.
+- **Unlawful detainer MSJs run on CCP § 1170.7 / CRC 3.1351, not § 437c** —
+  every UD subtype (Commercial, Residential, Post-Foreclosure, Drugs); only the
+  MSJ changes, other UD motions keep their ordinary schedules (CCP § 1177).
+  Detection reads the case-type designation, and eCourt's header keeps the
+  "Civil Unlimited/Limited" lead and the type in SEPARATE boxes, so
+  `findCaseTypeLine` appends the text that follows the lead on its line.
+  `UD_TYPE_NAME_RE` matches the catalog name alone ("Unlawful Detainer/<subtype>")
+  for the agenda's case cell and a header with no lead. "Breach of Rental/Lease
+  Contract (not unlawful detainer or wrongful eviction)" is NOT a UD and must
+  never match.
 - **A paper filed the same day as the moving papers must NAME the motion.**
   Briefing filed on the motion's own filing day is almost never a response to
   it — that is the day a party files its briefing on other matters — so
