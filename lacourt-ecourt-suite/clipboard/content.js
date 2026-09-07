@@ -3424,8 +3424,11 @@ function pageIsUnlawfulDetainer() {
 // directly beneath it.
 let __dlSlots = [];
 
+// The unlawful-detainer flag is part of the key: an MSJ's dates and filing
+// colours differ under § 1170.7, so a slot computed before the case-type line
+// was read must not hand its status to one computed after.
 function slotKey(eff) {
-  return (eff.hearingDate || '') + '|' + (eff.hearingType || '');
+  return (eff.hearingDate || '') + '|' + (eff.hearingType || '') + (eff.ud ? '|ud' : '');
 }
 function makeSlot(eff) {
   return { eff, computed: computeDueDatesFor(eff), filed: null, osc: null, fetchStarted: false };
@@ -4048,6 +4051,7 @@ function dlCacheWrite() {
       motionType: s.eff.motionType || '', hearingType: s.eff.hearingType || '',
       hearingDate: s.eff.hearingDate || '', timeText: s.eff.timeText || '',
       raw: s.eff.raw || '', native: !!s.eff.native, lookedAhead: !!s.eff.lookedAhead,
+      ud: !!s.eff.ud,
     },
     // Ordinary briefing status only: an OSC has its own cache, and a
     // post-judgment slot's schedule is rebuilt from the docket, not from here.

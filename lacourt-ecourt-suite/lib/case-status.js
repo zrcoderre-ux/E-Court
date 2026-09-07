@@ -1875,11 +1875,24 @@ function isOscDefaultJudgment(hearingType) {
 // say "Unlimited Civil", reversed), so a test keyed to the phrase never reads
 // a document that merely mentions a case type as the case's own designation.
 // The designation and its type read together (bounded, so a page-wide text
-// blob that happens to contain both far apart doesn't match).
-const UD_CASE_TYPE_RE = /\bcivil\s+(?:unlimited|limited)\b[\s\S]{0,80}?\bunlawful\s+detainer\b/i;
+// blob that happens to contain both far apart doesn't match). The gap may not
+// run through "not unlawful": "Breach of Rental/Lease Contract (not unlawful
+// detainer or wrongful eviction)" is a contract case that merely names the
+// type it is not.
+const UD_CASE_TYPE_RE = /\bcivil\s+(?:unlimited|limited)\b(?:(?!\bnot\s+unlawful)[\s\S]){0,80}?\bunlawful\s+detainer\b/i;
+// The type's own name, as the CM-010 / LASC catalog spells it: "Unlawful
+// Detainer/Commercial (not drugs or wrongful eviction)", "…/Residential (…)",
+// "…/Post-Foreclosure", "…/Drugs". Nothing else on eCourt reads "Unlawful
+// Detainer/<subtype>" — docket titles say "Complaint - Unlawful Detainer" with
+// no subtype, and the contract type's "(not unlawful detainer or …)" has no
+// slash after "detainer" — so the name alone identifies the designation
+// wherever it appears without the "Civil Unlimited/Limited" lead (the agenda's
+// case cell, a header whose designation sits in a separate element).
+const UD_TYPE_NAME_RE = /\bunlawful\s+detainer\s*[\/\-\u2013\u2014:]\s*(?:commercial|residential|post[\s\-]*foreclosure|drugs)\b/i;
 
 function isUnlawfulDetainerTypeText(text) {
-  return UD_CASE_TYPE_RE.test(text || '');
+  text = text || '';
+  return UD_CASE_TYPE_RE.test(text) || UD_TYPE_NAME_RE.test(text);
 }
 
 // The element carrying the case-type line: the SMALLEST element whose text
@@ -1920,16 +1933,70 @@ function findCaseTypeEl(root) {
   return null;
 }
 
+// Text that follows an element on its line: its next siblings' text, else its
+// parent's next siblings', capped. eCourt's real header keeps
+// the "Civil Unlimited" designation and the case type in SEPARATE boxes (the
+// type in a fixed-width box CSS-clipped to an ellipsis, its full text still in
+// the DOM), so the smallest element carrying the designation is often the
+// label alone and the type is whatever text follows it.
+// The type is RIGHT after the designation, so the walk stops at the first
+// level that yields any text and climbs at most two levels: text further out
+// belongs to other header lines, or to the page.
+function followingHeaderText(el, cap) {
+  cap = cap || 160;
+  let out = '';
+  let node = el, depth = 0;
+  while (node && depth < 2 && !out) {
+    let sib = node.nextSibling;
+    while (sib && out.length < cap) {
+      out += ' ' + (sib.textContent || '');
+      sib = sib.nextSibling;
+    }
+    out = out.replace(/\s+/g, ' ').trim();
+    node = node.parentElement; depth++;
+  }
+  return out.slice(0, cap);
+}
+
+// The case-type line: the designation element's text and, when that text ends
+// at the designation itself (the type lives in the next box over), the text
+// that follows it on the line.
 function findCaseTypeLine(root) {
   const el = findCaseTypeEl(root);
-  return el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  if (!el) return '';
+  let line = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  if (/\bcivil\s+(?:unlimited|limited)\b\s*[:\-\u2013\u2014|]?\s*$/i.test(line)) {
+    const rest = followingHeaderText(el);
+    if (rest) line += ' ' + rest;
+  }
+  return line;
+}
+
+// The case-header blocks' own text — the [class*="case"] elements that are
+// header-sized (a page-level container that happens to carry "case" in its
+// class is skipped by the cap), each on its own line.
+function caseHeaderBlocksText(root) {
+  root = root || (typeof document !== 'undefined' ? document : null);
+  if (!root || !root.querySelectorAll) return '';
+  const lines = [];
+  for (const el of root.querySelectorAll('[class*="case"]')) {
+    const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    if (t && t.length <= 600) lines.push(t);
+  }
+  return lines.join('\n');
 }
 
 // Is the case an unlawful detainer, per the designation on the page. The
 // truncated line still carries "Unlawful Detainer", so this works whether or
-// not the designation is cut off.
+// not the designation is cut off. A header carrying no "Civil Unlimited/
+// Limited" lead at all is read for the type's own catalog name ("Unlawful
+// Detainer/Commercial …") in the case-header blocks instead.
 function isUnlawfulDetainerCase(root) {
-  return isUnlawfulDetainerTypeText(findCaseTypeLine(root));
+  const line = findCaseTypeLine(root);
+  // A designation line that was found is the answer, either way: a case whose
+  // type reads otherwise is not a UD however its docket titles read.
+  if (line) return isUnlawfulDetainerTypeText(line);
+  return UD_TYPE_NAME_RE.test(caseHeaderBlocksText(root));
 }
 
 /* ------------------------------------------------------------------ */
