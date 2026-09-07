@@ -151,6 +151,16 @@ scraping the current tab.
   for the agenda's case cell and a header with no lead. "Breach of Rental/Lease
   Contract (not unlawful detainer or wrongful eviction)" is NOT a UD and must
   never match.
+- **An opposition or reply that names a DIFFERENT motion is never this
+  motion's**, even when only one filed motion is on calendar. Ex parte
+  applications, stay requests and jury demands are not hearings the engine
+  tracks, so a single-motion case still carries oppositions to other things;
+  `docNamesOtherMotion` drops a title that names a target (a motion word or an
+  abbreviation) not linked to this motion, and `motionAbbrevMatch` requires
+  the SAME abbreviation family on both sides (MTQ never links to an MSJ). A
+  title naming no target ("Opposition OPPOSITION", a party name only) is still
+  attributed by position and filer. The "briefing on …" console line names the
+  paper each slot's colour rests on.
 - **A paper filed the same day as the moving papers must NAME the motion.**
   Briefing filed on the motion's own filing day is almost never a response to
   it — that is the day a party files its briefing on other matters — so
