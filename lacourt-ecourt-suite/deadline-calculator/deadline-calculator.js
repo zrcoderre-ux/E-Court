@@ -68,12 +68,24 @@ function fmtFull(d) {
   if (!d || isNaN(d)) return '';
   return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
 }
+// A local date from y/m/d that keeps the year as typed. `new Date(2, 0, 1)` is
+// 1902, not year 2 — the constructor maps 0–99 onto 1900–1999 — and a date
+// input reports the year digit by digit as it is typed ("0002-01-15"), so the
+// box read 1902 while the user was still on the first digit of 2025. A year
+// under 1000 is one still being typed and parses as nothing rather than as a
+// date the deadline table then computes from.
+function localDate(y, m, d) {
+  if (y < 1000) return null;
+  const dt = new Date(y, m, d);
+  dt.setFullYear(y);
+  return dt;
+}
 function parseDate(s) {
   if (!s) return null;
   const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})$/); // yyyy-mm-dd (date input)
-  if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+  if (m) return localDate(+m[1], +m[2] - 1, +m[3]);
   const m2 = String(s).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); // m/d/yyyy (e-court)
-  if (m2) return new Date(+m2[3], +m2[1] - 1, +m2[2]);
+  if (m2) return localDate(+m2[3], +m2[1] - 1, +m2[2]);
   const d = new Date(s);
   if (isNaN(d)) return null;
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -497,7 +509,13 @@ function renderInteractiveMode() {
       </div>`;
   };
 
-  el.innerHTML = `<div class="mode-b">
+  // The date boxes are rendered WITHOUT a value attribute and filled below, so
+  // the fields markup depends only on the motion type and service chips. That
+  // lets the fields be left alone while the user is typing a date into one of
+  // them: rebuilding the panel on every keystroke replaced the box mid-edit
+  // (focus and the half-typed year with it) and wrote the parsed value back —
+  // the reason the entry-of-judgment box kept snapping to 1902.
+  const fieldsHtml = `
     <div class="field-group">
       <span class="field-label">Motion Type</span>
       <div class="chips">${chipsMT}</div>
@@ -511,7 +529,7 @@ function renderInteractiveMode() {
     ${showsEntryDate ? `
     <div class="field-group">
       <span class="field-label">Entry of Judgment Date <span class="sub">&nbsp;(for the 180-day outer limit, ${mt === 'fees' ? 'rule 8.104(a)(1)(C)' : '\u00a7 659(a)(2)'})</span></span>
-      <input type="date" id="entryDate" value="${state.entryDate ? toInputValue(state.entryDate) : ''}">
+      <input type="date" id="entryDate">
       <div class="svc-note">${mt === 'fees'
         ? 'Service method does not affect this deadline: rule 3.1702(b)(1) measures it by the time for filing a notice of appeal, and \u00a7\u00a7 1013(a) and 1010.6(a)(3)(B) both exclude that. The date above is service of the trigger (60-day period); add the entry date here for the 180-day cap. The earlier controls.'
         : 'Service method does not affect this deadline (\u00a7 659(b)). The date above is the notice of entry (15-day trigger); add the entry-of-judgment date here for the 180-day cap. The earlier of the two controls.'}</div>
@@ -519,21 +537,42 @@ function renderInteractiveMode() {
     ${mt === 'costs' ? `
     <div class="field-group">
       <span class="field-label">Entry of Judgment Date <span class="sub">&nbsp;(for the 180-day outer limit, rule 3.1700(a)(1))</span></span>
-      <input type="date" id="entryDate" value="${state.entryDate ? toInputValue(state.entryDate) : ''}">
+      <input type="date" id="entryDate">
       <div class="svc-note">The date at the top is the SERVICE of the notice of entry of judgment or dismissal (the 15-day trigger). The memorandum is due on whichever of the two comes first.</div>
     </div>
     <div class="field-group">
       <span class="field-label">Memorandum of Costs Served <span class="sub">&nbsp;(optional — checks it against the deadline and dates the motion to strike or tax)</span></span>
-      <input type="date" id="memoServedDate" value="${state.memoServedDate ? toInputValue(state.memoServedDate) : ''}">
+      <input type="date" id="memoServedDate">
       <div class="svc-note">The service method chips above apply to both periods: the notice of entry's service for the memorandum, and the memorandum's own service for the motion to strike or tax costs.</div>
-    </div>` : ''}
-    <div class="result-cards">
+    </div>` : ''}`;
+  const resultsHtml = `
       ${warnHtml}
       ${card((res.labels && res.labels.motion) || 'Motion — Serve &amp; File By', res.motion, res.motionNote, true)}
       ${card((res.labels && res.labels.opp) || 'Opposition — Serve &amp; File By', res.opp, res.oppNote, false)}
-      ${card((res.labels && res.labels.reply) || 'Reply — Serve &amp; File By', res.reply, res.replyNote, false)}
-    </div>
-  </div>`;
+      ${card((res.labels && res.labels.reply) || 'Reply — Serve &amp; File By', res.reply, res.replyNote, false)}`;
+
+  let fields = el.querySelector('#modeBFields');
+  let results = el.querySelector('#modeBResults');
+  if (!fields || !results) {
+    el.innerHTML = `<div class="mode-b"><div id="modeBFields"></div><div class="result-cards" id="modeBResults"></div></div>`;
+    fields = el.querySelector('#modeBFields');
+    results = el.querySelector('#modeBResults');
+  }
+  // Only replace the fields when their markup actually changed (a chip click);
+  // a value typed into one of the date boxes re-renders the results alone.
+  if (fields.dataset.html !== fieldsHtml) {
+    fields.innerHTML = fieldsHtml;
+    fields.dataset.html = fieldsHtml;
+  }
+  results.innerHTML = resultsHtml;
+  // Fill the date boxes from state — except the one being typed in, whose
+  // partial value must not be overwritten by what we parsed from it so far.
+  [['entryDate', state.entryDate], ['memoServedDate', state.memoServedDate]].forEach(([id, d]) => {
+    const inp = fields.querySelector('#' + id);
+    if (!inp || document.activeElement === inp) return;
+    const v = d ? toInputValue(d) : '';
+    if (inp.value !== v) inp.value = v;
+  });
 }
 
 // ── PRE-FILL FROM DETECTED HEARING ──────────────────────────────────────────
