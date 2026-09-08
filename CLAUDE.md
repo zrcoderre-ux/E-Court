@@ -93,7 +93,11 @@ scraping the current tab.
   past due with nothing on file reads **"No Motion/Opposition/Reply"**; new trial,
   JNOV and reconsideration have no §1005 schedule (their deadlines run from notice
   of entry of judgment) and carry `motionOnly`, so the widget says only whether the
-  moving papers are on the docket at all.
+  moving papers are on the docket at all. A **first amended complaint** filed in
+  lieu of opposing a demurrer or motion to strike takes the Opposition/Reply
+  slots and is coloured against the opposition deadline: green when filed on or
+  before it (of right under CCP § 472(a), the challenge is moot), red when after
+  (needed leave or a stipulation).
 - **Several hearings we work up = one group per hearing DATE.** `groupWorkableHearings`
   (in `lib/case-status.js`) bundles the Next event plus every workable hearing on
   the Hearings tab into groups keyed by date; ‹ › arrows on the "Next" header step

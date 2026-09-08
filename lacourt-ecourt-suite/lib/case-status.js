@@ -2354,11 +2354,25 @@ function statusHtml(c, filed, osc) {
   const nonOppSpan = '<span style="color:#1a6b3a">Notice of Non-Opposition</span>';
   // A demurrer or motion to strike answered by an amended complaint in lieu of
   // opposition (CCP 472): the amended pleading moots the challenge, so show it in
-  // place of the Opposition/Reply slots rather than "No Opposition". RED, unlike
-  // the other "this paper is accounted for" entries — it isn't briefing to read,
-  // it's a hearing to take off calendar.
+  // place of the Opposition/Reply slots rather than "No Opposition". Coloured
+  // like any other paper: § 472(a) allows the one amendment as of right only if
+  // it is filed and served no later than the opposition deadline, so a FAC on or
+  // before that date is GREEN (timely — the challenge is moot, take the hearing
+  // off calendar) and one filed after it is RED (not of right; without leave or
+  // a stipulation the challenge stands and the amendment is the thing to rule
+  // on). The opposition deadline itself is what the colour is measured against.
   if (f.fac && isDemurrerOrStrikeMotion(c.motionType)) {
-    parts.push(`<span style="color:${RED}">${dlEsc(f.fac.label)}</span>`);
+    const facColor = nextDlColor(c.oppDue, f.fac.when, f.filedKnown);
+    const facWhen = fmtShortDate(f.fac.when);
+    const facDue = c.oppDue ? fmtShortDate(c.oppDue) : null;
+    const t = facColor === RED
+      ? `First amended complaint filed ${facWhen}, after the ${facDue} opposition deadline. CCP 472(a) allows `
+        + 'the one amendment as of right only if it is filed and served no later than the date an opposition '
+        + 'was due, so this one needed leave or a stipulation — the challenge is not mooted by it.'
+      : `First amended complaint filed ${facWhen}, on or before the ${facDue || 'opposition'} deadline. Filed as `
+        + 'of right under CCP 472(a) in lieu of opposition: the challenged pleading is superseded and the '
+        + 'hearing is moot — take it off calendar. The docket shows filing, not service; check the proof of service.';
+    parts.push(`<span style="color:${facColor}" title="${dlEsc(t)}">${dlEsc(f.fac.label)} Filed ${facWhen}</span>`);
   } else if (nonOpp && nonOpp.slot === 'opp') {
     // The non-moving party filed a Notice of Non-Opposition — it takes the place
     // of (and is more meaningful than) its opposition, and moots the reply.
