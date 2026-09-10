@@ -90,9 +90,17 @@ scraping the current tab.
   own: the old teal read as green). The **Motion** additionally shows **yellow**
   when it missed the electronic-service deadline but would be timely under personal
   service (no notice extension) — a cue to check the proof of service. A paper
-  past due with nothing on file reads **"No Motion/Opposition/Reply"**; new trial,
-  JNOV and reconsideration have no §1005 schedule (their deadlines run from notice
-  of entry of judgment) and carry `motionOnly`, so the widget says only whether the
+  past due with nothing on file keeps its ordinary `<Paper> Due <date>` line and
+  carries **"Not Filed"** on a second line BENEATH it (`dlStack` /
+  `DL_STACK_CLASS` in `lib/case-status.js`) — the distinction the red date alone
+  could not draw, since a paper filed *late* is also red and there the deadline
+  was met by a document, just a late one. Inside the eCourt posting-lag window
+  the note reads **"Not Posted Yet"** in black instead (nothing on file yet, but
+  a timely filing may not be visible). The case page top-aligns the header row's
+  cells and keeps the widget's real height whenever a stacked note is present, so
+  the second line neither drifts the "Filed:" cell nor paints over the row below.
+  New trial, JNOV and reconsideration have no §1005 schedule (their deadlines run
+  from notice of entry of judgment) and carry `motionOnly`, so the widget says only whether the
   moving papers are on the docket at all. A **first amended complaint** filed in
   lieu of opposing a demurrer or motion to strike takes the Opposition/Reply
   slots and is coloured against the opposition deadline: green when filed on or
