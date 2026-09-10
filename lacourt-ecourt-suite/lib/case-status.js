@@ -1833,6 +1833,22 @@ function dayMs(d) { return (d && !isNaN(d)) ? new Date(d.getFullYear(), d.getMon
 
 const NEXT_DL_GAP = '<span style="display:inline-block;width:20px"></span>';
 
+// A two-line status item: the paper and its due date on the first line, a short
+// note UNDER them. What it exists for is the difference between a paper that
+// missed its deadline and one that never arrived — a late filing is a red
+// "Opposition Due <date>" and nothing else (it IS on file, just late), while a
+// paper never filed carries "Not Filed" beneath the same line. An inline-flex
+// column so the FIRST line still sits on the shared baseline with the items
+// beside it (an inline-flex box takes its first item's baseline), which keeps
+// the widget's one-line items level.
+const DL_STACK_CLASS = '__lacourt_dl_stack__';
+function dlStack(topHtml, noteHtml, title) {
+  return `<span class="${DL_STACK_CLASS}" style="display:inline-flex;flex-direction:column;`
+    + `align-items:flex-start;white-space:nowrap"` + (title ? ` title="${dlEsc(title)}"` : '') + '>'
+    + topHtml
+    + `<span style="font-size:.85em;line-height:1.15">${noteHtml}</span></span>`;
+}
+
 const DL_YELLOW = '#b8860b'; // late for e-service but timely if personally served
 
 const DL_BLACK = '#000000';   // nothing to say yet: filing status unknown, or a paper not yet due
@@ -2215,19 +2231,28 @@ function statusHtml(c, filed, osc) {
     const dd = dayMs(due);
     return dd != null && dd < dayMs(new Date());
   };
-  // An absent paper shows "No Opposition (Due <date>)" / "No Reply (Due <date>)".
+  // An absent paper keeps the ordinary "<Paper> Due <date>" line and says what
+  // is wrong with it UNDERNEATH: "Not Filed" in red. That is the state a red
+  // date alone could not distinguish — a paper filed after its deadline is also
+  // red, and there the date IS met by a document, just a late one.
   // Except while the due date is recent enough that a timely filing might still
   // be sitting in the clerk's intake queue: eCourt posts a paper 0-3 court days
   // after its filing date, so a reply filed the day it was due routinely isn't
   // visible until the next court day. Inside that window the absence is
-  // reported as unconfirmed, in black, rather than called missing in red.
+  // reported as unconfirmed ("Not Posted Yet", in black) rather than called
+  // missing in red.
   const absentSpan = (noun, due) => {
+    const dueTxt = fmtShortDate(due);
     if (withinIngestGrace(due)) {
-      const t = `Due ${fmtShortDate(due)} — nothing on file yet, but eCourt posts filings up to `
+      const t = `Due ${dueTxt} — nothing on file yet, but eCourt posts filings up to `
         + `${INGEST_GRACE_COURT_DAYS} court days after they are filed, so a timely ${noun.toLowerCase()} may not be visible yet.`;
-      return `<span style="color:${DL_NEUTRAL}" title="${dlEsc(t)}">No ${noun} Posted Yet (Due ${fmtShortDate(due)})</span>`;
+      return dlStack(`<span style="color:${DL_NEUTRAL}">${noun} Due ${dueTxt}</span>`,
+        `<span style="color:${DL_NEUTRAL}">Not Posted Yet</span>`, t);
     }
-    return `<span style="color:${RED}">No ${noun} (Due ${fmtShortDate(due)})</span>`;
+    const t = `No ${noun.toLowerCase()} matching this hearing is on the docket and the ${dueTxt} `
+      + `deadline has passed — nothing was filed, as opposed to filed late.`;
+    return dlStack(`<span style="color:${RED}">${noun} Due ${dueTxt}</span>`,
+      `<span style="color:${RED}">Not Filed</span>`, t);
   };
   if (c.motionOnly) {
     if (!f.filedKnown) return '';
@@ -2770,6 +2795,7 @@ return {
   parsePartiesTable, parseFutureHearings, parseHearingDateTime,
   // Status
   computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml, computeCostsMemoStatus,
+  DL_STACK_CLASS,
   findAppealTimeTrigger, computeFeeMotionStatus,
   // Hearing / document classification
   isOscDefaultJudgment, isWorkableHearing, groupWorkableHearings, hearingIdentityKey, isHearingExcluded, excludedTermMatches,

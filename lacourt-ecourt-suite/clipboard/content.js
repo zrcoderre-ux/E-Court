@@ -38,7 +38,7 @@
   const {
     makeCaseCtx, emptyDoc, caseTabUrlFrom, fetchCaseDoc, fetchAllDocuments,
     parsePartiesTable, parseFutureHearings, parseHearingDateTime,
-    computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
+    computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml, DL_STACK_CLASS,
     isOscDefaultJudgment, isWorkableHearing, groupWorkableHearings, loadExcludedTerms,
     isUnlawfulDetainerCase, findCaseTypeEl,
     isMovingPaper, bestFilingMatch, parseFiledByParties, resolveMovingPaper,
@@ -3578,7 +3578,7 @@ function nativeLineBelowNext(labelEl) {
 //     to zero HEIGHT when the header has a native line right below (the
 //     "Disposed: …" row), so it lands in line with that row instead of
 //     pushing it down.
-function layoutSlotWidget(labelEl, el, isOsc) {
+function layoutSlotWidget(labelEl, el, isOsc, stacked) {
   try {
     let shell = isOsc || el.getAttribute('data-lac-shell') === '1';
     if (!shell && labelEl.getBoundingClientRect) {
@@ -3596,7 +3596,10 @@ function layoutSlotWidget(labelEl, el, isOsc) {
       }
     }
     if (shell) {
-      el.style.setProperty('height', nativeLineBelowNext(labelEl) ? '0px' : 'auto', 'important');
+      // ...but a status carrying a two-line item ("Opposition Due <date>" with
+      // "Not Filed" under it) needs its real height: collapsed to zero, its
+      // second line would paint over the row below.
+      el.style.setProperty('height', (!stacked && nativeLineBelowNext(labelEl)) ? '0px' : 'auto', 'important');
       el.style.setProperty('overflow', 'visible', 'important');
     }
   } catch (_) {}
@@ -3610,12 +3613,16 @@ function paintSlotWidget(labelEl, slot) {
     if (n.classList && n.classList.contains(DL_CLASS)) { el = n; break; }
   }
   if (!paintableSlot(slot)) { if (el) el.remove(); return; }
-  if (slot.computed.osc) alignHeaderRowTops(labelEl); // every paint — the row can be re-rendered
   const html = statusHtml(slot.computed, slot.filed, slot.osc);
+  // A two-line item ("Not Filed" under its due date) grows the Next cell the
+  // same way the OSC status does, so the row's cells need the same top
+  // alignment or the shorter "Filed:" cell centres against the taller one.
+  const stacked = html.indexOf(DL_STACK_CLASS) !== -1;
+  if (slot.computed.osc || stacked) alignHeaderRowTops(labelEl); // every paint — the row can be re-rendered
   if (el) {
     const target = el.querySelector('.' + DL_INNER_CLASS) || el;
     if (target.innerHTML !== html) target.innerHTML = html;
-    layoutSlotWidget(labelEl, el, !!slot.computed.osc);
+    layoutSlotWidget(labelEl, el, !!slot.computed.osc, stacked);
     return;
   }
   el = document.createElement('span');
@@ -3654,7 +3661,7 @@ function paintSlotWidget(labelEl, slot) {
   const nx = labelEl.nextElementSibling;
   if (nx && nx.classList && nx.classList.contains(NAV_CLASS)) ref = nx;
   host.insertBefore(el, ref.nextSibling);
-  layoutSlotWidget(labelEl, el, !!slot.computed.osc);
+  layoutSlotWidget(labelEl, el, !!slot.computed.osc, stacked);
   dlLog('injected deadlines next to header:', (labelEl.textContent || '').slice(0, 60));
 }
 
