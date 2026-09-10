@@ -2993,7 +2993,18 @@ function ensureButtonStyles() {
     '#__lacourt_djfees_btn__[data-collapsed="1"] .lac-btn-text{display:none}' +
     '#__lacourt_fill_btn__[data-collapsed="1"],#__lacourt_docs_btn__[data-collapsed="1"],' +
     '#__lacourt_deadline_btn__[data-collapsed="1"],#__lacourt_djfees_btn__[data-collapsed="1"]' +
-    '{padding-left:9px!important;padding-right:9px!important}';
+    '{padding-left:9px!important;padding-right:9px!important}' +
+    // The click-to-copy case number in the header. Selection stays enabled (the
+    // number and the case name must still highlight together), the negative
+    // margins cancel the padding so nothing on the header line shifts, and the
+    // hover/flash colours are neutral greys/green that read on eCourt's white
+    // header and on the blue bar alike.
+    '[data-lac-cn-copy]{cursor:pointer;border-radius:3px;padding:0 3px;margin:0 -3px;' +
+    'text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px;' +
+    '-webkit-user-select:text;user-select:text}' +
+    '[data-lac-cn-copy]:hover{background:rgba(127,127,127,.25)}' +
+    '[data-lac-cn-copy][data-lac-cn-copied="1"]{background:#2f855a;color:#fff;' +
+    'text-decoration:none}';
   (document.head || document.documentElement).appendChild(st);
 }
 
@@ -4125,6 +4136,9 @@ function observeNextHeader() {
       pending = false;
       try { renderNextHeaderDeadlines(); } catch (_) {}
       try { initHeaderExpanders(); } catch (_) {}
+      // The expander rewrites the header text when it toggles, which throws the
+      // case-number copy wrap away; put it back.
+      try { initCaseNumberCopy(); } catch (_) {}
       // Keep the floating buttons sized to the blue bar if the SPA re-rendered it.
       try { scheduleButtonCollapse(); } catch (_) {}
     });
@@ -4325,6 +4339,7 @@ function findClippedHeaderEls() {
     for (const el of all) {
       if (seenEl.has(el)) continue;
       seenEl.add(el);
+      if (el.hasAttribute(CN_COPY_ATTR)) continue; // our click-to-copy case number
       const t = (el.textContent || '').trim();
       if (!t || t.length > 400) continue;
       if (el.children.length > 2) continue; // a fragment, not a container
@@ -4750,6 +4765,175 @@ function initHeaderExpanders() {
   } catch (_) {}
 }
 
+/* ------------------------------------------------------------------ */
+/* Click-to-copy case number in the header                             */
+/* ------------------------------------------------------------------ */
+//
+// The case number is the string that gets retyped all day (order template,
+// email subject, a note to chambers), so clicking it in the header copies it.
+// It is deliberately NOT a <button>: eCourt prints the number and the caption
+// in one text run, and a real button would pull the number out of that run —
+// out of the flow, and out of any selection dragged across the header line.
+// Instead the number's own text is wrapped in a span that keeps text
+// selection, so highlighting the case number and the case name together still
+// works. A click that MOVED (a selection drag) or that lands while text is
+// selected copies nothing and leaves the selection standing.
+//
+// The click is handled by ONE delegated listener on document, in the CAPTURE
+// phase: the case-name expander binds a click on the element the number sits
+// in and stops propagation, so a bubble-phase listener would never hear the
+// click, and a listener on the span itself would be lost by the header rows
+// we clone for same-day hearings. Capture runs before either.
+//
+// The wrap is re-applied from the header observer: the case-name expander
+// rewrites its element's textContent on each expand/collapse, throwing the
+// span away (the number itself survives — resolveFullCaseNameText swaps only
+// the name portion of the text), and the next mutation pass puts it back.
+
+const CN_COPY_ATTR = 'data-lac-cn-copy';
+const CN_COPIED_ATTR = 'data-lac-cn-copied';
+
+// Copy, then flash the number for a moment. navigator.clipboard needs document
+// focus, which a click on the page has; the textarea fallback covers a refusal
+// anyway (it clobbers the selection, which is why it is only the fallback).
+async function copyCaseNumberText(span, caseNumber) {
+  let ok = true;
+  try {
+    await navigator.clipboard.writeText(caseNumber);
+  } catch (_) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = caseNumber;
+      ta.style.cssText = 'position:fixed;top:-1000px;left:-1000px;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand('copy');
+      ta.remove();
+    } catch (_) { ok = false; }
+  }
+  if (ok) {
+    span.setAttribute(CN_COPIED_ATTR, '1');
+    clearTimeout(span.__cnFlash);
+    span.__cnFlash = setTimeout(() => { try { span.removeAttribute(CN_COPIED_ATTR); } catch (_) {} }, 900);
+    showToast('Copied ' + caseNumber);
+  } else {
+    showToast('Could not copy ' + caseNumber);
+  }
+}
+
+// One capture-phase pair of listeners for every case-number span on the page,
+// present or future (cloned header rows included).
+let __cnCopyDelegated = false;
+function delegateCaseNumberCopy() {
+  if (__cnCopyDelegated) return;
+  __cnCopyDelegated = true;
+  let down = null;
+  const target = ev => {
+    const t = ev.target;
+    return (t && t.closest) ? t.closest('[' + CN_COPY_ATTR + ']') : null;
+  };
+  // Never preventDefault here — that would kill the native selection drag.
+  document.addEventListener('mousedown', ev => {
+    down = target(ev) ? { x: ev.clientX, y: ev.clientY } : null;
+  }, true);
+  document.addEventListener('click', ev => {
+    const span = target(ev);
+    if (!span) return;
+    const dragged = down && (Math.abs(ev.clientX - down.x) > 3 || Math.abs(ev.clientY - down.y) > 3);
+    down = null;
+    let selected = '';
+    try { const s = window.getSelection(); selected = (s && !s.isCollapsed) ? String(s) : ''; } catch (_) {}
+    if (dragged || selected.trim()) return; // the user is highlighting, not clicking
+    // Stop the case-name expander (bound on an ancestor) from also toggling.
+    try { ev.preventDefault(); ev.stopPropagation(); } catch (_) {}
+    const cn = (span.textContent || '').trim();
+    if (cn) copyCaseNumberText(span, cn);
+  }, true);
+}
+
+// Wrap the case-number token inside `el`'s text in a click-to-copy span.
+// Returns the span (existing or new), or null if the token isn't in a text
+// node of its own subtree.
+function wrapCaseNumberIn(el, caseNumber) {
+  let walker;
+  try { walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null); } catch (_) { return null; }
+  let node;
+  while ((node = walker.nextNode())) {
+    const idx = (node.nodeValue || '').indexOf(caseNumber);
+    if (idx === -1) continue;
+    const parent = node.parentElement;
+    if (!parent) continue;
+    if (parent.hasAttribute(CN_COPY_ATTR)) return parent; // already wrapped
+    const token = idx === 0 ? node : node.splitText(idx);
+    if (token.nodeValue.length > caseNumber.length) token.splitText(caseNumber.length);
+    const span = document.createElement('span');
+    span.setAttribute(CN_COPY_ATTR, '1');
+    span.setAttribute('title', 'Click to copy ' + caseNumber);
+    token.parentNode.insertBefore(span, token);
+    span.appendChild(token);
+    return span;
+  }
+  return null;
+}
+
+// The header elements that print the case number: the deepest RENDERED element
+// in the case-header blocks whose own text carries it. Our own injected UI is
+// skipped; so is any container big enough to be the page rather than a header
+// fragment (the same 800-element guard findClippedHeaderEls uses).
+function findCaseNumberEls(caseNumber) {
+  const hits = new Set();
+  for (const box of document.querySelectorAll('[class*="case"], h1, h2, h3')) {
+    let all;
+    try { all = box.getElementsByTagName('*'); } catch (_) { continue; }
+    if (all.length > 800) continue;
+    const pool = [box].concat(Array.prototype.slice.call(all));
+    for (const el of pool) {
+      if (hits.has(el) || el.hasAttribute(CN_COPY_ATTR)) continue;
+      try { if (el.closest('[id^="__lacourt"]')) continue; } catch (_) {}
+      const t = el.textContent || '';
+      if (t.length > 400 || t.indexOf(caseNumber) === -1) continue;
+      if (el.clientWidth === 0 && el.offsetParent === null) continue; // not rendered
+      hits.add(el);
+    }
+  }
+  const out = Array.from(hits);
+  // Deepest-only: an element that wraps another hit isn't the one printing it.
+  return out.filter(el => !out.some(other => other !== el && el.contains(other)));
+}
+
+// Idempotent; called from the render pass and the header observer (the case
+// header renders late, and the expander wipes the wrap when it toggles).
+let __cnCopyLogged = false;
+function initCaseNumberCopy() {
+  try {
+    // Two spellings of the number to look for: parseCaseNumber's (the URL
+    // param, authoritative but not necessarily formatted the way the header
+    // prints it), then the number-shaped token in the header text itself. The
+    // first one actually found in the header wins.
+    const nums = [];
+    const push = v => { v = (v || '').trim(); if (v && nums.indexOf(v) === -1) nums.push(v); };
+    push(parseCaseNumber(document));
+    for (const box of document.querySelectorAll('[class*="case"]')) {
+      const m = (box.textContent || '').match(CASE_NUMBER_RE);
+      if (m) { push(m[0]); break; }
+    }
+    if (!nums.length) return;
+    delegateCaseNumberCopy();
+    for (const num of nums) {
+      const els = findCaseNumberEls(num);
+      if (!els.length) continue;
+      for (const el of els) {
+        const span = wrapCaseNumberIn(el, num);
+        if (span && !__cnCopyLogged) {
+          __cnCopyLogged = true;
+          dlLog('case-number copy bound:', num, describeExpEl(el));
+        }
+      }
+      return;
+    }
+  } catch (_) {}
+}
+
 function setupFillFormButton() {
   // The parties table loads after initial page render. Try once on DOMContentLoaded
   // and once on full load, then poll briefly until it appears (cap at ~10s).
@@ -4761,6 +4945,7 @@ function setupFillFormButton() {
     renderDefaultJudgmentFeesButton(); // default-judgment pages only
     renderNextHeaderDeadlines();
     try { initHeaderExpanders(); } catch (_) {}
+    try { initCaseNumberCopy(); } catch (_) {}
     observeNextHeader();
     // Size immediately from the remembered bar dimensions (no flash to default),
     // then schedule the debounced pass that measures the live bar and re-docks.
