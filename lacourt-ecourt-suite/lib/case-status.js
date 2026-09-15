@@ -1033,14 +1033,24 @@ function resolveMovingPaper(motionType, hearingWhen, hearings, docs) {
 // A petition is another kind of initial pleading (probate, family, writ, etc.),
 // used as the operative pleading only when the case has no complaint. Match the
 // pleading ITSELF — a name that starts with "Petition" (optionally prefixed by
-// "Verified"/"Amended"/an ordinal) — NOT documents that merely reference one
-// ("Notice of Hearing on Petition", "Proof of Service of Petition", "Order on
-// Petition").
+// "Verified"/"Amended"/"Expedited"/an ordinal) — NOT documents that merely
+// reference one ("Notice of Hearing on Petition", "Proof of Service of
+// Petition", "Order on Petition").
+//
+// "Expedited" earns its place on that list: the minor's-compromise petition has
+// two Judicial Council forms, MC-350 and the expedited MC-350EX, and the
+// expedited one's caption leads with the qualifier — "Expedited Petition to
+// Approve Compromise of Disputed Claim or Pending Action or Disposition of
+// Proceeds of Judgment for Minor or Person with a Disability". Without the
+// prefix that title is not a petition to isMovingPaper and not a petition to
+// the date-pairing below, so a "Hearing on Petition to Confirm Minor's
+// Compromise" read "No Motion" with the petition sitting on the docket. A
+// supplemental petition is the same paper supplemented, so it travels with it.
 function isPetitionDoc(name) {
   const n = (name || '').trim();
   if (/^amendment to /i.test(n)) return false;
   if (/fictitious|incorrect\s+name/i.test(n)) return false;
-  return /^(?:(?:verified|amended|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+)*petition\b/i.test(n);
+  return /^(?:(?:verified|amended|expedited|supplemental|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th))\s+)*petition\b/i.test(n);
 }
 
 // A hearing ON a petition — the Hearings-tab form ("Petition to Confirm Minor's
