@@ -110,7 +110,7 @@ scraping the current tab.
   (in `lib/case-status.js`) bundles the Next event plus every workable hearing on
   the Hearings tab into groups keyed by date; ‹ › arrows on the "Next" header step
   between days. The page's own header line is rewritten to the selected hearing
-  (and restored verbatim on return); every FURTHER motion set for that same day
+  (and restored on return, minus the event id — see below); every FURTHER motion set for that same day
   gets its own full "Next: <date> <time> Hearing on <motion>" line cloned from the
   native one, inside the green band, each with its own Motion/Opposition/Reply
   display. Same-day hearings are worked up together: Documents opens the union of
@@ -144,6 +144,21 @@ scraping the current tab.
   download its own blob and waits on the download id it hands back, and the tab
   is closed on **completion** rather than at the start (closing it early would
   revoke the bytes mid-transfer).
+- **eCourt's event id is never shown and never exported.** The docket appends
+  its internal event number to a hearing caption ("… Service of Summons ID-
+  610433225263"), and `stripEventId` (`lib/case-status.js`) takes it out
+  everywhere a caption is displayed, copied or exported — including the page's
+  OWN "Next" line, which used to keep it because that line was restored
+  verbatim. Three shapes: spaced at the end of the line, followed by "in
+  Department NN" (which stays), and GLUED to the caption
+  ("… of SummonsID- 610433225263") — the Hearings tab splits a caption across
+  child elements and `textContent` joins them with nothing, so there is no word
+  boundary in front of "ID". The glued match is case-sensitive and needs a
+  lowercase letter (or digit / closing bracket) in front, so an all-caps docket
+  ("MOTION TO VOID- 1234") keeps its verb. `scrubEventId` in
+  `clipboard/content.js` handles the id eCourt parks in an element of its own,
+  where the line's own text never ends with it.
+
 - **Motions in limine are out of scope.** They are the trial judge's, carry no
   § 1005 schedule on our calendar, and their papers land in a block around the
   final status conference where they get mistaken for briefing on the motion

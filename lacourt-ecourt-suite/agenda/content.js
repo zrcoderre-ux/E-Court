@@ -23,7 +23,7 @@
 const {
   caseCtxForId, computeDueDatesFor, computeFiledStatus, computeOscStatus, statusHtml,
   isWorkableHearing, isOscDefaultJudgment, loadExcludedTerms, excludedTermMatches,
-  stripHearingOnPrefix, stripTrailingParenNumber, fetchWithTimeout,
+  stripHearingOnPrefix, stripTrailingParenNumber, stripEventId, fetchWithTimeout,
   isUnlawfulDetainerTypeText,
   DEFAULT_EXCLUDED_TERMS, dlLog,
 } = LACCaseStatus;
@@ -770,7 +770,10 @@ function parseCaseHearings(doc) {
     if (!name || name.length > 400 || !/[a-z]/i.test(name)) continue;
     let status = '';
     for (let i = dtIdx + 1; i < cells.length; i++) { if (cells[i]) { status = cells[i]; break; } }
-    out.push({ name, dateTime: cells[dtIdx], status });
+    // eCourt's internal event id ("… Service of SummonsID- 610433225263") is
+    // never shown and never copied — and the name expansion below writes this
+    // name straight into the agenda's own cell.
+    out.push({ name: stripEventId(name), dateTime: cells[dtIdx], status });
   }
   return out;
 }
@@ -961,7 +964,8 @@ async function fetchHearingNameSwaps() {
   await runWithConcurrency(jobs, 4, async job => {
     const hearings = await getCaseHearings(job.caseId);
     const matched = fullNameForHearing(hearings, day, job.prefix);
-    const full = stripTrailingParenNumber(headBeforeSemicolon(matched, job.prefix));
+    // Strip the id here too: a hearings list cached before this ran still has it.
+    const full = stripTrailingParenNumber(stripEventId(headBeforeSemicolon(matched, job.prefix)));
     if (full && job.b.getAttribute(EXPANDED_ATTR) !== '1') swaps.push({ b: job.b, full, prefix: job.prefix });
   });
   return swaps;
@@ -1068,7 +1072,7 @@ function caseStatusJobs() {
     let hearing = '';
     for (const a of cells[5].querySelectorAll('a')) {
       const b = a.querySelector('b');
-      const txt = stripTrailingParenNumber(((b || a).textContent || '').replace(/\s+/g, ' ').trim());
+      const txt = stripTrailingParenNumber(stripEventId(((b || a).textContent || '').replace(/\s+/g, ' ').trim()));
       if (txt && isWorkableHearing(txt)) { hearing = txt; break; }
     }
     if (!hearing) continue;
