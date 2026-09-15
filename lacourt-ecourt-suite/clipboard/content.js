@@ -45,7 +45,7 @@
     docWordOverlap, docReferencesMotion, docNameIsGeneric, postJudgmentAnchor, findAppealTimeTrigger,
     docPartyNames, docSharesParty, isInLimineText, isComplaintDoc, isCrossComplaintDoc,
     isDemurrerOrMotionToStrikeDoc, isPetitionDoc, latestDoc, findDefaultProveUp,
-    sameCalendarDay, stripEventId, stripTrailingParenNumber, stripHearingOnPrefix,
+    sameCalendarDay, stripEventId, EVENT_ID_ONLY_RE, stripTrailingParenNumber, stripHearingOnPrefix,
     stripAncillaryMotionReference, movantNormName, fmtShortDate, dlLog,
   } = LACCaseStatus;
 
@@ -3724,6 +3724,49 @@ function hearingHeaderLabel(eff) {
   return 'Next: ' + (eff.hearingDate || '') + (eff.timeText ? ' ' + eff.timeText : '') + ' ' + name;
 }
 
+// stripEventId for a live text node: the id comes out, the whitespace around
+// the text stays. The header is laid out with those spaces, and trimming them
+// would jam the caption against the markup beside it.
+function stripEventIdInText(v) {
+  const s = String(v == null ? '' : v);
+  const core = stripEventId(s);
+  if (core === s.trim()) return s; // nothing to drop (or nothing but whitespace)
+  if (!core) return '';
+  const lead = (s.match(/^\s*/) || [''])[0];
+  const trail = (s.match(/\s*$/) || [''])[0];
+  return lead + core + trail;
+}
+
+// Takes the event id out of a header line already in the DOM, wherever eCourt
+// put it: at the end of the line's own text, or — since the caption is built
+// out of child elements — in a node of its own. Our own widgets are skipped, so
+// a deadline that happens to end in digits is never touched.
+function scrubEventId(root) {
+  if (!root || !root.querySelectorAll) return;
+  const ours = '.' + DL_CLASS + ', .' + NAV_CLASS + ', .' + EXTRA_ROW_CLASS;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  const texts = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) texts.push(n);
+  for (const n of texts) {
+    const p = n.parentElement;
+    if (p && p.closest && p.closest(ours)) continue;
+    const v = n.nodeValue || '';
+    const out = EVENT_ID_ONLY_RE.test(v) ? '' : stripEventIdInText(v);
+    if (out !== v) n.nodeValue = out;
+  }
+  for (const el of root.querySelectorAll('[title]')) {
+    if (el.closest && el.closest(ours)) continue;
+    const t = el.getAttribute('title') || '';
+    const out = stripEventId(t);
+    if (t && out !== t) el.setAttribute('title', out);
+  }
+  if (root.getAttribute && root.hasAttribute('title')) {
+    const t = root.getAttribute('title') || '';
+    const out = stripEventId(t);
+    if (t && out !== t) root.setAttribute('title', out);
+  }
+}
+
 // What actually holds the hearing text: the header element itself when it is a
 // plain text line, else the text node inside it that carries the date — so a
 // header built out of markup ("<b>Next:</b> <span>08/31/2026 …</span>") is
@@ -3741,7 +3784,8 @@ function nativeLineCarrier(span) {
 }
 
 // The page's own line shows whichever hearing the arrows have selected, and is
-// restored verbatim once the selection is back on the event eCourt named.
+// restored once the selection is back on the event eCourt named — minus the
+// event id, which is never shown on a line we paint.
 function paintNativeHeaderLine(anchor) {
   const snap = __nativeSnapshot;
   const slot = __dlSlots[0];
@@ -3759,7 +3803,10 @@ function paintNativeHeaderLine(anchor) {
   }
   const isNative = slot.eff.hearingDate === snap.hearingDate
     && (slot.eff.hearingType || '') === (snap.hearingType || '');
-  let text = span.dataset.lacNextOrig;
+  // The line eCourt itself wrote carries the event id; the lines we write never
+  // have, and the id is the court's internal event number, of no use to anyone
+  // reading the header. So the restored line is the original MINUS the id.
+  let text = stripEventIdInText(span.dataset.lacNextOrig);
   if (!isNative) {
     text = hearingHeaderLabel(slot.eff);
     // Don't repeat a "Next:" that lives in markup beside the text we're rewriting.
@@ -3770,9 +3817,11 @@ function paintNativeHeaderLine(anchor) {
   }
   carrier.set(text);
   if (span.hasAttribute('title')) {
-    const t = isNative ? span.dataset.lacNextOrigTitle : hearingHeaderLabel(slot.eff);
+    const t = isNative ? stripEventId(span.dataset.lacNextOrigTitle) : hearingHeaderLabel(slot.eff);
     if (t && span.getAttribute('title') !== t) span.setAttribute('title', t);
   }
+  // Whatever the carrier didn't hold: an id eCourt gave an element of its own.
+  scrubEventId(span);
 }
 
 const squash = el => ((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
@@ -3802,6 +3851,9 @@ function buildExtraHeaderRow(anchor, eff) {
     .forEach(n => n.remove());
   clone.removeAttribute('id');
   clone.querySelectorAll('[id]').forEach(n => n.removeAttribute('id'));
+  // The native line's event id rode along with the clone; the label we write
+  // below replaces one node, not the element eCourt may have parked it in.
+  scrubEventId(clone);
 
   // Clone the line only when the line really IS the hearing text. If the nearest
   // painted ancestor sits well above it, `row` is a container holding much more

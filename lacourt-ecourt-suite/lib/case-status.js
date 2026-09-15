@@ -239,16 +239,38 @@ function parsePartiesTable(root) {
  * has drifted over time — seen both without and with a space after the hyphen:
  *   "Hearing on Motion to Compel Discovery ID-148870297793"
  *   "Hearing on Motion for Summary Judgment ID- 396523215423"
- * The user wants "ID" and everything after it dropped from the motion type /
- * hearing type. We match a standalone "ID" token followed by any mix of
- * separators (hyphen / colon / hash / spaces) and then digits, through end of
- * string. Requiring the trailing digits (and the \b before "ID") keeps real
- * words like "grid-5" or "...Valid" from being clipped.
+ * The id is eCourt's internal event number: it is never shown on the page we
+ * render and never exported, so every caption passes through here.
+ *
+ * Three shapes have to come out:
+ *  - spaced, at the end of the line ("… Summons ID- 610433225263");
+ *  - followed by the department ("… Judgment ID-148870297793 in Department 73"),
+ *    which is where the event is heard and stays;
+ *  - GLUED to the caption ("… Service of SummonsID- 610433225263"). The
+ *    Hearings tab splits a caption across child elements and textContent joins
+ *    them with nothing, so there is no word boundary in front of "ID" at all —
+ *    which is what the old \b test needed, and why the tab's captions kept
+ *    their ids while the header's lost them.
+ *
+ * We match an "ID" token followed by any mix of separators (hyphen / colon /
+ * hash / spaces) and then digits. Requiring those digits keeps real words like
+ * "grid-5" from being clipped; the glued form additionally requires a literal
+ * uppercase "ID" after a lowercase letter (or a digit / closing bracket), so a
+ * docket that shouts "MOTION TO VOID- 1234" keeps its verb.
  */
+const EVENT_ID_TAIL = '[\\s:#-]*\\d[\\d\\s]*?(\\s+in\\s+Department\\b.*)?$';
+const EVENT_ID_SPACED_RE = new RegExp('\\s*\\bID\\b' + EVENT_ID_TAIL, 'i');
+const EVENT_ID_GLUED_RE = new RegExp('(?<=[a-z0-9)\\]])ID' + EVENT_ID_TAIL);
+
 function stripEventId(desc) {
   if (!desc) return desc;
-  return desc.replace(/\s*\bID\b[\s:#-]*\d[\d\s]*$/i, '').trim();
+  return desc.replace(EVENT_ID_SPACED_RE, '$1').replace(EVENT_ID_GLUED_RE, '$1').trim();
 }
+
+// The same decoration standing alone, which is how it arrives when eCourt gives
+// it its own element: the line's text then ends at the caption and the
+// end-anchored strip above never sees the id at all.
+const EVENT_ID_ONLY_RE = /^[\s:#-]*ID[\s:#-]*\d[\d\s]*$/i;
 
 /**
  * Drops trailing number-only decorations from a motion type: a purely numeric
@@ -2821,7 +2843,7 @@ return {
   decodeIngestTime, getIngestTime, fmtIngest, ingestDay, ingestLagCourtDays,
   courtDaysBetween, withinIngestGrace, INGEST_GRACE_COURT_DAYS, docLagCategory,
   // Text helpers
-  stripEventId, stripTrailingParenNumber, stripHearingOnPrefix, stripAncillaryMotionReference,
+  stripEventId, EVENT_ID_ONLY_RE, stripTrailingParenNumber, stripHearingOnPrefix, stripAncillaryMotionReference,
   movantNormName,
   fmtShortDate, dayMs, dlEsc, dlLog,
   // Deadline engine + palette
